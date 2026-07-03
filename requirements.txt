@@ -1,0 +1,23 @@
+# ============================================================================
+#  问卷自动填写工具 — Python 依赖清单
+# ============================================================================
+#  安装命令（最小运行集，支持 Edge / Chrome Selenium 原生）：
+#      pip install -r requirements.txt
+#
+#  可选增强（反爬更强 / 功能更全）：
+#      # 使用 undetected-chromedriver 反检测模式（Chrome 专用）
+#      pip install undetected-chromedriver
+#
+#      # 用于 GUI 的二维码 URL 解析（体积较大）
+#      pip install opencv-python
+# ============================================================================
+
+# ---- 核心依赖（必须） ----
+selenium>=4.10,<5.0        # 浏览器自动化驱动（内置 Edge / Chrome WebDriver 管理）
+numpy>=1.22,<2.0           # 多选题无放回加权随机抽样
+
+# ---- 可选依赖（功能增强 / 反检测） ----
+# undetected-chromedriver>=3.5  # [仅 Chrome] 更强的反检测模式；
+#                                 也可直接 `pip install undetected-chromedriver`
+#                                 不装也能跑：Selenium 原生 Chrome + Stealth CDP 作为默认路径
+# opencv-python>=4.5             # 用于 GUI 的二维码 URL 解析（可选，体积较大）
