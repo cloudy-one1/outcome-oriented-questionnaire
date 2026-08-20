@@ -477,10 +477,10 @@ def js_select_dropdown(driver: Any, q: int, choice_value: Any) -> bool:
         // 找 <select>
         var sel = null;
         var candidates = [
-            document.querySelector("select[name='q' + q]"),
+            document.querySelector("select[name='q" + q + "']"),
             document.getElementById('selectq' + q),
             document.getElementById('q' + q),
-            document.querySelector("select[id*='q' + q]"),
+            document.querySelector("select[id*='q" + q + "']"),
         ];
         for (var i = 0; i < candidates.length; i++) {{
             if (candidates[i]) {{ sel = candidates[i]; break; }}

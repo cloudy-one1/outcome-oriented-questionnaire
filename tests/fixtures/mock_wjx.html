@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>问卷星 Mock - 全题型 v2.0</title>
+<style>
+  body { font-family: "Microsoft YaHei", sans-serif; max-width: 720px; margin: 20px auto; padding: 0 16px; background: #fafafa; }
+  .div_question { background: #fff; border: 1px solid #eee; border-radius: 8px; padding: 16px 20px; margin: 12px 0; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+  .qtitle { font-size: 15px; font-weight: 600; color: #333; margin-bottom: 10px; }
+  .qtitle .idx { color: #f60; margin-right: 4px; }
+  .field { padding-left: 6px; }
+  label.opt { display: block; padding: 6px 2px; color: #444; cursor: pointer; user-select: none; }
+  input[type="radio"], input[type="checkbox"] { margin-right: 8px; transform: scale(1.1); }
+  textarea, input[type="text"], input[type="tel"], select { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #d0d0d0; border-radius: 4px; font-size: 14px; font-family: inherit; }
+  textarea { min-height: 64px; resize: vertical; }
+  select { background: #fff; height: 36px; }
+  /* ---- 量表样式 ---- */
+  .rate { display: flex; gap: 10px; padding: 4px 0; }
+  .rate .star-item {
+    width: 32px; height: 32px; line-height: 32px; text-align: center;
+    border: 1px solid #ccc; border-radius: 50%; color: #888; cursor: pointer;
+    transition: all .15s;
+  }
+  .rate .star-item.active, .rate .star-item:hover { background: #ffb400; color: #fff; border-color: #ffb400; }
+  /* ---- 矩阵样式 ---- */
+  table.matrix { border-collapse: collapse; width: 100%; margin-top: 6px; font-size: 13px; }
+  table.matrix th, table.matrix td { border: 1px solid #e0e0e0; padding: 8px 4px; text-align: center; }
+  table.matrix th { background: #f4f6fa; color: #555; font-weight: 600; }
+  table.matrix td.row-label { text-align: left; background: #fafafa; color: #333; width: 30%; }
+  input[type="submit"] {
+    margin-top: 20px; padding: 10px 32px; background: #f60; color: #fff;
+    border: 0; border-radius: 4px; font-size: 15px; cursor: pointer;
+  }
+  input[type="submit"]:hover { background: #e55; }
+</style>
+</head>
+<body>
+
+<h2 style="text-align:center;color:#333;">问卷星自动填写 Mock（v2.0 全题型）</h2>
+<p style="text-align:center;color:#999;font-size:12px;">结构严格匹配 detection.js 的 6 类识别特征</p>
+
+<!-- Q1: 单选 -->
+<div id="div1" class="div_question">
+  <div class="qtitle"><span class="idx">1.</span>您的性别是？（单选）</div>
+  <div class="field">
+    <label class="opt"><input type="radio" name="q1" id="q1_1" value="1">男</label>
+    <label class="opt"><input type="radio" name="q1" id="q1_2" value="2">女</label>
+    <label class="opt"><input type="radio" name="q1" id="q1_3" value="3">其他 / 不愿透露</label>
+    <label class="opt"><input type="radio" name="q1" id="q1_4" value="4">保密</label>
+  </div>
+</div>
+
+<!-- Q2: 多选 -->
+<div id="div2" class="div_question">
+  <div class="qtitle"><span class="idx">2.</span>您平时常用的信息获取渠道有？（多选）</div>
+  <div class="field">
+    <label class="opt"><input type="checkbox" name="q2" id="q2_1" value="1">微信公众号</label>
+    <label class="opt"><input type="checkbox" name="q2" id="q2_2" value="2">微博</label>
+    <label class="opt"><input type="checkbox" name="q2" id="q2_3" value="3">B站</label>
+    <label class="opt"><input type="checkbox" name="q2" id="q2_4" value="4">小红书</label>
+    <label class="opt"><input type="checkbox" name="q2" id="q2_5" value="5">知乎</label>
+  </div>
+</div>
+
+<!-- Q3: 下拉 -->
+<div id="div3" class="div_question">
+  <div class="qtitle"><span class="idx">3.</span>您所在的城市？（下拉选择）</div>
+  <div class="field">
+    <select name="q3" id="selectq3">
+      <option value="">-- 请选择 --</option>
+      <option value="1">北京</option>
+      <option value="2">上海</option>
+      <option value="3">广州</option>
+      <option value="4">深圳</option>
+      <option value="5">杭州</option>
+      <option value="6">成都</option>
+      <option value="7">西安</option>
+      <option value="8">其他</option>
+    </select>
+  </div>
+</div>
+
+<!-- Q4: 量表（星评） -->
+<div id="div4" class="div_question">
+  <div class="qtitle"><span class="idx">4.</span>请对本次服务整体满意度打分（1-5 分）</div>
+  <div class="field">
+    <!-- 隐藏 radio（问卷星常见做法），对应 1..5 分值 -->
+    <input type="radio" name="q4" value="1" style="display:none">
+    <input type="radio" name="q4" value="2" style="display:none">
+    <input type="radio" name="q4" value="3" style="display:none">
+    <input type="radio" name="q4" value="4" style="display:none">
+    <input type="radio" name="q4" value="5" style="display:none">
+    <!-- 可点击的星点，带数字文本 -->
+    <div class="rate" data-q="4">
+      <span class="star-item star level">1</span>
+      <span class="star-item star level">2</span>
+      <span class="star-item star level">3</span>
+      <span class="star-item star level">4</span>
+      <span class="star-item star level">5</span>
+    </div>
+  </div>
+</div>
+
+<!-- Q5: 填空（姓名字段） -->
+<div id="div5" class="div_question">
+  <div class="qtitle"><span class="idx">5.</span>请填写您的姓名</div>
+  <div class="field">
+    <input type="text" id="q5" name="q5" placeholder="请输入姓名">
+  </div>
+</div>
+
+<!-- Q6: 填空（手机字段） -->
+<div id="div6" class="div_question">
+  <div class="qtitle"><span class="idx">6.</span>请填写您的手机号码</div>
+  <div class="field">
+    <input type="tel" id="q6" name="q6" placeholder="手机号">
+  </div>
+</div>
+
+<!-- Q7: 填空（邮箱字段） -->
+<div id="div7" class="div_question">
+  <div class="qtitle"><span class="idx">7.</span>请填写您的电子邮箱</div>
+  <div class="field">
+    <input type="text" id="q7" name="q7" placeholder="E-mail">
+  </div>
+</div>
+
+<!-- Q8: 填空（地址字段，textarea） -->
+<div id="div8" class="div_question">
+  <div class="qtitle"><span class="idx">8.</span>请填写您的收货地址</div>
+  <div class="field">
+    <textarea id="q8" name="q8" placeholder="省市区 + 详细地址"></textarea>
+  </div>
+</div>
+
+<!-- Q9: 填空（无字段，纯普通文本） -->
+<div id="div9" class="div_question">
+  <div class="qtitle"><span class="idx">9.</span>您对本产品有什么建议？（自由留言）</div>
+  <div class="field">
+    <textarea id="q9" name="q9" placeholder="欢迎您的建议..."></textarea>
+  </div>
+</div>
+
+<!-- Q10: 矩阵单选（3 行 × 5 列） -->
+<div id="div10" class="div_question">
+  <div class="qtitle"><span class="idx">10.</span>请对以下各项指标评分（矩阵单选，1-5 分）</div>
+  <div class="field">
+    <table class="matrix">
+      <thead>
+        <tr>
+          <th>指标</th>
+          <th>1 分<br><span style="font-weight:400;color:#999">很差</span></th>
+          <th>2 分</th>
+          <th>3 分<br><span style="font-weight:400;color:#999">一般</span></th>
+          <th>4 分</th>
+          <th>5 分<br><span style="font-weight:400;color:#999">极好</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="row-label">产品功能</td>
+          <td><input type="radio" name="q10_1" value="1"></td>
+          <td><input type="radio" name="q10_1" value="2"></td>
+          <td><input type="radio" name="q10_1" value="3"></td>
+          <td><input type="radio" name="q10_1" value="4"></td>
+          <td><input type="radio" name="q10_1" value="5"></td>
+        </tr>
+        <tr>
+          <td class="row-label">界面易用性</td>
+          <td><input type="radio" name="q10_2" value="1"></td>
+          <td><input type="radio" name="q10_2" value="2"></td>
+          <td><input type="radio" name="q10_2" value="3"></td>
+          <td><input type="radio" name="q10_2" value="4"></td>
+          <td><input type="radio" name="q10_2" value="5"></td>
+        </tr>
+        <tr>
+          <td class="row-label">客服服务</td>
+          <td><input type="radio" name="q10_3" value="1"></td>
+          <td><input type="radio" name="q10_3" value="2"></td>
+          <td><input type="radio" name="q10_3" value="3"></td>
+          <td><input type="radio" name="q10_3" value="4"></td>
+          <td><input type="radio" name="q10_3" value="5"></td>
+        </tr>
+        <tr>
+          <td class="row-label">性价比</td>
+          <td><input type="radio" name="q10_4" value="1"></td>
+          <td><input type="radio" name="q10_4" value="2"></td>
+          <td><input type="radio" name="q10_4" value="3"></td>
+          <td><input type="radio" name="q10_4" value="4"></td>
+          <td><input type="radio" name="q10_4" value="5"></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div style="text-align:center;">
+  <input type="submit" id="submit_button" value="提交问卷">
+</div>
+
+</body>
+</html>

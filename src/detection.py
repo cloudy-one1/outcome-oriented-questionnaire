@@ -63,7 +63,7 @@ def detect_questions(driver: Any) -> list[dict]:
            "rows": [1, 2, 3], "cols": [1, 2, 3, 4, 5]}
     """
     raw = driver.execute_script(r"""
-(function() {
+return (function() {
     var result = [];
     var map = {};   // qnum(int) -> question dict
 
@@ -254,9 +254,12 @@ def detect_questions(driver: Any) -> list[dict]:
         });
     })();
 
-    // ---------- 后处理：对 single/multi 的 choices 排序；按题号升序输出 ----------
+    // ---------- 后处理：single/multi 的 choices 排序；清理 scale/text/matrix 的顶层脏字段；按题号升序输出 ----------
     Object.keys(map).forEach(function(q) {
         var it = map[q];
+        if (it.type === 'scale' || it.type === 'text' || it.type === 'matrix_single') {
+            delete it.choices;
+        }
         if (it.choices && typeof it.choices.sort === 'function') {
             it.choices.sort(function(a, b) {
                 if (typeof a === 'number' && typeof b === 'number') return a - b;
