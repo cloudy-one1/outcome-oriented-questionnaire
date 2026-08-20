@@ -3,6 +3,11 @@
 创建浏览器驱动 → 循环执行问卷提交 → 打印统计结果。
 支持 Ctrl+C 优雅退出。
 支持通过参数选择 Edge 或 Chrome（Chrome 可切换 undetected-chromedriver 模式）。
+
+依赖说明：
+    - selenium 是运行时强依赖（真正 run 需要），但 import 期不强绑；
+      这样 parse_args 的单测能在无 selenium 环境下通过。
+    - .browser / .pipeline / .utils 均延迟到 main() 内再导入。
 """
 
 from __future__ import annotations
@@ -11,26 +16,13 @@ import argparse
 import sys
 from argparse import Namespace
 
-from selenium.common.exceptions import InvalidSessionIdException
-
-from .browser import BROWSER_TYPES, create_driver
 from .config import (
     BROWSER_OPTIONS,
     DEFAULT_BROWSER,
     DEFAULT_SURVEY_URL,
     DEFAULT_TOTAL_SUBMISSIONS,
     DEFAULT_USE_UC,
-    RESTART_BROWSER_EVERY,
-    ROUND_LONG_PAUSE_HI,
-    ROUND_LONG_PAUSE_LO,
-    ROUND_LONG_PAUSE_PROB,
-    ROUND_WAIT_HI,
-    ROUND_WAIT_LO,
-    ROUND_WAIT_MU,
-    ROUND_WAIT_SIGMA,
 )
-from .pipeline import run_one_submission
-from .utils import human_pause
 
 
 def _positive_int(value: str) -> int:
@@ -119,15 +111,26 @@ def run_batch(
 ) -> tuple[int, int]:
     """批量执行指定份数的问卷提交。
 
-    参数：
-      survey_url         : 问卷星问卷的完整 URL
-      total_submissions  : 目标提交份数
-      browser            : "edge" | "chrome"
-      use_uc             : 仅 Chrome 生效，是否优先使用 undetected-chromedriver
-
-    返回：
-      (success_count, fail_count) 元组
+    说明：selenium / 浏览器驱动等重型依赖在函数内部延迟导入，
+         保证 parse_args() 的单测无需装 selenium 也能通过。
     """
+    # ----- 延迟导入（运行时强依赖） -----
+    from selenium.common.exceptions import InvalidSessionIdException  # type: ignore
+
+    from .browser import BROWSER_TYPES, create_driver  # noqa: F401
+    from .config import (
+        RESTART_BROWSER_EVERY,
+        ROUND_LONG_PAUSE_HI,
+        ROUND_LONG_PAUSE_LO,
+        ROUND_LONG_PAUSE_PROB,
+        ROUND_WAIT_HI,
+        ROUND_WAIT_LO,
+        ROUND_WAIT_MU,
+        ROUND_WAIT_SIGMA,
+    )
+    from .pipeline import run_one_submission
+    from .utils import human_pause
+
     # 首次创建浏览器实例
     driver = create_driver(browser, use_uc=use_uc)
     success = 0

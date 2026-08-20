@@ -14,11 +14,45 @@
 
 from __future__ import annotations
 
+import math
 import random
 
-import numpy as np
+# numpy 可选：环境装了就用，没装时 import 模块不崩
+try:
+    import numpy as np  # type: ignore
+    _HAS_NUMPY: bool = True
+except Exception:  # pragma: no cover
+    np = None  # type: ignore
+    _HAS_NUMPY = False
 
 from .config import WEIGHT_CONFIG
+
+
+def _weighted_choice_no_replace(pool: list, weights: list[float], k: int) -> list:
+    """无放回加权抽样：numpy 优先 → 否则纯 Python A-Res 算法。"""
+    n = len(pool)
+    k = max(1, min(k, n))
+    if _HAS_NUMPY:
+        total = sum(weights)
+        probs = [w / total for w in weights]
+        return np.random.choice(pool, size=k, replace=False, p=probs).tolist()
+    # 纯 Python：A-Res key = log(u) / w
+    keys: list = []
+    for w, item in zip(weights, pool):
+        w_pos = max(w if w > 0 else 1e-12, 1e-12)
+        u = random.random()
+        keys.append((math.log(u) / w_pos, item))
+    keys.sort(reverse=True)
+    return [x for _, x in keys[:k]]
+
+
+def _equal_choice_no_replace(pool: list, k: int) -> list:
+    """无放回等概率抽样。"""
+    n = len(pool)
+    k = max(1, min(k, n))
+    if _HAS_NUMPY:
+        return np.random.choice(pool, size=k, replace=False).tolist()
+    return sorted(random.sample(pool, k=k))
 
 
 def build_answer_strategy(question: dict) -> list[int]:
@@ -64,14 +98,8 @@ def build_answer_strategy(question: dict) -> list[int]:
             # 加权采样出"选几个"
             k = random.choices(count_opts, weights=count_wts, k=1)[0]
 
-            # 归一化权重 → 概率分布（numpy 要求 p 之和为 1）
-            total_w = sum(weights)
-            probs = [w / total_w for w in weights]
-
             # 无放回加权抽样 k 个选项，返回排序后的列表
-            return sorted(
-                np.random.choice(question["choices"], size=k, replace=False, p=probs).tolist()
-            )
+            return sorted(_weighted_choice_no_replace(question["choices"], list(weights), k))
 
     # ------------------------------------------------------------------
     #  情况 B：无配置 → 等权重随机
@@ -84,4 +112,4 @@ def build_answer_strategy(question: dict) -> list[int]:
         else:
             # 多选题：随机决定选几个（1 ~ 选项总数），然后无放回等概率抽样
             k = random.randint(1, len(c))
-            return sorted(np.random.choice(c, size=k, replace=False).tolist())
+            return sorted(_equal_choice_no_replace(c, k))
