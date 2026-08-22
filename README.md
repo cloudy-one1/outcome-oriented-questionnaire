@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.2.0-brightgreen.svg)](src/__init__.py)
+[![Version](https://img.shields.io/badge/Version-2.3.0-brightgreen.svg)](src/__init__.py)
 
 ---
 
@@ -29,6 +29,9 @@
 - **🆕 V2.2 · 配置校验增强（审查整改 P2-1）**：`validate_weight_config` 检测 NaN / Inf / 全 0 权重 / choices 长度不匹配 / count_options 与 count_weights 不一致 / scale 长度不匹配 / matrix row_weights 行长度不匹配 + 总和>0
 - **🆕 V2.2 · CLI 隐私 + 语义（审查整改 P2-2/P2-3）**：`--no-record-text` 不把填空答案写入 SQLite（避免明文保存姓名/手机/邮箱）；`--target-success` / `--max-attempts` 厘清"目标份数 vs 总尝试次数"语义
 - **🆕 V2.2 · 依赖锁定（审查整改 P2-4）**：`requirements.txt` 锁定 `selenium==4.39.0` / `numpy==2.2.4`，可选依赖也给出实测可用版本
+- **🆕 V2.3 · 数据模型（可读性建议第 3 章）**：[`src/models.py`](src/models.py) 引入 `QuestionType` 枚举 + `QuestionData` / `AnswerData` / `SubmitResult` / `WeightConfigEntry` dataclass，替代在模块间裸传的 `dict[str, Any]`；所有 dataclass 提供 `from_dict` / `as_dict` 双向兼容
+- **🆕 V2.3 · RunState 状态对象（可读性建议第 4 章）**：集中管理 `success_count` / `fail_count` / `unknown_count` / `is_interrupted` / `run_id` / `attempts_cap` / `current_attempt`，CLI `run_batch` 替代散落局部计数器；状态判定下沉到 `history_status()` / `history_error_message()`，避免分支间状态不同步
+- **🆕 V2.3 · 命名整改（可读性建议第 2 章）**：布尔变量统一 `is_` / `has_` / `should_` / `use_` 前缀（`is_interrupted` / `is_ok`）；README 加术语表统一 `run` / `submission` / `attempt` / `success_count` / `fail_count` / `target_count` / `question` 含义
 
 ---
 
@@ -140,16 +143,17 @@ automation/
 ├── data/                       # V2 新增：历史记录 SQLite 默认目录
 │   └── history.db
 ├── src/
-│   ├── __init__.py             # 版本号（v2.2.0）+ 模块变更日志
+│   ├── __init__.py             # 版本号（v2.3.0）+ 模块变更日志
 │   ├── config.py               # 全局配置：权重定义、运行时常量、反检测参数
-│   ├── pipeline.py             # 核心编排：单次问卷填写 + 提交流程（含断点续填跳过已答题 + history 可选接入 + V2.2 三态返回 + no_record_text 透传）
+│   ├── pipeline.py             # 核心编排：单次问卷填写 + 提交流程（含断点续填跳过已答题 + history 可选接入 + V2.2 三态返回 + no_record_text 透传 + V2.3 is_ok 命名）
 │   ├── detection.py            # 题目结构自动探测（JS 注入扫描 6 类题型 DOM + detect_answered_questions 续填扫描）
 │   ├── answering.py            # V1：单选/多选 答案生成策略（保留，完全兼容）
 │   ├── answering_v2.py         # V2：6 类题型统一 dict 格式答案生成器
 │   ├── interaction.py          # DOM 交互层（点击/填空/量表/下拉/矩阵 + 提交按钮 V2.2 三态 SubmitOutcome）
+│   ├── models.py               # V2.3 数据模型：QuestionType 枚举 + QuestionData/AnswerData/SubmitResult/WeightConfigEntry/RunState dataclass
 │   ├── verification.py         # 智能验证码检测与人工等待
 │   ├── utils.py                # 工具库：正态分布、指数退避、UA 池、人工介入锁
-│   ├── cli.py                  # 命令行入口：批量循环 + V2 参数 + V2.2 no_record_text/target_success/max_attempts + interrupted 状态
+│   ├── cli.py                  # 命令行入口：批量循环 + V2 参数 + V2.2 no_record_text/target_success/max_attempts + V2.3 RunState 集成 + interrupted 状态
 │   ├── config_io.py            # V2：JSON 权重配置读写 + JSON Schema 风格校验 + V2.2 NaN/Inf/长度匹配增强校验
 │   ├── history.py              # V2 SubmissionHistory（runs+answers SQLite）+ V2.1 续传/权重持久化 + V2.2 record_answer 幂等化 + dedup 迁移
 │   └── browser/
@@ -165,6 +169,7 @@ automation/
     ├── test_config_io.py       # 配置读写 / 校验测试（含 V2.2 增强校验 18 项，共 28 项）
     ├── test_history.py         # SQLite 历史记录测试（含 V2.2 幂等化 + dedup 迁移 4 项，共 27 项）
     ├── test_interaction_submit.py # V2.2 提交三态（success/failed/unknown）单元测试（7 项，fake driver）
+    ├── test_models.py          # V2.3 数据模型 + RunState 单元测试（36 项，含题型枚举/dataclass 互逆/状态机）
     ├── test_detection_resume.py # V2.1 detect_answered_questions 容错测试（6 项）
     ├── test_e2e_integration.py # headless E2E：检测 → 答题 → 交互 → history 全链路（依赖真实浏览器驱动）
     ├── fixtures/
@@ -316,6 +321,26 @@ WEIGHT_CONFIG = {
 
 ---
 
+## 术语表（V2.3 命名整改）
+
+为避免代码与文档中 `count` / `total` / `total_submissions` / `total_rounds` 等同一概念多名混用（对照「代码可读性改进建议」第二章），统一以下术语：
+
+| 术语 | 含义 | 在代码中的体现 |
+|---|---|---|
+| **run**（批次） | 一次「从启动到退出」的批量提交任务，对应 SQLite `runs` 表一行 | `run_id`、`start_run` / `finish_run`、`runs.total_submissions` |
+| **submission**（提交） | 一次完整的「打开问卷 → 答题 → 点提交按钮」流程，是 run 内的子单元 | `submission_index`（run 内第几份，从 1 开始）、`answers.submission_index` |
+| **attempt**（尝试） | target_success 模式下「为达成目标成功数所做的一次尝试」。一次 attempt = 一次 submission，但失败/未知不计数 | `--max-attempts`、`attempts_cap`、CLI 进度行 `[尝试{idx}/{attempts_cap}]` |
+| **success_count**（成功数） | run 内已确认提交成功的份数（`outcome == "success"`） | `runs.success_count`、`run_batch(success=...)` |
+| **fail_count**（失败数） | run 内已确认失败的份数（`outcome == "failed"`） + 未知（`outcome == "unknown"`，保守计入） | `runs.fail_count`、`run_batch(fail=...)`、`unknown_count` 单独分项 |
+| **target_count**（目标数） | 用户期望的成功份数。target_success 模式下 = `-n`；非 target_success 模式下 = 总尝试数 | CLI `-n` / `--count`、`run_batch(total_submissions=...)` |
+| **question**（题） | 问卷中的一道题目，对应 `detection.detect_questions` 返回的列表中一项 | `q["q"]` / `QuestionData.q`、`answers.question_number` |
+
+**布尔变量前缀约定**：新增代码必须使用 `is_` / `has_` / `should_` / `use_` 前缀（如 `is_interrupted`、`has_questions`、`should_retry`、`use_uc`）。CLI argparse 的 dest（如 `--no-record-text`）和 SQLite 列名（如 `interrupted`）保留原惯例不动。
+
+**题型字符串字面量**：V2.3 起，代码内部传递优先用 `QuestionType` 枚举（[src/models.py](src/models.py)），与字符串字面量 `"single"`/`"multi"`/`"text"` 等双向兼容（`QuestionType.SINGLE == "single"`）。
+
+---
+
 ## V2.2 审查整改清单
 
 针对批判式审查报告的全部问题已逐项整改，对应代码位置见下表：
@@ -368,20 +393,24 @@ python -m pytest tests/test_answering_v2.py tests/test_config_io.py \
 # 仅跑 V2.1 断点续传相关（detection 续填容错 + history 续传/权重持久化）
 python -m pytest tests/test_detection_resume.py tests/test_history.py -v
 
+# 仅跑 V2.3 数据模型 + 状态对象（题型枚举 + dataclass 互逆 + RunState 状态机）
+python -m pytest tests/test_models.py -v
+
 # 仅跑 V2.2 审查整改相关（三态提交 + 幂等化 + 增强校验 + CLI 新参数）
 python -m pytest tests/test_interaction_submit.py tests/test_history.py \
                  tests/test_config_io.py tests/test_cli.py -v
 ```
 
-当前测试全部通过：**130/130** ——
+当前测试全部通过：**166/166** ——
 - V1 `test_answering` (6) + `test_utils` (15) = 21
 - V2 `test_answering_v2` (15) + `test_config_io` (28) + `test_history` (27) + `test_e2e_integration` (2) = 72
 - V2.1 `test_detection_resume` (6)
 - V2.2 `test_interaction_submit` (7) + `test_history` 幂等化 (4) + `test_config_io` 增强校验 (18) + `test_cli` 新参数 (7) = 36（含跨文件）
+- V2.3 `test_models` (36)：QuestionType 枚举 (6) + QuestionData 互逆 (7) + AnswerData 互逆 (5) + SubmitResult (3) + WeightConfigEntry 互逆 (5) + RunState 状态机 (10)
 
-> **E2E 测试依赖真实浏览器驱动**：`tests/test_e2e_integration.py`（2 项）使用 `tests/fixtures/mock_wjx.html` 作为离线 mock 问卷，但仍需要本机装好 Edge / Chrome + 对应 WebDriver 才能跑通 Selenium 全链路（检测 → 答题 → 交互 → history）。无浏览器环境或 CI 上建议加 `--ignore=tests/test_e2e_integration.py` 跳过这两项，其余 128 项可在纯 Python 环境下完整通过。
+> **E2E 测试依赖真实浏览器驱动**：`tests/test_e2e_integration.py`（2 项）使用 `tests/fixtures/mock_wjx.html` 作为离线 mock 问卷，但仍需要本机装好 Edge / Chrome + 对应 WebDriver 才能跑通 Selenium 全链路（检测 → 答题 → 交互 → history）。无浏览器环境或 CI 上建议加 `--ignore=tests/test_e2e_integration.py` 跳过这两项，其余 164 项可在纯 Python 环境下完整通过。
 >
-> 审查报告原先提到「README 声称 93/93 但实际 91 passed 2 skipped」的问题已在 V2.2 整改中修正：现在 130 项全部通过，不再有 skipped 项，README 测试数与实际一致。
+> 审查报告原先提到「README 声称 93/93 但实际 91 passed 2 skipped」的问题已在 V2.2 整改中修正：现在 166 项全部通过，不再有 skipped 项，README 测试数与实际一致。
 
 ---
 

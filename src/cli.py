@@ -31,6 +31,7 @@ from .config import (
     DEFAULT_USE_UC,
     WEIGHT_CONFIG,
 )
+from .models import RunState
 
 
 def _positive_int(value: str) -> int:
@@ -233,9 +234,6 @@ def run_batch(
 
     # 首次创建浏览器实例
     driver = create_driver(browser, use_uc=use_uc)
-    success = 0
-    fail = 0
-    unknown_count = 0  # 提交按钮已点但效果超时，保守计为 fail（保留分项统计）
 
     # 审查 P2-2：target_success 模式下决定循环上限
     #   - 默认模式：total_submissions 解释为"总尝试次数"，跑满即结束（旧行为）
@@ -251,44 +249,42 @@ def run_batch(
     else:
         attempts_cap = int(total_submissions)
 
+    # V2.3 命名整改（建议第四章）：用 RunState 集中管理批次状态,
+    # 替代散落的 success/fail/unknown_count/is_interrupted/run_id 等局部变量
+    state = RunState(attempts_cap=attempts_cap)
+
     # ---- V2：start_run ----
-    run_id: int | None = None
-    total_elapsed_start = 0.0
     if history_db is not None:
         try:
-            run_id = history_db.start_run(
+            state.run_id = history_db.start_run(
                 survey_url=survey_url,
                 total_submissions=int(total_submissions),
                 browser=browser,
                 use_uc=bool(use_uc),
                 weight_config=weight_config,
             )
-            total_elapsed_start = sys.float_info.get("perf_counter", lambda: 0.0)()
             # 跨版本兼容：实际使用 time.perf_counter 统计
             import time as _t
-            total_elapsed_start = _t.perf_counter()
+            state.total_elapsed_start = _t.perf_counter()
         except Exception as _e:
             print(f"[history] start_run 失败，继续不记录: {type(_e).__name__}")
-            run_id = None
-
-    interrupted = False  # 审查 P1-3：显式区分 Ctrl+C 与正常完成
+            state.run_id = None
 
     try:
         # 审查 P2-2：循环上限改为 attempts_cap
         # target_success 模式下 success_count == total_submissions 时也跳出
-        idx = 0
-        while idx < attempts_cap:
+        while state.current_attempt < state.attempts_cap:
             # target_success 模式：达成目标成功数即可提前结束
-            if target_success and success >= int(total_submissions):
-                print(f"[达成] 成功数 {success} 已达目标 {int(total_submissions)}，停止")
+            if target_success and state.success_count >= int(total_submissions):
+                print(f"[达成] 成功数 {state.success_count} 已达目标 {int(total_submissions)}，停止")
                 break
-            idx += 1
+            state.advance_attempt()
             # 打印进度（不换行，后续打印 OK/FAIL/UNKNOWN）
             if target_success:
-                print(f"[尝试{idx}/{attempts_cap} · 成功{success}/{total_submissions}]",
+                print(f"[尝试{state.current_attempt}/{state.attempts_cap} · 成功{state.success_count}/{total_submissions}]",
                       end=" ", flush=True)
             else:
-                print(f"[{idx}/{total_submissions}]", end=" ", flush=True)
+                print(f"[{state.current_attempt}/{total_submissions}]", end=" ", flush=True)
 
             try:
                 # V2：把 history_db + run_id + submission_index 通过关键字传进 pipeline
@@ -298,8 +294,8 @@ def run_batch(
                     driver,
                     survey_url,
                     history_db=history_db,
-                    run_id=run_id,
-                    submission_index=idx,
+                    run_id=state.run_id,
+                    submission_index=state.current_attempt,
                     no_record_text=no_record_text,
                 )
 
@@ -311,20 +307,19 @@ def run_batch(
                 except Exception:
                     pass
                 driver = create_driver(browser, use_uc=use_uc)  # 重新创建浏览器
-                fail += 1
+                state.mark_failure()
                 continue
 
-            # --- 统计本轮结果（审查 P1-1：三态判定） ---
+            # --- 统计本轮结果（审查 P1-1：三态判定；V2.3 用 RunState 集中更新） ---
             if outcome == "success":
-                success += 1
+                state.mark_success()
                 print("OK")
             elif outcome == "unknown":
                 # 按钮已点击但效果超时 → 保守计为失败，但单独打 UNKNOWN 便于复盘
-                unknown_count += 1
-                fail += 1
+                state.mark_unknown()
                 print("UNKNOWN")
             else:
-                fail += 1
+                state.mark_failure()
                 print("FAIL")
 
             # --- 清理浏览器状态（为下一轮做准备） ---
@@ -332,7 +327,7 @@ def run_batch(
 
             # --- 每 N 轮主动重启浏览器 ---
             # 原因：长时间运行会导致浏览器内存堆积，最终崩溃。
-            if idx % RESTART_BROWSER_EVERY == 0:
+            if state.current_attempt % RESTART_BROWSER_EVERY == 0:
                 print("RESTART", end=" ", flush=True)
                 try:
                     driver.quit()
@@ -351,41 +346,32 @@ def run_batch(
 
     except KeyboardInterrupt:
         # 用户按下 Ctrl+C → 优雅退出（审查 P1-3：标记 interrupted 而非 finished）
-        interrupted = True
+        state.mark_interrupted()
         print("\n用户中断")
 
     finally:
         # ---- V2：finish_run（无论成功/失败/中断都要写） ----
-        if history_db is not None and run_id is not None:
+        if history_db is not None and state.run_id is not None:
             try:
                 import time as _t2
-                total_elapsed = _t2.perf_counter() - total_elapsed_start
+                total_elapsed = _t2.perf_counter() - state.total_elapsed_start
+                # V2.3：状态判定下沉到 RunState.history_status / history_error_message
                 # 审查 P1-3：Ctrl+C → status='interrupted'（区别于 finished/failed）
                 #            历史模块 find_resumable_run 会把 interrupted/running 都视作可恢复
-                if interrupted:
-                    status = "interrupted"
-                    err = "Ctrl+C 用户中断"
-                elif success + fail == 0:
-                    # 极端：连一次都没跑就退出了 → 仍标记为 interrupted（可恢复）
-                    status = "interrupted"
-                    err = "未执行任何提交即退出"
-                else:
-                    status = "finished"
-                    err = None
                 history_db.finish_run(
-                    run_id=run_id,
-                    success_count=success,
-                    fail_count=fail,
+                    run_id=state.run_id,
+                    success_count=state.success_count,
+                    fail_count=state.fail_count,
                     total_elapsed_seconds=max(0.0, total_elapsed),
-                    status=status,
-                    error_message=err,
+                    status=state.history_status(),
+                    error_message=state.history_error_message(),
                 )
             except Exception as _e2:
                 print(f"[history] finish_run 失败: {type(_e2).__name__}")
 
         # UNKNOWN 分项统计日志（便于事后复盘服务端是否真未收到提交）
-        if unknown_count > 0:
-            print(f"[统计] 其中 {unknown_count} 次提交结果未知（按钮已点击但未观察到成功信号），"
+        if state.unknown_count > 0:
+            print(f"[统计] 其中 {state.unknown_count} 次提交结果未知（按钮已点击但未观察到成功信号），"
                   f"已保守计入失败数。")
 
         # 无论如何都要关闭浏览器，避免进程残留
@@ -394,7 +380,7 @@ def run_batch(
         except Exception:
             pass
 
-    return success, fail
+    return state.success_count, state.fail_count
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -200,7 +200,7 @@ def _answer_one_question(
     options_selected: list[int] | None = None
     text_answer: str | None = None
     t0 = time.perf_counter()
-    ok = False
+    is_ok = False
 
     # ------------------------------------------------------------------
     #  V1 题型：单选 / 多选（完全保留原逻辑，不做任何破坏性改动）
@@ -208,12 +208,12 @@ def _answer_one_question(
     if qtype in ("single", "multi"):
         answer_values = build_answer_strategy(q)  # list[int]
         try:
-            ok = js_click_question_options(driver, qnum, qtype, answer_values)
+            is_ok = js_click_question_options(driver, qnum, qtype, answer_values)
         except Exception:
-            ok = True
+            is_ok = True
             for c in answer_values:
                 if not js_click_option(driver, qnum, c):
-                    ok = False
+                    is_ok = False
                     break
                 human_pause(
                     Q_THINK_MU * 0.3, Q_THINK_SIGMA * 0.3,
@@ -232,18 +232,18 @@ def _answer_one_question(
         try:
             if ans_type == "text":
                 text_answer = str(ans.get("text", ""))
-                ok = js_fill_text(driver, qnum, text_answer)
+                is_ok = js_fill_text(driver, qnum, text_answer)
 
             elif ans_type == "scale":
                 val = int(ans.get("value", 3))
                 smax = q.get("scale")
-                ok = js_set_scale(driver, qnum, val, scale_max=smax)
+                is_ok = js_set_scale(driver, qnum, val, scale_max=smax)
                 options_selected = [val]
 
             elif ans_type == "dropdown":
                 sel_list = ans.get("selected") or []
                 if sel_list:
-                    ok = js_select_dropdown(driver, qnum, sel_list[0])
+                    is_ok = js_select_dropdown(driver, qnum, sel_list[0])
                     options_selected = [sel_list[0]] if isinstance(sel_list[0], int) else None
                     # 文本型下拉值 → 写 text_answer 备查
                     if options_selected is None and sel_list:
@@ -251,7 +251,7 @@ def _answer_one_question(
 
             elif ans_type in ("matrix_single", "matrix"):
                 row_map = ans.get("rows") or {}  # {row_idx: col_idx/val}
-                ok = js_fill_matrix_single(driver, qnum, row_map)
+                is_ok = js_fill_matrix_single(driver, qnum, row_map)
                 # matrix 的 answers 表：把 {row: col} 作为 JSON 写到 options_selected？
                 # 设计：把所有被选列值收集成一个 list，便于统计
                 if isinstance(row_map, dict):
@@ -266,14 +266,14 @@ def _answer_one_question(
                 if q.get("choices"):
                     from .answering import build_answer_strategy as _ba
                     answer_values = _ba(q)
-                    ok = js_click_question_options(driver, qnum, "single", answer_values)
+                    is_ok = js_click_question_options(driver, qnum, "single", answer_values)
                     options_selected = list(answer_values)
                 else:
-                    ok = False
+                    is_ok = False
         except Exception as _e:
             # V2 交互偶发异常不影响整次提交流程（只记失败，不中断）
             print(f"  [Q{qnum} {qtype}] 交互异常: {type(_e).__name__}: {_e}")
-            ok = False
+            is_ok = False
 
     # ------------------------------------------------------------------
     #  V2 可选：逐题答案明细落盘（history DB）
@@ -321,7 +321,7 @@ def _answer_one_question(
             # history 写失败只打印提示，不影响主流程
             print(f"  [history] record_answer(Q{qnum}) 失败: {type(_he).__name__}")
 
-    return bool(ok)
+    return bool(is_ok)
 
 
 # ---------------------------------------------------------------------------
