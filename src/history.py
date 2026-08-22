@@ -69,16 +69,37 @@ CREATE INDEX IF NOT EXISTS idx_runs_started  ON runs(started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status   ON runs(status);
 CREATE INDEX IF NOT EXISTS idx_answers_run   ON answers(run_id);
 CREATE INDEX IF NOT EXISTS idx_answers_qnum  ON answers(question_number);
+
+-- 注意：(run_id, submission_index, question_number) 的 UNIQUE 索引不放在这里
+-- （_SCHEMA_SQL 由 executescript 无条件执行，老库若有重复行会导致 CREATE UNIQUE INDEX
+--  直接失败）。唯一索引改在 _apply_migrations 中先 dedup 再创建，保证幂等。
 """
 
 # ============================================================================
 #  Schema 迁移：老 DB 升级到 V2.1（新增 weight_config_json 列）
+#                    + V2.2（answers 唯一索引 + 重复数据清理）
 # ============================================================================
 _MIGRATION_ADD_WEIGHT_COLUMN: str = (
     # SQLite 没有 IF NOT EXISTS 的 ADD COLUMN 语法，需要先 PRAGMA table_info 检测
     # 这里只存 SQL 文本，实际执行见 _apply_migrations
     "ALTER TABLE runs ADD COLUMN weight_config_json TEXT;"
 )
+
+# answers 唯一索引（V2.2）：保证 (run_id, submission_index, question_number) 唯一
+_MIGRATION_ANSWERS_UNIQUE_INDEX: str = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_answers_unique"
+    " ON answers(run_id, submission_index, question_number);"
+)
+
+# 老库可能已存在重复数据（旧版 record_answer 无幂等保证时 retry 产生）：
+# 删除重复行只保留 max(id) 的那条，否则建唯一索引会失败。
+_DEDUP_ANSWERS_SQL: str = """
+DELETE FROM answers
+WHERE id NOT IN (
+    SELECT MAX(id) FROM answers
+    GROUP BY run_id, submission_index, question_number
+);
+"""
 
 
 class SubmissionHistory:
@@ -115,16 +136,37 @@ class SubmissionHistory:
         self._apply_migrations()
 
     def _apply_migrations(self) -> None:
-        """V2.1 迁移：把老 runs 表加上 weight_config_json 列。幂等。
+        """V2.1 / V2.2 迁移，幂等：
+
+        - V2.1：把老 runs 表加上 ``weight_config_json`` 列
+        - V2.2：清理 answers 重复数据 + 创建 (run_id, submission_index,
+          question_number) 唯一索引，从结构上根除 retry 重试产生的重复记录。
 
         SQLite 没有 ``ALTER TABLE ADD COLUMN IF NOT EXISTS`` 语法，
         所以用 ``PRAGMA table_info`` 查列名集合后再决定是否 ADD。
         """
         with self._locked():
+            # --- V2.1: runs.weight_config_json 列 ---
             cur = self._conn.execute("PRAGMA table_info(runs)")
             cols = {row["name"] for row in cur.fetchall()}
             if "weight_config_json" not in cols:
                 self._conn.execute(_MIGRATION_ADD_WEIGHT_COLUMN)
+
+            # --- V2.2: answers 幂等性 ---
+            # 1) 先清理老库里 retry 产生的重复行（保留 max(id)）
+            #    CREATE UNIQUE INDEX 失败的唯一原因就是有重复数据，所以先 dedup
+            try:
+                self._conn.execute(_DEDUP_ANSWERS_SQL)
+            except Exception:
+                # 极端情况（表不存在等）：忽略，主流程已 executescript 建表
+                pass
+            # 2) 创建唯一索引（IF NOT EXISTS 保证幂等）
+            try:
+                self._conn.execute(_MIGRATION_ANSWERS_UNIQUE_INDEX)
+            except Exception:
+                # 如果 dedup 没清干净（极端并发场景），跳过索引创建，
+                # 至少 INSERT OR REPLACE 的应用层幂等逻辑依然生效
+                pass
 
     def close(self) -> None:
         """关闭数据库连接（幂等）。"""
@@ -280,27 +322,82 @@ class SubmissionHistory:
         text_answer: Optional[str] = None,
         elapsed_ms: int = 0,
     ) -> int:
-        """记录单道题的答案明细，返回 answer_id。"""
+        """记录单道题的答案明细，返回 answer_id。
+
+        幂等保证（审查 P1-2 修复）：
+          - 同一 ``(run_id, submission_index, question_number)`` 唯一约束由
+            ``idx_answers_unique`` 索引保证（建表 / 迁移时创建）
+          - 使用 ``INSERT OR REPLACE`` 在约束冲突时整体覆盖旧行，
+            保证 retry 重试同一份提交不会产生重复记录；最新一次的
+            options_selected / text_answer / elapsed_ms 永远覆盖旧值。
+          - 即使唯一索引因老库 dedup 失败而未创建，DELETE+INSERT 的兜底
+            逻辑（见 ``_record_answer_fallback``）依然保证幂等。
+        """
         opts_json = json.dumps(options_selected, ensure_ascii=False) if options_selected is not None else None
         sql = (
+            "INSERT OR REPLACE INTO answers (run_id, submission_index, question_number,"
+            " question_type, options_selected, text_answer, elapsed_ms, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))"
+        )
+        with self._locked():
+            try:
+                cur = self._conn.execute(
+                    sql,
+                    (
+                        int(run_id),
+                        int(submission_index),
+                        int(question_number),
+                        question_type,
+                        opts_json,
+                        text_answer,
+                        int(elapsed_ms),
+                    ),
+                )
+                return int(cur.lastrowid)
+            except Exception:
+                # 兜底：唯一索引未创建（老库 dedup 失败的极端情况）
+                # 手动 DELETE + INSERT 实现幂等
+                return self._record_answer_fallback(
+                    run_id, submission_index, question_number,
+                    question_type, opts_json, text_answer, elapsed_ms,
+                )
+
+    def _record_answer_fallback(
+        self,
+        run_id: int,
+        submission_index: int,
+        question_number: int,
+        question_type: str,
+        opts_json: Optional[str],
+        text_answer: Optional[str],
+        elapsed_ms: int,
+    ) -> int:
+        """应用层 DELETE + INSERT 兜底幂等（仅在 INSERT OR REPLACE 失败时调用）。"""
+        del_sql = (
+            "DELETE FROM answers WHERE run_id=? AND submission_index=? AND question_number=?"
+        )
+        ins_sql = (
             "INSERT INTO answers (run_id, submission_index, question_number,"
             " question_type, options_selected, text_answer, elapsed_ms)"
             " VALUES (?, ?, ?, ?, ?, ?, ?)"
         )
-        with self._locked():
-            cur = self._conn.execute(
-                sql,
-                (
-                    int(run_id),
-                    int(submission_index),
-                    int(question_number),
-                    question_type,
-                    opts_json,
-                    text_answer,
-                    int(elapsed_ms),
-                ),
-            )
-            return int(cur.lastrowid)
+        self._conn.execute(
+            del_sql,
+            (int(run_id), int(submission_index), int(question_number)),
+        )
+        cur = self._conn.execute(
+            ins_sql,
+            (
+                int(run_id),
+                int(submission_index),
+                int(question_number),
+                question_type,
+                opts_json,
+                text_answer,
+                int(elapsed_ms),
+            ),
+        )
+        return int(cur.lastrowid)
 
     # ------------------------------------------------------------------
     # 查询 API

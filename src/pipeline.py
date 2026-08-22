@@ -62,6 +62,10 @@ from .answering_v2 import generate_answer as generate_answer_v2
 
 from .detection import detect_answered_questions, detect_questions
 from .interaction import (
+    SUBMIT_FAILED,
+    SUBMIT_SUCCESS,
+    SUBMIT_UNKNOWN,
+    SubmitOutcome,
     find_and_click_submit,
     js_click_option,
     js_click_question_options,
@@ -171,6 +175,8 @@ def _answer_one_question(
     history_db: Any | None = None,
     run_id: int | None = None,
     submission_index: int | None = None,
+    *,
+    no_record_text: bool = False,
 ) -> bool:
     """为单道题生成答案并写入 DOM，可选地落盘 history.answers。
 
@@ -178,6 +184,11 @@ def _answer_one_question(
       ``js_click_question_options``，保证 100% 行为不变。
     - V2 题型 (text/scale/dropdown/matrix_single)：使用
       ``answering_v2.generate_answer``（统一 dict）+ 对应 interaction 新函数。
+
+    :param no_record_text: 审查 P2-3 隐私保护 —— True 时填空题答案
+                            不会写入 SQLite 的 text_answer 列（写 NULL 占位），
+                            避免明文保存用户自定义的姓名/手机/邮箱等敏感内容。
+                            DOM 仍然会填入实际文本（流程需要），只是不持久化。
 
     :return: 是否答题成功（不影响外层统计 —— 失败通常只是识别不到 DOM，
              整次提交会在提交后统一判断）。
@@ -291,13 +302,19 @@ def _answer_one_question(
                 "matrix_single": "matrix",
             }.get(qtype, qtype)
 
+            # 审查 P2-3 隐私保护：no_record_text=True 时填空题文本不落盘
+            # （DOM 已写入实际文本，只是 SQLite 不存敏感内容）
+            persisted_text: str | None = text_answer
+            if no_record_text and norm_type == "text":
+                persisted_text = None  # 写 NULL 占位，不存敏感内容
+
             history_db.record_answer(
                 run_id=run_id,
                 submission_index=submission_index,
                 question_number=qnum,
                 question_type=norm_type,
                 options_selected=options_selected,
-                text_answer=text_answer,
+                text_answer=persisted_text,
                 elapsed_ms=elapsed_ms,
             )
         except Exception as _he:
@@ -319,13 +336,22 @@ def _do_one_submission_core(
     history_db: Any | None = None,
     run_id: int | None = None,
     submission_index: int | None = None,
-) -> bool:
+    no_record_text: bool = False,
+) -> SubmitOutcome:
     """单次提交的真正实现（无外层重试，由调用者包 retry）。
 
     V2 新增参数（全部可选，向后兼容）：
         history_db       : SubmissionHistory 实例（未传则不记录）
         run_id           : 本次批量运行在 runs 表中的 id
         submission_index : 当前是第几份提交（1-based）
+
+    审查 P2-3 新增参数：
+        no_record_text : True 时填空题答案不写入 SQLite（隐私保护）
+
+    返回值（审查 P1 修复，三态）：
+        "success" : 提交按钮已点击且页面出现成功信号（URL 变化 / 成功文本）
+        "failed"  : 提交按钮未找到 / 业务前置步骤失败（验证码超时 / 题目探测失败等）
+        "unknown" : 提交按钮已点击但效果超时（不重试，避免重复提交污染样本）
     """
     # Step 1 打开页面 + 等 ready
     _robust_driver_get(driver, survey_url)
@@ -340,23 +366,23 @@ def _do_one_submission_core(
 
     # Step 2 验证码检查（打开页面立刻弹的情况）
     if not _check_verification_with_lock(driver, lock):
-        return False
+        return SUBMIT_FAILED
 
     # Step 3 iframe 适配
     if not _ensure_questions_context(driver):
         driver.switch_to.default_content()
-        return False
+        return SUBMIT_FAILED
 
     # Step 4 等题目元素（V2 扩展到 6 类控件）
     if not _wait_for_questions(driver, QUESTION_DETECT_TIMEOUT):
         driver.switch_to.default_content()
-        return False
+        return SUBMIT_FAILED
 
     # Step 5 探测题目结构（V2 返回包含 text/scale/dropdown/matrix）
     questions = detect_questions(driver)
     if not questions:
         driver.switch_to.default_content()
-        return False
+        return SUBMIT_FAILED
 
     # Step 5.5 断点续填：扫描已填好的题号集合（A 层核心）
     # 场景：本次提交上一轮因网络波动/交互异常中断，但 DOM 上已答若干题，
@@ -375,7 +401,7 @@ def _do_one_submission_core(
         if qi > 0 and qi % VERIFY_EVERY_N_QUESTIONS == 0:
             if not _check_verification_with_lock(driver, lock):
                 driver.switch_to.default_content()
-                return False
+                return SUBMIT_FAILED
 
         # 断点续填：跳过已答的题
         q_num = int(q["q"])
@@ -389,6 +415,7 @@ def _do_one_submission_core(
             history_db=history_db,
             run_id=run_id,
             submission_index=submission_index,
+            no_record_text=no_record_text,
         )
 
         # 每题之间的「思考时间」+ 偶发长停顿
@@ -407,13 +434,20 @@ def _do_one_submission_core(
     # Step 7 全题答完后再检查一次验证码（提交前问卷星最爱弹）
     if not _check_verification_with_lock(driver, lock):
         driver.switch_to.default_content()
-        return False
+        return SUBMIT_FAILED
 
-    # Step 8 点击提交 + 提交后快进
-    ok = find_and_click_submit(driver)
-    if not ok:
+    # Step 8 点击提交 + 提交后快进（审查 P1 修复：返回三态）
+    submit_result = find_and_click_submit(driver)
+    # 只在 "success" 时计成功；"failed" / "unknown" 都不计
+    # "unknown" 不重试（避免对同一份问卷重复提交，污染样本）
+    if submit_result == SUBMIT_FAILED:
         driver.switch_to.default_content()
-        return False
+        return SUBMIT_FAILED
+    if submit_result == SUBMIT_UNKNOWN:
+        print("  [提交] 状态未知：按钮已点击但未观察到成功信号（超时 / AJAX / 服务端拒绝）"
+              "→ 保守计为失败")
+        driver.switch_to.default_content()
+        return SUBMIT_UNKNOWN
 
     # 提交后偶尔也会弹最终验证（问卷星"提交时先做验证"逻辑）
     # 再检查一次，但只等较短时间（因为流程已接近结束）
@@ -428,7 +462,7 @@ def _do_one_submission_core(
         pass
 
     driver.switch_to.default_content()
-    return True
+    return SUBMIT_SUCCESS
 
 
 @retry_with_backoff(
@@ -445,23 +479,29 @@ def run_one_submission(
     history_db: Any | None = None,
     run_id: int | None = None,
     submission_index: int | None = None,
-) -> bool:
+    no_record_text: bool = False,
+) -> SubmitOutcome:
     """执行一次完整的问卷填写 + 提交流程（外层包 WebDriver 异常重试）。
 
     重试策略：
       - 过程中抛出 WebDriverException（如 StaleElementReference / 浏览器断开）→
         等待 SUBMISSION_INITIAL_DELAY * (2 ** attempt) 秒后重试
-      - 普通业务失败（返回 False）→ 不重试，交给调用方统计
+      - 普通业务失败（返回 "failed" / "unknown"）→ 不重试，交给调用方统计
+        （审查 P1 修复：尤其 "unknown" 绝不能重试，避免对同一份问卷重复提交污染样本）
       - 所有重试用完 → 抛最后一次异常（外层捕获后记为失败）
 
     V2 新增可选关键字参数：
-      history_db       : SubmissionHistory 实例（会逐题写入 answers 表）
-      run_id           : 对应 history.start_run() 的返回值
-      submission_index : 当前第几份（1-based），对应 answers.submission_index
+        history_db       : SubmissionHistory 实例（会逐题写入 answers 表）
+        run_id           : 对应 history.start_run() 的返回值
+        submission_index : 当前第几份（1-based），对应 answers.submission_index
+
+    审查 P2-3 新增参数：
+        no_record_text : True 时填空题答案不写入 SQLite（隐私保护）
 
     :return:
-      True  本次提交成功
-      False 本次提交失败
+      "success" : 已确认提交成功（URL 变化 / 成功文本）
+      "failed"  : 已确认失败（前置步骤失败 / 提交按钮未找到）
+      "unknown" : 按钮已点击但效果超时（保守计为失败，便于事后复盘）
     """
     # 每轮提交流程共享一个人工介入锁，确保验证期间任何子步骤都被 hold
     lock = ManualHoldLock()
@@ -473,6 +513,7 @@ def run_one_submission(
             history_db=history_db,
             run_id=run_id,
             submission_index=submission_index,
+            no_record_text=no_record_text,
         )
     except Exception as e:
         print(f"  EX: {type(e).__name__}: {e}")

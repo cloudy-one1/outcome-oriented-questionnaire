@@ -133,6 +133,62 @@ class TestCliArgumentParsing(unittest.TestCase):
         self.assertEqual(parsed.browser, "chrome")
         self.assertTrue(parsed.use_uc)
 
+    # ==================================================================
+    #  V2.2 审查整改新增参数：--no-record-text / --target-success / --max-attempts
+    # ==================================================================
+
+    def test_no_record_text_default_off(self) -> None:
+        """不传 --no-record-text → no_record_text 默认 False（向后兼容）。"""
+        parsed = cli.parse_args([])
+        self.assertFalse(parsed.no_record_text)
+
+    def test_no_record_text_flag(self) -> None:
+        """--no-record-text → no_record_text=True。"""
+        parsed = cli.parse_args(["--no-record-text"])
+        self.assertTrue(parsed.no_record_text)
+
+    def test_target_success_default_off(self) -> None:
+        """不传 --target-success → target_success 默认 False（旧行为：总尝试次数）。"""
+        parsed = cli.parse_args([])
+        self.assertFalse(parsed.target_success)
+
+    def test_target_success_flag(self) -> None:
+        """--target-success → target_success=True。"""
+        parsed = cli.parse_args(["--target-success"])
+        self.assertTrue(parsed.target_success)
+
+    def test_max_attempts_default_none(self) -> None:
+        """不传 --max-attempts → max_attempts=None（run_batch 内部默认 count*2）。"""
+        parsed = cli.parse_args([])
+        self.assertIsNone(parsed.max_attempts)
+
+    def test_max_attempts_value(self) -> None:
+        """--max-attempts 30 → max_attempts=30。"""
+        parsed = cli.parse_args(["--max-attempts", "30"])
+        self.assertEqual(parsed.max_attempts, 30)
+
+    def test_max_attempts_must_be_positive(self) -> None:
+        """--max-attempts 必须 >= 1，否则 SystemExit（复用 _positive_int 校验）。"""
+        with self.assertRaises(SystemExit):
+            cli.parse_args(["--max-attempts", "0"])
+        with self.assertRaises(SystemExit):
+            cli.parse_args(["--max-attempts", "-3"])
+        with self.assertRaises(SystemExit):
+            cli.parse_args(["--max-attempts", "abc"])
+
+    def test_v22_flags_combined(self) -> None:
+        """同时传 --no-record-text + --target-success + --max-attempts → 全部生效。"""
+        parsed = cli.parse_args([
+            "-n", "10",
+            "--no-record-text",
+            "--target-success",
+            "--max-attempts", "25",
+        ])
+        self.assertTrue(parsed.no_record_text)
+        self.assertTrue(parsed.target_success)
+        self.assertEqual(parsed.max_attempts, 25)
+        self.assertEqual(parsed.count, 10)
+
 
 if __name__ == "__main__":
     unittest.main()

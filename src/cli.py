@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import sys
 from argparse import Namespace
+from typing import Any
 
 from .config import (
     BROWSER_OPTIONS,
@@ -130,6 +131,33 @@ def parse_args(argv: list[str] | None = None) -> Namespace:
         default=False,
         help="结束时打印全库统计（需配合 -H 或 --history 使用，否则空库）。",
     )
+    # ---------- V2.2 审查整改新增参数 ----------
+    parser.add_argument(
+        "--no-record-text",
+        dest="no_record_text",
+        action="store_true",
+        default=False,
+        help="[隐私保护] 不把填空题答案写入 SQLite（text_answer 列写 NULL 占位）。"
+             " 避免明文保存姓名/手机/邮箱等敏感内容；DOM 仍会填入实际文本（流程需要）。",
+    )
+    parser.add_argument(
+        "--target-success",
+        dest="target_success",
+        action="store_true",
+        default=False,
+        help="[语义] 把 --count 解释为「目标成功提交数」而非「总尝试次数」。"
+             " 循环会持续到成功数达标或 max_attempts 用尽。"
+             " 默认 False（旧行为：count = 总尝试次数，跑满即结束）。",
+    )
+    parser.add_argument(
+        "--max-attempts",
+        dest="max_attempts",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="[仅 --target-success 时生效] 最大尝试次数上限，防止死循环。"
+             " 默认为 --count 的 2 倍。",
+    )
     return parser.parse_args(argv)
 
 
@@ -151,6 +179,9 @@ def run_batch(
     use_uc: bool = DEFAULT_USE_UC,
     history_db: Any | None = None,
     weight_config: dict | None = None,
+    no_record_text: bool = False,
+    target_success: bool = False,
+    max_attempts: int | None = None,
 ) -> tuple[int, int]:
     """批量执行指定份数的问卷提交（v2.0：支持 history 逐题记录）。
 
@@ -163,6 +194,24 @@ def run_batch(
     V2.1 参数：
         weight_config : 启用 history 时把当前 WEIGHT_CONFIG 一并持久化到
                         runs.weight_config_json，下次 CLI 调用可用 --resume 恢复。
+    V2.2 参数（审查整改）：
+        no_record_text : True 时填空题答案不会写入 SQLite（隐私保护，避免
+                          明文保存用户自定义的姓名/手机/邮箱等敏感内容）。
+        target_success : 审查 P2-2 语义厘清 ——
+                          False（默认）：``total_submissions`` 解释为
+                          "总尝试次数"，跑满 N 次即结束（不论成功失败，旧行为）。
+                          True：``total_submissions`` 解释为"目标成功提交数"，
+                          循环会持续到 ``success_count == total_submissions`` 为止，
+                          并以 ``max_attempts`` 作为最大尝试次数上限防止死循环。
+        max_attempts   : 仅当 ``target_success=True`` 时生效；为 None 时
+                          默认 ``total_submissions * 2``（最多 2 倍尝试达成目标）。
+                          防止极端失败场景下死循环刷接口。
+
+    返回值（审查 P1-1 修复）：
+        (success_count, fail_count) ——
+        其中 fail_count 包含 "failed" 和 "unknown" 两类，
+        "unknown" 会单独打印一行 UNKNOWN 以便事后复盘。
+        run_one_submission 返回 "success" / "failed" / "unknown" 三态字符串。
     """
     # ----- 延迟导入（运行时强依赖） -----
     from selenium.common.exceptions import InvalidSessionIdException  # type: ignore
@@ -178,6 +227,7 @@ def run_batch(
         ROUND_WAIT_MU,
         ROUND_WAIT_SIGMA,
     )
+    from .interaction import SUBMIT_SUCCESS  # noqa: F401  - 明确"成功"判定
     from .pipeline import run_one_submission
     from .utils import human_pause
 
@@ -185,6 +235,21 @@ def run_batch(
     driver = create_driver(browser, use_uc=use_uc)
     success = 0
     fail = 0
+    unknown_count = 0  # 提交按钮已点但效果超时，保守计为 fail（保留分项统计）
+
+    # 审查 P2-2：target_success 模式下决定循环上限
+    #   - 默认模式：total_submissions 解释为"总尝试次数"，跑满即结束（旧行为）
+    #   - target_success=True：total_submissions 是"目标成功数"，循环直到达成
+    #     或 max_attempts 用尽（防死循环），submission_index 仍递增以保 history 连续
+    attempts_cap: int
+    if target_success:
+        attempts_cap = int(max_attempts) if max_attempts else (int(total_submissions) * 2)
+        print(
+            f"[模式] 目标成功数 = {total_submissions}，最大尝试次数 = {attempts_cap}"
+            + (f"（不记录填空文本）" if no_record_text else "")
+        )
+    else:
+        attempts_cap = int(total_submissions)
 
     # ---- V2：start_run ----
     run_id: int | None = None
@@ -206,19 +271,36 @@ def run_batch(
             print(f"[history] start_run 失败，继续不记录: {type(_e).__name__}")
             run_id = None
 
+    interrupted = False  # 审查 P1-3：显式区分 Ctrl+C 与正常完成
+
     try:
-        for idx in range(1, total_submissions + 1):
-            # 打印进度（不换行，后续打印 OK/FAIL）
-            print(f"[{idx}/{total_submissions}]", end=" ", flush=True)
+        # 审查 P2-2：循环上限改为 attempts_cap
+        # target_success 模式下 success_count == total_submissions 时也跳出
+        idx = 0
+        while idx < attempts_cap:
+            # target_success 模式：达成目标成功数即可提前结束
+            if target_success and success >= int(total_submissions):
+                print(f"[达成] 成功数 {success} 已达目标 {int(total_submissions)}，停止")
+                break
+            idx += 1
+            # 打印进度（不换行，后续打印 OK/FAIL/UNKNOWN）
+            if target_success:
+                print(f"[尝试{idx}/{attempts_cap} · 成功{success}/{total_submissions}]",
+                      end=" ", flush=True)
+            else:
+                print(f"[{idx}/{total_submissions}]", end=" ", flush=True)
 
             try:
                 # V2：把 history_db + run_id + submission_index 通过关键字传进 pipeline
-                ok = run_one_submission(
+                # 审查 P1-1：run_one_submission 返回 "success" / "failed" / "unknown" 三态
+                # 审查 P2-3：no_record_text 透传到 _answer_one_question 屏蔽填空文本落盘
+                outcome = run_one_submission(
                     driver,
                     survey_url,
                     history_db=history_db,
                     run_id=run_id,
                     submission_index=idx,
+                    no_record_text=no_record_text,
                 )
 
             except InvalidSessionIdException:
@@ -232,10 +314,15 @@ def run_batch(
                 fail += 1
                 continue
 
-            # --- 统计本轮结果 ---
-            if ok:
+            # --- 统计本轮结果（审查 P1-1：三态判定） ---
+            if outcome == "success":
                 success += 1
                 print("OK")
+            elif outcome == "unknown":
+                # 按钮已点击但效果超时 → 保守计为失败，但单独打 UNKNOWN 便于复盘
+                unknown_count += 1
+                fail += 1
+                print("UNKNOWN")
             else:
                 fail += 1
                 print("FAIL")
@@ -263,7 +350,8 @@ def run_batch(
             )
 
     except KeyboardInterrupt:
-        # 用户按下 Ctrl+C → 优雅退出
+        # 用户按下 Ctrl+C → 优雅退出（审查 P1-3：标记 interrupted 而非 finished）
+        interrupted = True
         print("\n用户中断")
 
     finally:
@@ -272,17 +360,33 @@ def run_batch(
             try:
                 import time as _t2
                 total_elapsed = _t2.perf_counter() - total_elapsed_start
-                status = "running" if (success + fail == 0) else "finished"
+                # 审查 P1-3：Ctrl+C → status='interrupted'（区别于 finished/failed）
+                #            历史模块 find_resumable_run 会把 interrupted/running 都视作可恢复
+                if interrupted:
+                    status = "interrupted"
+                    err = "Ctrl+C 用户中断"
+                elif success + fail == 0:
+                    # 极端：连一次都没跑就退出了 → 仍标记为 interrupted（可恢复）
+                    status = "interrupted"
+                    err = "未执行任何提交即退出"
+                else:
+                    status = "finished"
+                    err = None
                 history_db.finish_run(
                     run_id=run_id,
                     success_count=success,
                     fail_count=fail,
                     total_elapsed_seconds=max(0.0, total_elapsed),
                     status=status,
-                    error_message=None if success + fail > 0 else "Ctrl+C 中断",
+                    error_message=err,
                 )
             except Exception as _e2:
                 print(f"[history] finish_run 失败: {type(_e2).__name__}")
+
+        # UNKNOWN 分项统计日志（便于事后复盘服务端是否真未收到提交）
+        if unknown_count > 0:
+            print(f"[统计] 其中 {unknown_count} 次提交结果未知（按钮已点击但未观察到成功信号），"
+                  f"已保守计入失败数。")
 
         # 无论如何都要关闭浏览器，避免进程残留
         try:
@@ -294,7 +398,8 @@ def run_batch(
 
 
 def main(argv: list[str] | None = None) -> None:
-    """CLI 主入口函数（v2.0：支持 --config / --history / --stats）。
+    """CLI 主入口函数（v2.0：支持 --config / --history / --stats；
+    V2.2 审查整改：支持 --no-record-text / --target-success / --max-attempts）。
 
     优先级：命令行参数 > config.py 中的默认值。
 
@@ -348,6 +453,14 @@ def main(argv: list[str] | None = None) -> None:
         print(f"权重配置 : {args.config}")
     if history_db is not None:
         print(f"历史记录 : {args.history}")
+    # V2.2 审查整改：模式提示
+    if args.target_success:
+        print(f"运行模式 : 目标成功数 {TOTAL_SUBMISSIONS}"
+              + (f"，最大尝试 {args.max_attempts or TOTAL_SUBMISSIONS * 2}" ))
+    else:
+        print(f"运行模式 : 总尝试次数 {TOTAL_SUBMISSIONS}（成功与否都跑满）")
+    if args.no_record_text:
+        print("隐私保护 : 填空题答案不写入 SQLite（--no-record-text）")
     print("=" * 60)
 
     success, fail = run_batch(
@@ -357,6 +470,9 @@ def main(argv: list[str] | None = None) -> None:
         use_uc=USE_UC,
         history_db=history_db,
         weight_config=dict(WEIGHT_CONFIG) if WEIGHT_CONFIG else None,
+        no_record_text=args.no_record_text,
+        target_success=args.target_success,
+        max_attempts=args.max_attempts,
     )
     print(f"运行结束 — 成功 {success}, 失败 {fail}")
 

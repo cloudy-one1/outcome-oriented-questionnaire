@@ -2786,7 +2786,8 @@ class SurveyGUI:
                 self._log(f"[{idx}/{total}] 提交中...", "INFO")
 
                 try:
-                    ok = run_one_submission(
+                    # 审查 P1-1：run_one_submission 返回 "success" / "failed" / "unknown" 三态
+                    outcome = run_one_submission(
                         driver, url,
                         history_db=history_db,
                         run_id=run_id,
@@ -2803,9 +2804,14 @@ class SurveyGUI:
                     self.root.after(0, self._update_progress)
                     continue
 
-                if ok:
+                # 审查 P1-1：只有 "success" 才计成功；"failed" / "unknown" 都计失败
+                if outcome == "success":
                     self.success_count += 1
                     self._log("✓ 提交成功", "OK")
+                elif outcome == "unknown":
+                    # 按钮已点击但未观察到成功信号 → 保守计失败，但日志区分便于复盘
+                    self.fail_count += 1
+                    self._log("⚠ 提交状态未知（按钮已点击但效果超时）", "FAIL")
                 else:
                     self.fail_count += 1
                     self._log("✕ 提交失败", "FAIL")

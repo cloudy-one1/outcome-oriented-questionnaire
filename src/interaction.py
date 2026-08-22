@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Literal, TypeVar
 
 from selenium.common.exceptions import (
     JavascriptException,
@@ -29,6 +29,13 @@ from .utils import gaussian_seconds, human_pause, retry_with_backoff
 
 
 _Fn = TypeVar("_Fn", bound=Callable[..., Any])
+
+# 提交结果三态：成功 / 失败 / 未知（超时，可能是 AJAX 异步提交，也可能真的失败）
+# 关键修复（审查 P1）：超时不能再被当成成功，否则会污染 success_count / 成功率 / 历史数据。
+SubmitOutcome = Literal["success", "failed", "unknown"]
+SUBMIT_SUCCESS: SubmitOutcome = "success"
+SUBMIT_FAILED: SubmitOutcome = "failed"
+SUBMIT_UNKNOWN: SubmitOutcome = "unknown"
 
 # JS execute 重试会捕获的异常类集合
 _JS_RETRYABLE = (
@@ -214,13 +221,20 @@ def click_after_pause() -> float:
 # ============================================================================
 
 @js_execute_retry(max_attempts=3, initial_delay=0.15)
-def find_and_click_submit(driver: Any, *, wait_url_change_timeout: float = 6.0) -> bool:
+def find_and_click_submit(driver: Any, *, wait_url_change_timeout: float = 6.0) -> SubmitOutcome:
     """查找并点击问卷"提交"按钮；点击后等待 URL 变化。
 
     相比 v1 的改进：
       1. 多 3 个问卷星新版选择器（`.submitbtn.clickable`, `#submitDiv`, `.btn-submit`）
       2. 点击后不再固定 sleep(2-3)，而是等 URL 变化 → 大幅提速
-      3. 如果 6 秒内 URL 没变化也返回 True（点击本身已生效，后续交给 pipeline 判断）
+      3. 返回三态（审查 P1 修复）：
+         - "success"  : URL 变化 / 出现"提交成功"提示 → 已确认成功
+         - "failed"   : 提交按钮全部定位失败 / JS 兜底也返回 false → 已确认失败
+         - "unknown"  : 按钮已点击但等待效果超时（可能是 AJAX 异步提交，
+                        也可能服务端拒绝/校验失败/网络异常）→ 不能计为成功
+
+    说明：超时不重试（避免对同一份问卷重复提交污染样本）；由上层调用方
+         将 "unknown" 保守计为失败并打日志，便于事后复盘。
     """
     selectors = [
         "#divSubmit", "#submit_button", "#ctlNext",
@@ -261,14 +275,20 @@ def find_and_click_submit(driver: Any, *, wait_url_change_timeout: float = 6.0) 
         return false;
     """)
     if not ok:
-        return False
+        # JS 兜底也没找到提交按钮 → 已确认失败
+        return SUBMIT_FAILED
     return _wait_until_submit_effect(driver, wait_url_change_timeout)
 
 
-def _wait_until_submit_effect(driver: Any, timeout: float) -> bool:
-    """点击提交按钮后，检测效果（URL 变化 / 页面 readyState 重新加载）。
+def _wait_until_submit_effect(driver: Any, timeout: float) -> SubmitOutcome:
+    """点击提交按钮后，检测效果（URL 变化 / 成功提示）。
 
     相比固定 sleep(2.0-3.0) 平均可节省 1.5 秒 / 次提交。
+
+    返回值（审查 P1 修复，不再把超时当成功）：
+      - "success" : URL 变化，或页面出现"提交成功 / 感谢您的参与"等关键词
+      - "unknown" : 等待 timeout 内未观察到任何效果（按钮已点击，
+                    但服务端可能拒绝、校验失败、网络异常、或纯 AJAX 异步提交）
     """
     old_url = driver.current_url
     start = time.perf_counter()
@@ -276,7 +296,7 @@ def _wait_until_submit_effect(driver: Any, timeout: float) -> bool:
         try:
             cur = driver.current_url
             if cur != old_url:
-                return True
+                return SUBMIT_SUCCESS
             # 提交后出现感谢语 / 提交成功弹窗也算有效
             if driver.execute_script("""
                 var txt = (document.body && document.body.innerText) || '';
@@ -286,12 +306,13 @@ def _wait_until_submit_effect(driver: Any, timeout: float) -> bool:
                        txt.indexOf('已完成') !== -1 ||
                        !!document.querySelector('.submit-succ, .success-tip, #success-tip, .success');
             """):
-                return True
+                return SUBMIT_SUCCESS
         except Exception:
             pass
         time.sleep(0.15)
-    # 超时了也算成功（按钮确实点击了，只是页面响应慢或做了 AJAX）
-    return True
+    # 关键修复：超时不再返回 True，改为 "unknown"（未知），
+    # 由上层保守计为失败，避免污染 success_count / 成功率 / 历史数据。
+    return SUBMIT_UNKNOWN
 
 
 # ============================================================================

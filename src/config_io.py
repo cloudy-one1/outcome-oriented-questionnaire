@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import math
 import os
 from typing import Any
 
@@ -180,7 +181,17 @@ def apply_weight_config(cfg: dict[int, dict]) -> None:
 def validate_weight_config(
     cfg: dict,
 ) -> list[str]:
-    """结构合法性校验；返回错误/警告字符串列表，空列表表示合法。"""
+    """结构合法性校验；返回错误/警告字符串列表，空列表表示合法。
+
+    审查 P2-1 增强校验项：
+      - 权重总和必须 > 0（全 0 权重会让等权随机采样退化或抛异常）
+      - NaN / Inf 权重值（会让 random.choices 抛 ValueError，但应在配置期就拦截）
+      - weights 长度是否匹配 choices 数量（题号配置可能附 choices 元信息）
+      - multi 题 count_options 与 count_weights 长度是否一致
+      - scale 题 weights 长度是否匹配 scale 范围
+      - matrix_single 题 row_weights 每行长度是否匹配 cols 数量
+      - count_weights 长度是否匹配 count_options 长度
+    """
     errors: list[str] = []
 
     if not isinstance(cfg, dict):
@@ -219,29 +230,242 @@ def validate_weight_config(
         # 4. 特定题型的 weights 检查
         needs_weights = {"single", "radio", "multi", "checkbox", "dropdown", "scale", "rating"}
         if qtype_lc in needs_weights and "weights" in qcfg:
-            w = qcfg["weights"]
-            if not isinstance(w, (list, tuple)):
-                errors.append(f"Q{qi} 的 'weights' 必须是 list/tuple，实际 {type(w).__name__}")
-            else:
-                for i, v in enumerate(w):
-                    try:
-                        fv = float(v)
-                    except (TypeError, ValueError):
-                        errors.append(f"Q{qi} 的 weights[{i}]={v!r} 不能转成数值")
-                        continue
-                    if fv < 0:
-                        errors.append(f"Q{qi} 的 weights[{i}]={fv} < 0，不能为负数")
+            errors.extend(_validate_weights_array(qi, qcfg, qtype_lc))
 
-        # 5. matrix：row_weights 必须是 dict
+        # 5. multi 题：count_options / count_weights 校验
+        if qtype_lc in {"multi", "checkbox"}:
+            errors.extend(_validate_count_options(qi, qcfg))
+
+        # 6. scale 题：weights 长度必须匹配 scale 范围
+        if qtype_lc in {"scale", "rating"} and "weights" in qcfg:
+            errors.extend(_validate_scale_length(qi, qcfg))
+
+        # 7. matrix：row_weights 必须是 dict 且每行长度匹配 cols 数量
         if qtype_lc in {"matrix_single", "matrix"}:
-            rw = qcfg.get("row_weights")
-            if rw is not None and not isinstance(rw, dict):
-                errors.append(f"Q{qi} matrix 型的 row_weights 必须是 dict（行号→权重列表）")
+            errors.extend(_validate_matrix_row_weights(qi, qcfg))
 
-        # 6. text：field 必须是字符串（如果给的话）
+        # 8. text：field 必须是字符串（如果给的话）
         if qtype_lc in {"text", "input", "textarea", "fillblank"}:
             field = qcfg.get("field")
             if field is not None and not isinstance(field, str):
                 errors.append(f"Q{qi} text 型的 field 必须是 str 或 None")
 
     return errors
+
+
+# ============================================================================
+#  内部校验子函数（审查 P2-1 拆分，便于单测覆盖各分项）
+# ============================================================================
+def _is_finite_number(v: Any) -> tuple[bool, float]:
+    """尝试把 v 转 float；返回 (是否有限数值, 转换后的值)。
+
+    NaN / Inf / 不能转的 → (False, 0.0)
+    """
+    try:
+        fv = float(v)
+    except (TypeError, ValueError):
+        return False, 0.0
+    if math.isnan(fv) or math.isinf(fv):
+        return False, fv
+    return True, fv
+
+
+def _validate_weights_array(qi: int, qcfg: dict, qtype_lc: str) -> list[str]:
+    """校验 weights 字段：类型、NaN/Inf、非负、总和 > 0、长度匹配 choices（如有）。"""
+    errs: list[str] = []
+    w = qcfg["weights"]
+    if not isinstance(w, (list, tuple)):
+        errs.append(f"Q{qi} 的 'weights' 必须是 list/tuple，实际 {type(w).__name__}")
+        return errs
+
+    # 逐项数值 + NaN/Inf + 非负
+    finite_vals: list[float] = []
+    for i, v in enumerate(w):
+        ok, fv = _is_finite_number(v)
+        if not ok:
+            # 区分 NaN/Inf 和"根本不能转"
+            try:
+                _ = float(v)
+                # 能转但 NaN/Inf
+                errs.append(f"Q{qi} 的 weights[{i}]={v!r} 是 NaN 或 Inf，必须为有限数值")
+            except (TypeError, ValueError):
+                errs.append(f"Q{qi} 的 weights[{i}]={v!r} 不能转成数值")
+            continue
+        if fv < 0:
+            errs.append(f"Q{qi} 的 weights[{i}]={fv} < 0，不能为负数")
+        finite_vals.append(fv)
+
+    # 总和必须 > 0（全 0 / 全 NaN 时等权随机会抛 ValueError 或退化为非法分布）
+    positive_sum = sum(x for x in finite_vals if x > 0)
+    if len(finite_vals) == len(w) and positive_sum <= 0:
+        errs.append(
+            f"Q{qi} 的 weights 总和 = {positive_sum}，必须 > 0"
+            f"（全 0 会让加权采样退化；请至少给一项非零权重，或删除 weights 走等权随机）"
+        )
+
+    # 长度匹配 choices（如果配置里附带了 choices 元信息）
+    choices = qcfg.get("choices")
+    if isinstance(choices, (list, tuple)) and len(choices) > 0:
+        if len(w) != len(choices):
+            errs.append(
+                f"Q{qi} 的 weights 长度 {len(w)} 与 choices 长度 {len(choices)} 不匹配"
+                f"（choices 来自探测后的题目结构元信息；权重必须逐项对应每个选项）"
+            )
+
+    # multi / dropdown 也应至少有 1 项；scale 跳过长度匹配（在 _validate_scale_length 单独校验）
+    return errs
+
+
+def _validate_count_options(qi: int, qcfg: dict) -> list[str]:
+    """multi 题：count_options / count_weights 长度一致性 + 值合法性。"""
+    errs: list[str] = []
+    co = qcfg.get("count_options")
+    cw = qcfg.get("count_weights")
+
+    if co is None and cw is None:
+        return errs  # 都没配 → 走默认均匀分布，合法
+
+    if co is not None and not isinstance(co, (list, tuple)):
+        errs.append(f"Q{qi} multi 的 'count_options' 必须是 list/tuple")
+        return errs
+    if cw is not None and not isinstance(cw, (list, tuple)):
+        errs.append(f"Q{qi} multi 的 'count_weights' 必须是 list/tuple")
+        return errs
+
+    # count_options 必须都是 >= 1 的正整数
+    if co is not None:
+        for i, v in enumerate(co):
+            ok, fv = _is_finite_number(v)
+            if not ok or fv < 1 or int(fv) != fv:
+                errs.append(
+                    f"Q{qi} multi 的 count_options[{i}]={v!r} 必须是 >= 1 的正整数"
+                )
+
+    # count_weights 必须非负且有限
+    if cw is not None:
+        for i, v in enumerate(cw):
+            ok, fv = _is_finite_number(v)
+            if not ok:
+                errs.append(
+                    f"Q{qi} multi 的 count_weights[{i}]={v!r} 是 NaN/Inf 或非数值"
+                )
+                continue
+            if fv < 0:
+                errs.append(
+                    f"Q{qi} multi 的 count_weights[{i}]={fv} < 0，不能为负数"
+                )
+
+    # 长度必须一致（如果两者都给了）
+    if co is not None and cw is not None and len(co) != len(cw):
+        errs.append(
+            f"Q{qi} multi 的 count_options 长度 {len(co)} 与 count_weights 长度 {len(cw)} 不一致"
+            f"（每个选项数对应一个权重，必须一一对应）"
+        )
+    elif co is not None and cw is not None:
+        # 总和 > 0
+        positive_sum = sum(float(v) for v in cw if _is_finite_number(v)[0] and float(v) > 0)
+        if positive_sum <= 0:
+            errs.append(
+                f"Q{qi} multi 的 count_weights 总和 = {positive_sum}，必须 > 0"
+            )
+
+    return errs
+
+
+def _validate_scale_length(qi: int, qcfg: dict) -> list[str]:
+    """scale 题：weights 长度必须匹配 scale 范围（1..scale_max）。"""
+    errs: list[str] = []
+    w = qcfg.get("weights")
+    if not isinstance(w, (list, tuple)):
+        return errs  # 类型错误已在 _validate_weights_array 报过
+
+    scale_max = qcfg.get("scale")
+    if scale_max is None:
+        return errs  # 没声明 scale → 跳过长度匹配检查（answering_v2 会用默认 5）
+
+    try:
+        smax = int(scale_max)
+    except (TypeError, ValueError):
+        errs.append(f"Q{qi} scale 的 'scale' 字段必须是整数，实际 {scale_max!r}")
+        return errs
+
+    scale_min = int(qcfg.get("scale_min", 1))
+    expected_len = smax - scale_min + 1
+    if expected_len <= 0:
+        errs.append(
+            f"Q{qi} scale 范围非法：scale_min={scale_min} > scale_max={smax}"
+        )
+        return errs
+
+    if len(w) != expected_len:
+        errs.append(
+            f"Q{qi} scale 的 weights 长度 {len(w)} 与量表范围 {expected_len}"
+            f"（scale_min={scale_min}..scale_max={smax}）不匹配"
+        )
+
+    return errs
+
+
+def _validate_matrix_row_weights(qi: int, qcfg: dict) -> list[str]:
+    """matrix_single 题：row_weights 是 dict 且每行长度匹配 cols 数量。"""
+    errs: list[str] = []
+    rw = qcfg.get("row_weights")
+    if rw is None:
+        return errs  # 未配 row_weights → 走等权随机，合法
+
+    if not isinstance(rw, dict):
+        errs.append(f"Q{qi} matrix 型的 row_weights 必须是 dict（行号→权重列表）")
+        return errs
+
+    cols = qcfg.get("cols")
+    expected_col_len: int | None = None
+    if isinstance(cols, (list, tuple)) and len(cols) > 0:
+        expected_col_len = len(cols)
+    elif isinstance(cols, int) and cols > 0:
+        expected_col_len = cols
+
+    for rk, rv in rw.items():
+        # 行号键应能转成 int（load_weight_config 已转，但直接 dict 可能还是 str）
+        try:
+            _ = int(rk)
+        except (TypeError, ValueError):
+            errs.append(f"Q{qi} matrix row_weights 的行号键 {rk!r} 必须能转成整数")
+
+        if not isinstance(rv, (list, tuple)):
+            errs.append(
+                f"Q{qi} matrix row_weights 行 {rk!r} 的值必须是 list/tuple"
+                f"，实际 {type(rv).__name__}"
+            )
+            continue
+
+        # 逐项 NaN/Inf/非负
+        finite_vals: list[float] = []
+        for i, v in enumerate(rv):
+            ok, fv = _is_finite_number(v)
+            if not ok:
+                errs.append(
+                    f"Q{qi} matrix row_weights 行 {rk!r} 的 weights[{i}]={v!r}"
+                    f" 是 NaN/Inf 或非数值"
+                )
+                continue
+            if fv < 0:
+                errs.append(
+                    f"Q{qi} matrix row_weights 行 {rk!r} 的 weights[{i}]={fv} < 0"
+                )
+            finite_vals.append(fv)
+
+        # 长度匹配 cols
+        if expected_col_len is not None and len(rv) != expected_col_len:
+            errs.append(
+                f"Q{qi} matrix row_weights 行 {rk!r} 的权重长度 {len(rv)}"
+                f" 与 cols 长度 {expected_col_len} 不匹配"
+            )
+
+        # 总和 > 0
+        positive_sum = sum(x for x in finite_vals if x > 0)
+        if len(finite_vals) == len(rv) and positive_sum <= 0:
+            errs.append(
+                f"Q{qi} matrix row_weights 行 {rk!r} 的权重总和 = {positive_sum}，必须 > 0"
+            )
+
+    return errs

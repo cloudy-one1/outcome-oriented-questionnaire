@@ -1,5 +1,20 @@
 """问卷自动填写工具 — 核心包。
 
+v2.2 模块变更日志（审查整改）：
+    * 2026-08-23（V2.2 审查整改批次）：
+        - interaction.SubmitOutcome / SUBMIT_SUCCESS/SUBMIT_FAILED/SUBMIT_UNKNOWN
+          提交结果三态：超时不再被误判为成功（P1-1 修复，避免污染 success_count）
+        - history.record_answer 幂等化（INSERT OR REPLACE + DELETE+INSERT 兜底）
+          + V2.2 schema 迁移：dedup 老库重复行 + 创建 (run_id, submission_index,
+          question_number) 唯一索引，从结构上根除 retry 重复答案（P1-2 修复）
+        - CLI KeyboardInterrupt → status='interrupted'（P1-3 修复，原仅写
+          'running'/'finished'，导致中断的 run 无法被 find_resumable_run 恢复）
+        - config_io.validate_weight_config 重写：NaN/Inf 检测、全 0 权重、
+          choices 长度不匹配、count_options/count_weights 一致性、scale 长度
+          不匹配、matrix row_weights 行长度不匹配 + 总和>0（P2-1 增强）
+        - CLI 新增 --no-record-text（隐私：填空答案不落盘）/ --target-success
+          / --max-attempts（P2-2 语义厘清：目标份数 vs 总尝试次数）
+
 v2.1 模块变更日志：
     * 2026-08-22 新增（V2.1）：
         - detection.detect_answered_questions   ：扫描 DOM 已填状态（断点续填 Layer A）
@@ -25,4 +40,4 @@ v2.0 模块变更日志：
 from .config import WEIGHT_CONFIG
 
 __all__ = ["WEIGHT_CONFIG"]
-__version__ = "2.1.0"
+__version__ = "2.2.0"

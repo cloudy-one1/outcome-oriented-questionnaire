@@ -166,6 +166,151 @@ class TestConfigIO(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             self.mod.load_weight_config(r"Z:\no\such\path\abc999.json")
 
+    # ==================================================================
+    #  V2.2 审查 P2-1 增强校验：权重和 > 0 / NaN / Inf / 长度匹配
+    # ==================================================================
+    def test_validate_rejects_all_zero_weights(self) -> None:
+        """权重全 0 → 总和 <= 0 → 报错（不应让加权采样退化）。"""
+        bad = {1: {"type": "single", "weights": [0, 0, 0]}}
+        errs = self.mod.validate_weight_config(bad)
+        self.assertTrue(any("总和" in e for e in errs), f"应报总和>0 错误，实际: {errs}")
+
+    def test_validate_accepts_zero_with_positive_weight(self) -> None:
+        """权重中有 0 但至少一项 > 0 → 合法（0 表示该选项永不被选中）。"""
+        good = {1: {"type": "single", "weights": [0, 1, 0]}}
+        errs = self.mod.validate_weight_config(good)
+        self.assertEqual(errs, [], f"应合法，实际: {errs}")
+
+    def test_validate_rejects_nan_weights(self) -> None:
+        """权重含 NaN → 报错（不应让 random.choices 抛 ValueError）。"""
+        bad = {1: {"type": "single", "weights": [float("nan"), 1, 1]}}
+        errs = self.mod.validate_weight_config(bad)
+        self.assertTrue(any("NaN" in e or "Inf" in e for e in errs), f"应报 NaN 错误，实际: {errs}")
+
+    def test_validate_rejects_inf_weights(self) -> None:
+        """权重含 Inf → 报错。"""
+        bad = {1: {"type": "single", "weights": [float("inf"), 1, 1]}}
+        errs = self.mod.validate_weight_config(bad)
+        self.assertTrue(any("NaN" in e or "Inf" in e for e in errs), f"应报 Inf 错误，实际: {errs}")
+
+    def test_validate_rejects_weights_choices_length_mismatch(self) -> None:
+        """weights 长度与 choices 长度不匹配 → 报错（避免采样 IndexError）。"""
+        bad = {1: {"type": "single", "choices": ["a", "b", "c"],
+                   "weights": [0.5, 0.5]}}  # 3 选项 2 权重
+        errs = self.mod.validate_weight_config(bad)
+        self.assertTrue(any("choices 长度" in e for e in errs), f"应报长度不匹配，实际: {errs}")
+
+    def test_validate_accepts_weights_choices_same_length(self) -> None:
+        """weights 长度 == choices 长度 → 合法。"""
+        good = {1: {"type": "single", "choices": ["a", "b", "c"],
+                     "weights": [0.5, 0.3, 0.2]}}
+        errs = self.mod.validate_weight_config(good)
+        self.assertEqual(errs, [], f"应合法，实际: {errs}")
+
+    def test_validate_rejects_count_options_count_weights_length_mismatch(self) -> None:
+        """multi 题 count_options 与 count_weights 长度不一致 → 报错。"""
+        bad = {1: {"type": "multi", "weights": [0.1, 0.2, 0.3, 0.4],
+                    "count_options": [2, 3, 4],
+                    "count_weights": [0.4, 0.6]}}  # 3 vs 2
+        errs = self.mod.validate_weight_config(bad)
+        self.assertTrue(any("count_options 长度" in e for e in errs),
+                        f"应报 count_options 长度不一致，实际: {errs}")
+
+    def test_validate_accepts_count_options_count_weights_same_length(self) -> None:
+        """multi 题 count_options 与 count_weights 长度一致 + 总和 > 0 → 合法。"""
+        good = {1: {"type": "multi", "weights": [0.1, 0.2, 0.3, 0.4],
+                     "count_options": [2, 3, 4],
+                     "count_weights": [0.2, 0.3, 0.5]}}
+        errs = self.mod.validate_weight_config(good)
+        self.assertEqual(errs, [], f"应合法，实际: {errs}")
+
+    def test_validate_rejects_count_weights_all_zero(self) -> None:
+        """multi 题 count_weights 全 0 → 总和 <= 0 → 报错。"""
+        bad = {1: {"type": "multi", "weights": [0.1, 0.2, 0.3, 0.4],
+                    "count_options": [2, 3],
+                    "count_weights": [0, 0]}}
+        errs = self.mod.validate_weight_config(bad)
+        self.assertTrue(any("count_weights 总和" in e for e in errs),
+                        f"应报 count_weights 总和>0，实际: {errs}")
+
+    def test_validate_rejects_count_options_not_positive_int(self) -> None:
+        """multi 题 count_options 含 0 / 负数 / 非整数 → 报错。"""
+        bad = {1: {"type": "multi", "weights": [0.1, 0.2, 0.3],
+                    "count_options": [0, 2],   # 0 不合法
+                    "count_weights": [0.5, 0.5]}}
+        errs = self.mod.validate_weight_config(bad)
+        self.assertTrue(any("count_options" in e and "正整数" in e for e in errs),
+                        f"应报 count_options 必须 >= 1，实际: {errs}")
+
+    def test_validate_rejects_scale_weights_length_mismatch(self) -> None:
+        """scale 题 weights 长度不匹配 scale 范围 → 报错。"""
+        bad = {1: {"type": "scale", "scale": 5,
+                   "weights": [0, 0, 1]}}  # 5 分量表只给 3 权重
+        errs = self.mod.validate_weight_config(bad)
+        self.assertTrue(any("量表范围" in e for e in errs),
+                        f"应报 scale 长度不匹配，实际: {errs}")
+
+    def test_validate_accepts_scale_weights_matching_range(self) -> None:
+        """scale 题 weights 长度 == scale 范围 → 合法。"""
+        good = {1: {"type": "scale", "scale": 5, "weights": [0, 0, 0.1, 0.4, 0.5]}}
+        errs = self.mod.validate_weight_config(good)
+        self.assertEqual(errs, [], f"应合法，实际: {errs}")
+
+    def test_validate_rejects_scale_negative_range(self) -> None:
+        """scale_min > scale_max → 范围非法 → 报错。"""
+        bad = {1: {"type": "scale", "scale": 3, "scale_min": 5,
+                   "weights": [0, 0, 0, 0, 0, 0, 0]}}
+        errs = self.mod.validate_weight_config(bad)
+        self.assertTrue(any("范围非法" in e for e in errs),
+                        f"应报范围非法，实际: {errs}")
+
+    def test_validate_rejects_matrix_row_weights_length_mismatch(self) -> None:
+        """matrix 题 row_weights 每行长度不匹配 cols → 报错。"""
+        bad = {1: {"type": "matrix_single",
+                   "cols": [1, 2, 3, 4, 5],
+                   "row_weights": {1: [0, 1, 0],   # 3 个，应 5
+                                   2: [0, 0, 0, 0, 1]}}}
+        errs = self.mod.validate_weight_config(bad)
+        self.assertTrue(any("cols 长度" in e for e in errs),
+                        f"应报 row_weights 行长度不匹配 cols，实际: {errs}")
+
+    def test_validate_accepts_matrix_row_weights_matching_cols(self) -> None:
+        """matrix 题 row_weights 每行长度 == cols 长度 → 合法。"""
+        good = {1: {"type": "matrix_single",
+                     "cols": [1, 2, 3, 4, 5],
+                     "row_weights": {1: [0, 0, 0.1, 0.4, 0.5],
+                                     2: [0.1, 0.2, 0.3, 0.3, 0.1]}}}
+        errs = self.mod.validate_weight_config(good)
+        self.assertEqual(errs, [], f"应合法，实际: {errs}")
+
+    def test_validate_rejects_matrix_row_weights_all_zero(self) -> None:
+        """matrix 题 row_weights 某行全 0 → 总和 <= 0 → 报错。"""
+        bad = {1: {"type": "matrix_single",
+                   "cols": [1, 2, 3],
+                   "row_weights": {1: [0, 1, 0],
+                                   2: [0, 0, 0]}}}  # 全 0
+        errs = self.mod.validate_weight_config(bad)
+        self.assertTrue(any("总和" in e and "2" in e for e in errs),
+                        f"应报 row_weights 行 2 总和>0，实际: {errs}")
+
+    def test_validate_rejects_matrix_row_weights_nan(self) -> None:
+        """matrix 题 row_weights 含 NaN → 报错。"""
+        bad = {1: {"type": "matrix_single",
+                   "cols": [1, 2, 3],
+                   "row_weights": {1: [0, float("nan"), 1]}}}
+        errs = self.mod.validate_weight_config(bad)
+        self.assertTrue(any("NaN" in e or "Inf" in e for e in errs),
+                        f"应报 matrix row_weights NaN，实际: {errs}")
+
+    def test_validate_rejects_matrix_row_weights_not_list(self) -> None:
+        """matrix 题 row_weights 某行不是 list → 报错。"""
+        bad = {1: {"type": "matrix_single",
+                   "cols": [1, 2, 3],
+                   "row_weights": {1: "not_a_list"}}}
+        errs = self.mod.validate_weight_config(bad)
+        self.assertTrue(any("必须是 list/tuple" in e for e in errs),
+                        f"应报 row_weights 行值不是 list，实际: {errs}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
