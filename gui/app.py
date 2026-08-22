@@ -46,6 +46,39 @@ from src.verification import (  # noqa: E402
     is_smart_verification_showing,
     wait_for_manual_verification,
 )
+# V2 新增：配置文件 IO / 历史记录
+try:
+    from src.config_io import (  # noqa: E402
+        load_weight_config,
+        save_weight_config,
+        validate_weight_config,
+    )
+    _HAS_CONFIG_IO: bool = True
+except Exception:  # pragma: no cover
+    load_weight_config = None  # type: ignore
+    save_weight_config = None  # type: ignore
+    validate_weight_config = None  # type: ignore
+    _HAS_CONFIG_IO = False
+try:
+    from src.history import SubmissionHistory  # noqa: E402
+    _HAS_HISTORY: bool = True
+except Exception:  # pragma: no cover
+        SubmissionHistory = None  # type: ignore
+        _HAS_HISTORY = False
+
+
+# ============================================================================
+#  全局路径 & 版本（V2）
+# ============================================================================
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+_DEFAULT_CONFIG_DIR = os.path.join(_PROJECT_ROOT, "configs")
+DEFAULT_WEIGHT_CONFIG_PATH = os.path.join(
+    _DEFAULT_CONFIG_DIR, "default_weight_config.json"
+)
+DEFAULT_HISTORY_DB_PATH = os.path.join(
+    _PROJECT_ROOT, "data", "history.db"
+)
+APP_VERSION = "2.0.0"
 
 
 # ============================================================================
@@ -181,7 +214,7 @@ class SurveyGUI:
 
     def __init__(self) -> None:
         self.root = tk.Tk()
-        self.root.title("问卷星自动填写工具")
+        self.root.title(f"问卷星自动填写工具 v{APP_VERSION}")
         self.root.geometry("1120x760")
         self.root.minsize(980, 620)
         self.root.configure(bg=COLORS["bg"])
@@ -218,6 +251,16 @@ class SurveyGUI:
         self._build_ui()
         self._start_log_poller()
         self._start_animations()
+        self._auto_load_default_config()
+
+    def _auto_load_default_config(self) -> None:
+        """启动时如果存在 default_weight_config.json，自动加载。"""
+        if not (os.path.exists(DEFAULT_WEIGHT_CONFIG_PATH) and _HAS_CONFIG_IO):
+            return
+        try:
+            self._on_load_config(path=DEFAULT_WEIGHT_CONFIG_PATH)
+        except Exception as e:
+            self._log(f"[启动] 自动载入默认配置跳过: {type(e).__name__}: {e}", "WARN")
 
     # ==================================================================
     #  主题系统
@@ -469,7 +512,7 @@ class SurveyGUI:
         self.title_label.pack(anchor="w")
         self.subtitle_label = tk.Label(
             title_box,
-            text="Automation Suite  v1.0  ·  Stealth Engine Ready",
+            text=f"Automation Suite  v{APP_VERSION}  ·  Stealth Engine Ready",
             font=("Cascadia Code", 8),
             bg=HDR_BG,
             fg=HDR_SUB,
@@ -574,15 +617,53 @@ class SurveyGUI:
         container.grid_columnconfigure(1, weight=45)
         container.grid_rowconfigure(0, weight=1)
 
-        # 左侧列
-        left = tk.Frame(container, bg=COLORS["bg"])
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        left.grid_rowconfigure(0, weight=0)
-        left.grid_rowconfigure(1, weight=1)
-        left.grid_columnconfigure(0, weight=1)
+        # ---- V2 左侧 Notebook（配置 Tab / 历史 Tab） ----
+        style = ttk.Style()
+        style.layout("Aurora.TNotebook",
+                     [("Notebook.client", {"sticky": "nswe"})])
+        style.configure("Aurora.TNotebook",
+                        background=COLORS["bg"], borderwidth=0)
+        style.element_create("aurora_tab", "from", "clam")
+        style.layout("Aurora.TNotebook.Tab", [
+            ("aurora_tab.tab",
+             {"side": "top", "sticky": "nswe", "children": [
+                 ("aurora_tab.padding",
+                  {"side": "top", "sticky": "nswe", "children": [
+                      ("aurora_tab.label", {"sticky": "nswe"})
+                  ]})
+             ]})
+        ])
+        style.configure(
+            "Aurora.TNotebook.Tab",
+            font=("Microsoft YaHei UI", 10, "bold"),
+            background=COLORS["surface"],
+            foreground=COLORS["text_soft"],
+            padding=(22, 9),
+            borderwidth=0,
+        )
+        style.map("Aurora.TNotebook.Tab",
+                  background=[("selected", COLORS["primary"])],
+                  foreground=[("selected", "white")],
+                  )
 
-        self._build_settings_card(left)
-        self._build_weight_table_card(left)
+        notebook = ttk.Notebook(container, style="Aurora.TNotebook")
+        notebook.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+
+        # ---------- Tab 1：配置 ----------
+        tab_cfg = tk.Frame(notebook, bg=COLORS["bg"])
+        notebook.add(tab_cfg, text="  📋  配  置  ")
+        tab_cfg.grid_rowconfigure(1, weight=1)
+        tab_cfg.grid_columnconfigure(0, weight=1)
+
+        self._build_settings_card(tab_cfg)
+        self._build_weight_table_card(tab_cfg)
+
+        # ---------- Tab 2：历史记录 ----------
+        tab_history = tk.Frame(notebook, bg=COLORS["bg"])
+        notebook.add(tab_history, text="  📜  历史记录  ")
+        tab_history.grid_rowconfigure(0, weight=1)
+        tab_history.grid_columnconfigure(0, weight=1)
+        self._build_history_card(tab_history)  # V2 新增
 
         # 右侧列
         right = tk.Frame(container, bg=COLORS["bg"])
@@ -693,6 +774,7 @@ class SurveyGUI:
         self._build_url_row(body)
         self._build_count_row(body)
         self._build_browser_row(body)
+        self._build_config_io_row(body)
 
     def _build_url_row(self, parent: tk.Frame) -> None:
         row = tk.Frame(parent, bg=COLORS["surface"])
@@ -831,6 +913,44 @@ class SurveyGUI:
         )
         self.use_uc_chk.pack(side=tk.LEFT)
 
+    def _build_config_io_row(self, parent: tk.Frame) -> None:
+        """配置导入 / 导出 / 另存默认。V2 新增。"""
+        row = tk.Frame(parent, bg=COLORS["surface"])
+        row.pack(fill=tk.X, pady=(4, 0))
+
+        tk.Label(row, text="📦  配置文件",
+                 font=self.FONT_NORMAL, fg=COLORS["text_soft"],
+                 bg=COLORS["surface"], width=13, anchor="w").pack(side=tk.LEFT)
+
+        btns = tk.Frame(row, bg=COLORS["surface"])
+        btns.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        btn_load = self._make_icon_button(
+            btns, "📂 导入配置", accent="ghost",
+            command=self._on_load_config,
+        )
+        btn_save = self._make_icon_button(
+            btns, "💾 导出配置", accent="success",
+            command=self._on_save_config,
+        )
+        btn_default = self._make_icon_button(
+            btns, "⭐ 另存默认", accent="primary",
+            command=self._on_save_default_config,
+        )
+        btn_load.pack(side=tk.LEFT, padx=(0, 6))
+        btn_save.pack(side=tk.LEFT, padx=(0, 6))
+        btn_default.pack(side=tk.LEFT)
+
+        if not _HAS_CONFIG_IO:
+            # 模块缺失时禁用按钮并给出提示
+            for b in (btn_load, btn_save, btn_default):
+                b.configure(state=tk.DISABLED)
+            tk.Label(row,
+                     text="⚠ src/config_io 未加载，功能不可用",
+                     font=self.FONT_SMALL,
+                     fg=COLORS["warning"],
+                     bg=COLORS["surface"]).pack(side=tk.RIGHT)
+
     # ----- 设置区：自定义按钮 -----
 
     def _make_icon_button(self, parent, text: str, accent: str = "primary",
@@ -949,6 +1069,286 @@ class SurveyGUI:
             pady=4,
         )
         return chk
+
+    # ==================================================================
+    #  历史记录卡片（V2 新增）
+    # ==================================================================
+
+    def _history_get_db(self) -> "SubmissionHistory | None":
+        """懒构造 SubmissionHistory。避免没选 SQLite 驱动时崩溃。"""
+        if not _HAS_HISTORY or SubmissionHistory is None:
+            return None
+        try:
+            if not os.path.exists(os.path.dirname(DEFAULT_HISTORY_DB_PATH)):
+                os.makedirs(os.path.dirname(DEFAULT_HISTORY_DB_PATH),
+                            exist_ok=True)
+            return SubmissionHistory(DEFAULT_HISTORY_DB_PATH)
+        except Exception as e:
+            self._log(f"历史记录数据库打开失败: {type(e).__name__}: {e}", "WARN")
+            return None
+
+    def _build_history_card(self, parent: tk.Frame) -> None:
+        """V2：显示 runs + answers 双表 + 工具栏。"""
+        body = self._make_card(parent, "历史记录", icon="📜", accent=GRAD_PRIMARY)
+        body.pack(fill=tk.BOTH, expand=True)
+        body.grid_rowconfigure(1, weight=1)
+        body.grid_rowconfigure(3, weight=1)
+        body.grid_columnconfigure(0, weight=1)
+
+        # ---- 顶部工具栏 ----
+        tb = tk.Frame(body, bg=COLORS["surface"])
+        tb.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+
+        self.history_summary_var = tk.StringVar(value="—")
+        tk.Label(tb, textvariable=self.history_summary_var,
+                 font=self.FONT_SMALL, fg=COLORS["primary_2"],
+                 bg=COLORS["surface"]).pack(side=tk.LEFT, padx=(10, 10))
+
+        if not _HAS_HISTORY:
+            tk.Label(tb, text="⚠ src.history 未加载，历史记录不可用",
+                     font=self.FONT_SMALL, fg=COLORS["warning"],
+                     bg=COLORS["surface"]).pack(side=tk.RIGHT, padx=10)
+
+        btns = tk.Frame(tb, bg=COLORS["surface"])
+        btns.pack(side=tk.RIGHT, padx=(0, 6))
+        btn_refresh = self._make_icon_button(
+            btns, "🔄 刷新", accent="ghost",
+            command=self._history_refresh,
+        )
+        btn_export = self._make_icon_button(
+            btns, "📤 导出 CSV", accent="ghost",
+            command=self._history_export_csv,
+        )
+        btn_purge = self._make_icon_button(
+            btns, "🗑 清理 7 天前", accent="danger",
+            command=self._history_purge_old,
+        )
+        btn_refresh.pack(side=tk.LEFT, padx=(0, 6))
+        btn_export.pack(side=tk.LEFT, padx=(0, 6))
+        btn_purge.pack(side=tk.LEFT)
+
+        # ---- runs 表（上） ----
+        runs_frame = tk.Frame(body, bg=COLORS["bg_mid"],
+                              highlightthickness=1,
+                              highlightbackground=COLORS["border_dim"])
+        runs_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 8))
+        runs_frame.grid_rowconfigure(0, weight=1)
+        runs_frame.grid_columnconfigure(0, weight=1)
+
+        run_cols = ("id", "started", "finished", "status",
+                    "total", "ok", "fail", "url")
+        self.history_runs_tree = ttk.Treeview(
+            runs_frame, columns=run_cols, show="headings", height=6,
+        )
+        head = {"id": ("ID", 55), "started": ("开始", 150),
+                "finished": ("结束", 150), "status": ("状态", 62),
+                "total": ("总", 42), "ok": ("✓", 42),
+                "fail": ("✕", 42), "url": ("URL", 280)}
+        for col, (txt, w) in head.items():
+            self.history_runs_tree.heading(col, text=txt)
+            self.history_runs_tree.column(col, width=w, anchor="w",
+                                          stretch=(col == "url"))
+        run_scroll = ttk.Scrollbar(runs_frame, orient="vertical",
+                                   command=self.history_runs_tree.yview)
+        self.history_runs_tree.configure(yscrollcommand=run_scroll.set)
+        self.history_runs_tree.grid(row=0, column=0, sticky="nsew")
+        run_scroll.grid(row=0, column=1, sticky="ns")
+        self.history_runs_tree.bind("<<TreeviewSelect>>",
+                                    self._history_select_run)
+
+        # ---- 标签：选中 run 的 answers 表 ----
+        ans_header = tk.Label(body, text="🔍  答题明细 （点击上方 Run 查看）",
+                              font=("Microsoft YaHei UI", 10, "bold"),
+                              fg=COLORS["text_soft"],
+                              bg=COLORS["surface"], anchor="w",
+                              padx=10, pady=4)
+        ans_header.grid(row=2, column=0, sticky="ew", pady=(0, 4))
+        self.history_answer_head_var = tk.StringVar(value="（未选中运行记录）")
+        tk.Label(body, textvariable=self.history_answer_head_var,
+                 font=self.FONT_SMALL, fg=COLORS["text_dim"],
+                 bg=COLORS["surface"], anchor="e", padx=10
+                 ).grid(row=2, column=0, sticky="e")
+
+        ans_frame = tk.Frame(body, bg=COLORS["bg_mid"],
+                             highlightthickness=1,
+                             highlightbackground=COLORS["border_dim"])
+        ans_frame.grid(row=3, column=0, sticky="nsew")
+        ans_frame.grid_rowconfigure(0, weight=1)
+        ans_frame.grid_columnconfigure(0, weight=1)
+
+        ans_cols = ("q", "type", "selected", "text_ans", "elapsed", "time")
+        self.history_ans_tree = ttk.Treeview(
+            ans_frame, columns=ans_cols, show="headings", height=10,
+        )
+        an_head = {"q": ("Q", 50), "type": ("题型", 75),
+                   "selected": ("选项", 260), "text_ans": ("文本答案", 260),
+                   "elapsed": ("耗时ms", 85), "time": ("记录时间", 145)}
+        for col, (txt, w) in an_head.items():
+            self.history_ans_tree.heading(col, text=txt)
+            self.history_ans_tree.column(col, width=w, anchor="w",
+                                         stretch=(col in ("selected",
+                                                          "text_ans")))
+        ans_scroll = ttk.Scrollbar(ans_frame, orient="vertical",
+                                   command=self.history_ans_tree.yview)
+        self.history_ans_tree.configure(yscrollcommand=ans_scroll.set)
+        self.history_ans_tree.grid(row=0, column=0, sticky="nsew")
+        ans_scroll.grid(row=0, column=1, sticky="ns")
+
+        # 启动后 300ms 刷新一次（避免日志区还没 ready）
+        self.root.after(300, self._history_refresh)
+
+    def _history_refresh(self) -> None:
+        db = self._history_get_db()
+        tree = getattr(self, "history_runs_tree", None)
+        if db is None or tree is None:
+            return
+        try:
+            runs = db.query_runs(limit=200)
+            for iid in tree.get_children():
+                tree.delete(iid)
+            ok_cnt = 0
+            fail_cnt = 0
+            total_cnt = 0
+            for r in runs:
+                rid = r["id"]
+                status = str(r.get("status") or "-")
+                started = str(r.get("started_at") or "")[:19]
+                finished = str(r.get("finished_at") or "")[:19]
+                tot = r.get("total_submissions", 0) or 0
+                ok = r.get("ok_count", 0) or 0
+                fail = r.get("fail_count", 0) or 0
+                url = str(r.get("survey_url") or "")[:180]
+                total_cnt += tot
+                ok_cnt += ok
+                fail_cnt += fail
+                tag = ("status_ok",) if status in ("done", "success",
+                                                   "finished") else \
+                      (("status_fail",) if status in ("fail", "error",
+                                                       "stopped") else ())
+                tree.insert("", tk.END, iid=str(rid),
+                            values=(rid, started, finished, status,
+                                    tot, ok, fail, url), tags=tag)
+            # 颜色样式
+            tree.tag_configure("status_ok",
+                               background="#eaffef", foreground="#0b5c1e")
+            tree.tag_configure("status_fail",
+                               background="#fff1f0", foreground="#8a1e1e")
+            n_runs = len(runs)
+            self.history_summary_var.set(
+                f"共 {n_runs} 次运行 · 累计提交 {total_cnt} "
+                f"(✓ {ok_cnt} / ✕ {fail_cnt})"
+            )
+        except Exception as e:
+            self._log(f"刷新历史记录失败: {type(e).__name__}: {e}", "WARN")
+
+    def _history_select_run(self, _e=None) -> None:
+        db = self._history_get_db()
+        tree_runs = getattr(self, "history_runs_tree", None)
+        tree_ans = getattr(self, "history_ans_tree", None)
+        if db is None or tree_runs is None or tree_ans is None:
+            return
+        sel = tree_runs.selection()
+        if not sel:
+            return
+        run_id = int(sel[0])
+        for iid in tree_ans.get_children():
+            tree_ans.delete(iid)
+        try:
+            answers = db.query_answers(run_id=run_id)
+            for a in answers:
+                q = a.get("q_number") or "-"
+                qt = a.get("q_type") or "-"
+                sel_raw = a.get("options_selected")
+                if isinstance(sel_raw, str) and sel_raw:
+                    sel_s = sel_raw
+                elif isinstance(sel_raw, (list, tuple)):
+                    sel_s = ",".join(str(x) for x in sel_raw)
+                else:
+                    sel_s = ""
+                ta = a.get("text_answer") or ""
+                ems = a.get("elapsed_ms") or ""
+                rec_at = str(a.get("recorded_at") or "")[:19]
+                tree_ans.insert("", tk.END,
+                                values=(q, qt, sel_s, ta, ems, rec_at))
+            self.history_answer_head_var.set(
+                f"Run #{run_id} · 答题数 {len(answers)}"
+            )
+        except Exception as e:
+            self._log(f"读取答题明细失败: {type(e).__name__}: {e}", "WARN")
+
+    def _history_export_csv(self) -> None:
+        db = self._history_get_db()
+        if db is None:
+            self._log("未加载 src.history，无法导出", "WARN")
+            return
+        path = filedialog.asksaveasfilename(
+            title="导出历史记录 CSV",
+            defaultextension=".csv",
+            initialfile="history_runs.csv",
+            filetypes=[("CSV", "*.csv"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            runs = db.query_runs(limit=10000)
+            all_answers: list = []
+            for r in runs:
+                rid = int(r["id"])
+                try:
+                    all_answers.extend(db.query_answers(run_id=rid))
+                except Exception:
+                    pass
+            # runs sheet 写第一个表，answers 写第二个？CSV 无 sheet，分两个文件。
+            # 简单起见：写 runs；单独写 *_answers.csv
+            runs_path = path
+            base, ext = os.path.splitext(path)
+            ans_path = f"{base}_answers{ext}"
+            import csv
+            with open(runs_path, "w", encoding="utf-8-sig", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["id", "started_at", "finished_at", "status",
+                            "survey_url", "total", "ok", "fail", "note"])
+                for r in runs:
+                    w.writerow([r.get("id"), r.get("started_at"),
+                                r.get("finished_at"), r.get("status"),
+                                r.get("survey_url"),
+                                r.get("total_submissions"),
+                                r.get("ok_count"), r.get("fail_count"),
+                                r.get("note")])
+            with open(ans_path, "w", encoding="utf-8-sig", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["run_id", "submission_index",
+                            "q_number", "q_type",
+                            "options_selected", "text_answer",
+                            "elapsed_ms", "recorded_at"])
+                for a in all_answers:
+                    sel_raw = a.get("options_selected")
+                    if isinstance(sel_raw, (list, tuple)):
+                        sel_s = ",".join(str(x) for x in sel_raw)
+                    else:
+                        sel_s = str(sel_raw or "")
+                    w.writerow([a.get("run_id"),
+                                a.get("submission_index"),
+                                a.get("q_number"), a.get("q_type"),
+                                sel_s, a.get("text_answer") or "",
+                                a.get("elapsed_ms"),
+                                a.get("recorded_at")])
+            self._log(f"✓ 已导出 runs → {os.path.basename(runs_path)}", "OK")
+            self._log(f"✓ 已导出 answers → {os.path.basename(ans_path)}", "OK")
+        except Exception as e:
+            self._log(f"导出 CSV 失败: {type(e).__name__}: {e}", "FAIL")
+
+    def _history_purge_old(self) -> None:
+        db = self._history_get_db()
+        if db is None:
+            self._log("未加载 src.history，无法清理", "WARN")
+            return
+        try:
+            removed = db.purge_old(days=7)
+            self._log(f"已清理 {removed} 条 7 天前的运行记录", "OK")
+            self._history_refresh()
+        except Exception as e:
+            self._log(f"清理旧历史失败: {type(e).__name__}: {e}", "FAIL")
 
     # ==================================================================
     #  权重表格卡片
@@ -1097,21 +1497,30 @@ class SurveyGUI:
             type_cell = tk.Frame(self.table_frame, bg=stripe_bg, height=34)
             type_cell.grid(row=row, column=1, sticky="nsew", padx=(0, 1), pady=(0, 1))
             type_cell.pack_propagate(False)
-            if qtype == "single":
-                badge_c = COLORS["primary"]
-                badge_text = "单选"
-                badge_fg = "white"
-            elif qtype == "multi":
-                badge_c = COLORS["success_dim"]
-                badge_text = "多选"
-                badge_fg = "white"
-            else:
-                badge_c = COLORS["primary"]
-                badge_text = "单选"
-                badge_fg = "white"
+
+            qtype_badge_map = {
+                "single":       (COLORS["primary"],             "单选"),
+                "radio":        (COLORS["primary"],             "单选"),
+                "multi":        (COLORS["success_dim"],         "多选"),
+                "checkbox":     (COLORS["success_dim"],         "多选"),
+                "dropdown":     (COLORS["warning_dim"],         "下拉"),
+                "scale":        (COLORS["primary_2"],           "量表"),
+                "rating":       (COLORS["primary_2"],           "量表"),
+                "text":         ("#64748b",                     "填空"),
+                "input":        ("#64748b",                     "填空"),
+                "textarea":     ("#64748b",                     "填空"),
+                "fillblank":    ("#64748b",                     "填空"),
+                "matrix":       (COLORS["danger_dim"],          "矩阵"),
+                "matrix_single":(COLORS["danger_dim"],          "矩阵"),
+            }
+            badge_c, badge_text = qtype_badge_map.get(
+                qtype, (COLORS["primary"], qtype[:4].upper())
+            )
+            badge_fg = "white"
+
             badge_canvas = tk.Canvas(type_cell, height=22, width=78,
                                      bg=stripe_bg, highlightthickness=0, bd=0)
-            badge_canvas.pack(expand=True)
+            badge_canvas.pack(expand=True, padx=(0, 2))
             # 画圆角胶囊
             def _draw_badge(_e=None, bc=badge_canvas, col=badge_c, fgcol=badge_fg, txt=badge_text):
                 bc.delete("all")
@@ -1133,12 +1542,95 @@ class SurveyGUI:
             badge_canvas.bind("<Configure>", _draw_badge)
             self.root.after(10, _draw_badge)
 
-            # --- 选项数 ---
+            # --- 填空：附加字段名小 badge（name/phone/email 等）---
+            if qtype in ("text", "input", "textarea", "fillblank"):
+                fld = q.get("field")
+                if fld:
+                    field_map = {
+                        "name": "姓名", "phone": "手机", "email": "邮箱",
+                        "address": "地址", "age": "年龄", "company": "公司",
+                    }
+                    field_label = field_map.get(fld, str(fld).upper()[:4])
+                    mini = tk.Label(
+                        type_cell, text=field_label,
+                        font=("Microsoft YaHei UI", 7, "bold"),
+                        bg="#e8ecf3", fg="#334155",
+                        padx=5, pady=1,
+                    )
+                    mini.pack(side=tk.RIGHT, padx=(0, 4))
+
+            # --- 选项 / 规模描述 ---
+            if qtype in ("single", "multi", "radio", "checkbox", "dropdown"):
+                n_opts = len(q.get("choices", []))
+                default_weights = ",".join(
+                    [f"{1.0 / n_opts:.4f}" for _ in range(n_opts)]
+                ) if n_opts > 0 else ""
+                n_label = f"{n_opts}"
+            elif qtype in ("scale", "rating"):
+                n_opts = int(q.get("scale", 5))
+                smin = int(q.get("scale_min", 1))
+                default_weights = ",".join(
+                    ["1"] * n_opts  # 用户可自己调节；初始等权重
+                )
+                n_label = f"{smin}~{n_opts}"
+            elif qtype in ("text", "input", "textarea", "fillblank"):
+                # 填空：如果检测阶段给了 options 就用 options，否则留空（让用户写候选文本）
+                opts_hint = q.get("options") or []
+                if opts_hint:
+                    default_weights = ",".join([str(x) for x in opts_hint])
+                else:
+                    default_weights = ""  # 空白：用户可自定义候选，逗号分隔
+                fld = q.get("field")
+                if fld == "name":
+                    n_label = "姓名字段"
+                elif fld in ("phone", "mobile", "tel"):
+                    n_label = "手机字段"
+                elif fld == "email":
+                    n_label = "邮箱字段"
+                elif fld in ("address", "addr"):
+                    n_label = "地址字段"
+                elif fld == "age":
+                    n_label = "年龄字段"
+                elif fld in ("company", "org"):
+                    n_label = "公司字段"
+                else:
+                    n_label = "自由文本"
+            elif qtype in ("matrix_single", "matrix"):
+                rs = q.get("rows", [])
+                cs = q.get("cols", [])
+                default_weights = ""  # 矩阵留空，用户按 "row:w1,w2,w3..." 多行格式写
+                n_label = f"{len(rs)}行 × {len(cs)}列"
+            else:
+                n_opts = len(q.get("choices", []))
+                default_weights = ",".join(["1"] * n_opts) if n_opts > 0 else ""
+                n_label = f"{n_opts}"
+
+            # 如果有全局历史配置，覆盖默认值（V1 逻辑保留）
+            existing = WEIGHT_CONFIG.get(qi)
+            if existing:
+                if "weights" in existing:
+                    default_weights = ",".join(
+                        [f"{w:.4f}" if isinstance(w, (int, float)) else str(w)
+                         for w in existing["weights"]]
+                    )
+                elif "options" in existing and isinstance(existing["options"], list):
+                    default_weights = ",".join([str(x) for x in existing["options"]])
+                # 矩阵特殊：row_weights 也转成可编辑字符串
+                if "row_weights" in existing and isinstance(existing["row_weights"], dict):
+                    lines = []
+                    for rk in sorted(existing["row_weights"].keys(),
+                                     key=lambda x: int(x) if str(x).isdigit() else str(x)):
+                        wlst = existing["row_weights"][rk]
+                        lines.append(f"{rk}:{','.join(str(x) for x in wlst)}")
+                    if lines:
+                        default_weights = " | ".join(lines)
+
+            # --- 选项数 / 规模描述列 ---
             ncell = tk.Frame(self.table_frame, bg=stripe_bg, height=34)
             ncell.grid(row=row, column=2, sticky="nsew", padx=(0, 1), pady=(0, 1))
             ncell.pack_propagate(False)
             tk.Label(
-                ncell, text=f"{n_opts}",
+                ncell, text=n_label,
                 font=("Cascadia Code", 10),
                 bg=stripe_bg, fg=COLORS["text_soft"],
                 anchor=tk.CENTER,
@@ -1595,31 +2087,277 @@ class SurveyGUI:
     # ==================================================================
 
     def _build_weight_config(self) -> dict:
+        """将 GUI 表格中用户编辑的内容导出为 V2 cfg dict（键为 int 题号）。
+
+        结构与 src/config_io.save_weight_config 要求的 cfg 完全一致。
+        """
         config: dict = {}
         for q in self.questions:
             qi = q["q"]
-            qtype = q["type"]
+            qtype = str(q.get("type", "single")).lower()
             entry_var = self.weight_entries.get(qi)
-            if not entry_var:
-                continue
-            raw = entry_var.get().strip()
-            if not raw:
+            raw = entry_var.get().strip() if entry_var else ""
+
+            # single / multi / radio / checkbox / dropdown：权重用浮点数组
+            if qtype in ("single", "radio", "multi", "checkbox", "dropdown"):
+                if not raw:
+                    continue
+                try:
+                    weights = [float(x.strip()) for x in raw.split(",") if x.strip()]
+                except ValueError:
+                    self._log(f"Q{qi} 权重格式错误，已跳过：{raw}", "WARN")
+                    continue
+                expected = len(q.get("choices", []))
+                if qtype in ("single", "radio", "dropdown") and expected == 0:
+                    # 下拉选项数可能未知时，接受任意长度
+                    pass
+                elif expected > 0 and len(weights) != expected:
+                    self._log(
+                        f"Q{qi} 权重数({len(weights)}) != 选项数({expected}), 已跳过",
+                        "WARN",
+                    )
+                    continue
+                cfg: dict = {"type": qtype, "weights": weights}
+                config[qi] = cfg
                 continue
 
-            # 单选/多选：解析为浮点权重
-            try:
-                weights = [float(x.strip()) for x in raw.split(",")]
-            except ValueError:
-                self._log(f"Q{qi} 权重格式错误，已跳过：{raw}", "WARN")
+            # scale / rating：权重按分值 (1..N)
+            if qtype in ("scale", "rating"):
+                scale_max = int(q.get("scale", 5))
+                if raw:
+                    # 允许权重：也允许直接写一个默认分值（纯整数）
+                    if raw.isdigit():
+                        v = int(raw)
+                        weights = [0.0] * scale_max
+                        if 1 <= v <= scale_max:
+                            weights[v - 1] = 1.0
+                    else:
+                        try:
+                            weights = [float(x.strip()) for x in raw.split(",")
+                                       if x.strip()]
+                        except ValueError:
+                            self._log(f"Q{qi} 量表权重格式错误，已跳过：{raw}", "WARN")
+                            continue
+                        if len(weights) != scale_max:
+                            self._log(
+                                f"Q{qi} 量表权重数({len(weights)}) != 级数({scale_max}), "
+                                "已按现有长度裁剪/补 0",
+                                "WARN",
+                            )
+                            if len(weights) < scale_max:
+                                weights += [0.0] * (scale_max - len(weights))
+                            else:
+                                weights = weights[:scale_max]
+                else:
+                    weights = None
+                cfg = {"type": qtype, "scale": scale_max}
+                if weights is not None:
+                    cfg["weights"] = weights
+                smin = q.get("scale_min")
+                if smin:
+                    cfg["scale_min"] = int(smin)
+                config[qi] = cfg
                 continue
-            if len(weights) != len(q["choices"]):
-                self._log(
-                    f"Q{qi} 权重数({len(weights)}) != 选项数({len(q['choices'])}), 已跳过",
-                    "WARN",
-                )
+
+            # text / input / textarea / fillblank：选项是候选文本（或留空走自动生成）
+            if qtype in ("text", "input", "textarea", "fillblank"):
+                cfg = {"type": qtype}
+                fld = q.get("field")
+                if fld:
+                    cfg["field"] = fld
+                if raw:
+                    # 候选文本：逗号分隔；为防用户要写英文逗号，用最后一次非空 split
+                    options = [s.strip() for s in raw.split(",") if s.strip()]
+                    if options:
+                        # 尝试解析：如果是纯数字也可能是用户想写权重？统一当成候选文本
+                        cfg["options"] = options
+                config[qi] = cfg
                 continue
-            config[qi] = {"type": qtype, "weights": weights}
+
+            # matrix / matrix_single：格式 "1:w1,w2,w3 | 2:w1,w2,w3 ..."
+            if qtype in ("matrix_single", "matrix"):
+                cfg = {"type": qtype}
+                rows = q.get("rows", [])
+                cols = q.get("cols", [])
+                if rows:
+                    cfg["rows"] = list(rows)
+                if cols:
+                    cfg["cols"] = list(cols)
+                if raw:
+                    row_weights: dict = {}
+                    ok_rows = True
+                    for seg in raw.split("|"):
+                        seg = seg.strip()
+                        if not seg:
+                            continue
+                        if ":" not in seg:
+                            ok_rows = False
+                            break
+                        rk, rhs = seg.split(":", 1)
+                        rk = rk.strip()
+                        try:
+                            wlst = [float(x.strip()) for x in rhs.split(",")
+                                    if x.strip()]
+                        except ValueError:
+                            ok_rows = False
+                            break
+                        if not rk:
+                            ok_rows = False
+                            break
+                        row_weights[rk] = wlst
+                    if not ok_rows:
+                        self._log(
+                            f"Q{qi} 矩阵行权重格式错误，跳过使用。"
+                            "正确格式: 1:w1,w2,w3 | 2:w1,w2,w3",
+                            "WARN",
+                        )
+                    elif row_weights:
+                        cfg["row_weights"] = row_weights
+                config[qi] = cfg
+                continue
+
+            # 未知类型：按旧逻辑兜底（浮点权重）
+            if raw:
+                try:
+                    weights = [float(x.strip()) for x in raw.split(",") if x.strip()]
+                except ValueError:
+                    self._log(f"Q{qi} 权重格式错误，已跳过：{raw}", "WARN")
+                    continue
+                config[qi] = {"type": qtype, "weights": weights}
         return config
+
+    # ==================================================================
+    #  配置 IO 按钮处理（V2）
+    # ==================================================================
+
+    def _on_save_config(self) -> None:
+        """把 GUI 表格的当前编辑内容导出为 JSON 配置文件。"""
+        if not _HAS_CONFIG_IO or save_weight_config is None:
+            self._log("未加载 src/config_io，无法导出配置", "FAIL")
+            return
+        cfg = self._build_weight_config()
+        if not cfg:
+            self._log("当前没有可导出的权重配置（请先探测题目）", "WARN")
+            return
+        filepath = filedialog.asksaveasfilename(
+            title="导出权重配置",
+            defaultextension=".json",
+            initialfile="weight_config.json",
+            filetypes=[("JSON 配置", "*.json"), ("所有文件", "*.*")],
+        )
+        if not filepath:
+            return
+        try:
+            meta = {
+                "name": os.path.splitext(os.path.basename(filepath))[0],
+                "description": f"GUI 导出 · 共 {len(cfg)} 道题",
+                "survey_url": self.url_var.get().strip()[:200],
+            }
+            if validate_weight_config:
+                warnings = validate_weight_config(cfg)
+                if warnings:
+                    self._log(
+                        f"导出前校验发现 {len(warnings)} 条警告，首条：{warnings[0]}",
+                        "WARN",
+                    )
+            save_weight_config(filepath, cfg, meta=meta)
+            self._log(f"✓ 已导出配置 → {os.path.relpath(filepath, _PROJECT_ROOT)}",
+                      "OK")
+        except Exception as e:
+            self._log(f"导出配置失败: {type(e).__name__}: {e}", "FAIL")
+
+    def _on_save_default_config(self) -> None:
+        """把当前 GUI 表格保存为默认配置（启动时自动加载）。"""
+        if not _HAS_CONFIG_IO or save_weight_config is None:
+            self._log("未加载 src/config_io，无法另存默认配置", "FAIL")
+            return
+        cfg = self._build_weight_config()
+        if not cfg:
+            self._log("当前没有可保存的权重配置", "WARN")
+            return
+        try:
+            if not os.path.exists(_DEFAULT_CONFIG_DIR):
+                os.makedirs(_DEFAULT_CONFIG_DIR, exist_ok=True)
+            meta = {
+                "name": "default_weight_config",
+                "description": f"GUI 另存默认 · 共 {len(cfg)} 道题",
+                "survey_url": self.url_var.get().strip()[:200],
+            }
+            save_weight_config(DEFAULT_WEIGHT_CONFIG_PATH, cfg, meta=meta)
+            self._log(
+                f"✓ 已另存默认配置 → {os.path.relpath(DEFAULT_WEIGHT_CONFIG_PATH, _PROJECT_ROOT)}",
+                "OK",
+            )
+        except Exception as e:
+            self._log(f"另存默认配置失败: {type(e).__name__}: {e}", "FAIL")
+
+    def _on_load_config(self, path: str | None = None) -> None:
+        """从 JSON 配置文件导入权重；更新全局 WEIGHT_CONFIG + GUI 表格。
+
+        :param path: 若为 None，弹文件选择框。
+        """
+        if not _HAS_CONFIG_IO or load_weight_config is None:
+            self._log("未加载 src/config_io，无法导入配置", "FAIL")
+            return
+        if path is None:
+            path = filedialog.askopenfilename(
+                title="导入权重配置",
+                filetypes=[("JSON 配置", "*.json"), ("所有文件", "*.*")],
+                initialdir=_DEFAULT_CONFIG_DIR if os.path.exists(_DEFAULT_CONFIG_DIR)
+                else _PROJECT_ROOT,
+            )
+            if not path:
+                return
+        if not os.path.exists(path):
+            self._log(f"配置文件不存在: {path}", "FAIL")
+            return
+        try:
+            cfg, meta = load_weight_config(path)
+        except Exception as e:
+            self._log(f"读取配置失败: {type(e).__name__}: {e}", "FAIL")
+            return
+
+        if validate_weight_config:
+            warnings = validate_weight_config(cfg)
+            for w in warnings:
+                self._log(f"[校验警告] {w}", "WARN")
+            self._log(f"配置载入 · 校验警告 {len(warnings)} 条", "INFO")
+
+        # 1. 合并到全局 WEIGHT_CONFIG
+        _cfg_module.WEIGHT_CONFIG.update(cfg)
+
+        # 2. 如果已经探测过题目，刷新 GUI 表格中对应题的显示
+        applied_cnt = 0
+        for qi, qcfg in cfg.items():
+            entry_var = self.weight_entries.get(qi)
+            if entry_var is None:
+                continue  # 该题号不在当前探测结果里，仅更新全局即可
+            weights = qcfg.get("weights")
+            options = qcfg.get("options")
+            row_weights = qcfg.get("row_weights")
+            if weights:
+                entry_var.set(",".join(
+                    [f"{w:.4f}" if isinstance(w, (int, float)) else str(w)
+                     for w in weights]
+                ))
+            elif options:
+                entry_var.set(",".join(str(x) for x in options))
+            elif row_weights and isinstance(row_weights, dict):
+                lines = []
+                for rk in sorted(row_weights.keys(),
+                                 key=lambda x: int(x) if str(x).isdigit() else str(x)):
+                    wlst = row_weights[rk]
+                    lines.append(f"{rk}:{','.join(str(x) for x in wlst)}")
+                if lines:
+                    entry_var.set(" | ".join(lines))
+            applied_cnt += 1
+
+        meta_name = meta.get("name") or os.path.basename(path)
+        self._log(
+            f"✓ 已载入「{meta_name}」· 配置 {len(cfg)} 道 · "
+            f"同步到表格 {applied_cnt} 道",
+            "OK",
+        )
 
     # ==================================================================
     #  探测题目
@@ -1677,21 +2415,37 @@ class SurveyGUI:
                         self._log("验证超时，探测失败", "FAIL")
                         return
 
-                has_inputs = driver.execute_script(
-                    "return document.querySelectorAll('input[type=\"radio\"], input[type=\"checkbox\"]').length"
+                # V2：判定"问卷已加载"的元素条件扩展到 6 类题型的常见 DOM
+                has_any_q = driver.execute_script(
+                    "return ("
+                    "document.querySelectorAll('input[type=\"radio\"], input[type=\"checkbox\"]').length"
+                    " + document.querySelectorAll('input[type=\"text\"], textarea').length"
+                    " + document.querySelectorAll('select').length"
+                    " + document.querySelectorAll('div.ui-slider, div.star, div.question-rating, div.scale-span').length"
+                    " + document.querySelectorAll('div.field div.label').length"
+                    ");"
                 )
-                if not has_inputs:
+                if not has_any_q:
                     iframes = driver.execute_script(
                         "return document.querySelectorAll('iframe').length"
                     )
+                    found_frame = False
                     for i in range(iframes):
                         driver.switch_to.frame(i)
-                        if driver.execute_script(
-                            "return document.querySelectorAll('input[type=\"radio\"], input[type=\"checkbox\"]').length"
-                        ):
+                        in_frame = driver.execute_script(
+                            "return ("
+                            "document.querySelectorAll('input[type=\"radio\"], input[type=\"checkbox\"]').length"
+                            " + document.querySelectorAll('input[type=\"text\"], textarea').length"
+                            " + document.querySelectorAll('select').length"
+                            " + document.querySelectorAll('div.ui-slider, div.star, div.scale-span').length"
+                            " + document.querySelectorAll('div.field div.label').length"
+                            ");"
+                        )
+                        if in_frame:
+                            found_frame = True
                             break
                         driver.switch_to.default_content()
-                    else:
+                    if not found_frame:
                         driver.switch_to.default_content()
                         self._log("未能在页面中找到题目元素", "FAIL")
                         return
@@ -1699,7 +2453,13 @@ class SurveyGUI:
                 try:
                     WebDriverWait(driver, 15).until(
                         lambda d: d.execute_script(
-                            "return document.querySelectorAll('input[type=\"radio\"], input[type=\"checkbox\"]').length > 0"
+                            "return ("
+                            "document.querySelectorAll('input[type=\"radio\"], input[type=\"checkbox\"]').length"
+                            " + document.querySelectorAll('input[type=\"text\"], textarea').length"
+                            " + document.querySelectorAll('select').length"
+                            " + document.querySelectorAll('div.ui-slider, div.star, div.scale-span').length"
+                            " + document.querySelectorAll('div.field div.label').length"
+                            ") > 0;"
                         )
                     )
                 except Exception:
@@ -1723,12 +2483,101 @@ class SurveyGUI:
 
         threading.Thread(target=_worker, daemon=True).start()
 
+    def _restore_weight_table_from_config(self, restored_w: dict[int, dict]) -> None:
+        """V2.1 续传：从持久化的 weight_config 重建 GUI 表格显示。
+
+        当用户跨进程续传时，``self.questions`` 是空的（页面还没探测），
+        无法直接调 ``_populate_weight_table`` —— 这里从 restored_w 反向构造
+        一个最小化的 questions list，让表格能正确显示题号 + 类型 Badge +
+        填入用户上次的权重字符串。
+
+        反向构造规则：
+          - single/multi/dropdown：choices 长度 = weights 长度
+          - scale：scale 字段或 weights 长度
+          - text：无 choices；若 options 字段存在则填入候选
+          - matrix_single：rows/cols 字段；若 row_weights 存在则填入
+        """
+        if not restored_w:
+            return
+
+        # 检查 self.questions 是否已有数据（用户已探测过 + 已填表）
+        # 若有，直接走 _populate_weight_table 复用现有 self.questions
+        # 没有 → 反向构造
+        if self.questions:
+            # 已有 questions，直接刷新表格（_populate_weight_table 会从
+            # _cfg_module.WEIGHT_CONFIG 读取已恢复的配置）
+            self._populate_weight_table(self.questions)
+            return
+
+        # 反向构造最小化 questions
+        reconstructed: list[dict] = []
+        for qi in sorted(restored_w.keys()):
+            cfg = restored_w[qi]
+            if not isinstance(cfg, dict):
+                continue
+            qtype = cfg.get("type", "single")
+            q: dict = {"q": qi, "type": qtype}
+
+            if qtype in ("single", "radio", "multi", "checkbox", "dropdown"):
+                weights = cfg.get("weights") or []
+                # choices 用占位索引（仅用于显示"选项数"列）
+                q["choices"] = list(range(1, len(weights) + 1)) if weights else [1, 2]
+            elif qtype in ("scale", "rating"):
+                # 优先用 scale 字段，否则用 weights 长度
+                scale = cfg.get("scale")
+                if scale is None:
+                    weights = cfg.get("weights") or []
+                    scale = len(weights) if weights else 5
+                q["scale"] = int(scale)
+                q["scale_min"] = 1
+                q["choices"] = list(range(1, int(scale) + 1))
+            elif qtype in ("text", "input", "textarea", "fillblank"):
+                q["field"] = cfg.get("field")
+                q["choices"] = []
+            elif qtype in ("matrix_single", "matrix"):
+                rows = cfg.get("rows") or [1, 2]
+                cols = cfg.get("cols") or [1, 2]
+                # 如果有 row_weights，从 row_weights 推断 rows
+                row_weights = cfg.get("row_weights") or {}
+                if row_weights:
+                    rows = sorted(int(k) for k in row_weights.keys())
+                    if not cols and row_weights:
+                        first_rw = next(iter(row_weights.values()))
+                        cols = list(range(1, len(first_rw) + 1)) if first_rw else [1, 2]
+                q["rows"] = rows
+                q["cols"] = cols
+                q["choices"] = cols  # 给 _populate_weight_table 用作"选项数"列
+            else:
+                q["choices"] = cfg.get("choices") or [1, 2]
+
+            reconstructed.append(q)
+
+        if reconstructed:
+            self._populate_weight_table(reconstructed)
+
     def _on_questions_detected(self, questions: list[dict]) -> None:
         self._populate_weight_table(questions)
-        single_n = sum(1 for q in questions if q["type"] == "single")
-        multi_n = sum(1 for q in questions if q["type"] == "multi")
+        single_n = sum(1 for q in questions if q.get("type")
+                       in ("single", "radio"))
+        multi_n = sum(1 for q in questions if q.get("type")
+                      in ("multi", "checkbox"))
+        scale_n = sum(1 for q in questions if q.get("type")
+                      in ("scale", "rating"))
+        drop_n = sum(1 for q in questions if q.get("type") == "dropdown")
+        text_n = sum(1 for q in questions if q.get("type")
+                     in ("text", "input", "textarea", "fillblank"))
+        mat_n = sum(1 for q in questions if q.get("type")
+                    in ("matrix_single", "matrix"))
+        parts = []
+        if single_n: parts.append(f"{single_n} 单选")
+        if multi_n:  parts.append(f"{multi_n} 多选")
+        if drop_n:   parts.append(f"{drop_n} 下拉")
+        if scale_n:  parts.append(f"{scale_n} 量表")
+        if text_n:   parts.append(f"{text_n} 填空")
+        if mat_n:    parts.append(f"{mat_n} 矩阵")
+        summary = "、".join(parts) if parts else "未识别题型"
         self._log(
-            f"探测完成，共 {len(questions)} 题（{single_n} 单选, {multi_n} 多选）",
+            f"探测完成，共 {len(questions)} 题（{summary}）",
             "OK",
         )
         self._log("请在表格中调整权重后点击「开始运行」", "INFO")
@@ -1757,11 +2606,81 @@ class SurveyGUI:
             _cfg_module.WEIGHT_CONFIG.clear()
             self._log("未配置权重表格，所有题目使用等权重随机", "WARN")
 
+        # ---- V2 断点续传：检查是否有可恢复的上次批次 ----
+        start_idx = 1
+        resume_run_id: int | None = None
+        weights_restored = False
+        db_for_resume = self._history_get_db()
+        if db_for_resume is not None:
+            try:
+                prev = db_for_resume.find_resumable_run(url[:500])
+                if prev is not None:
+                    done = int(prev["success_count"])
+                    planned = int(prev["total_submissions"])
+                    # 只有"已成功 ≥ 1 且 < 计划总数"时才提示恢复
+                    if 0 < done < planned:
+                        # V2.1：从 row 反序列化上次的权重配置，自动恢复
+                        try:
+                            restored_w = type(db_for_resume).deserialize_weight_config(prev)
+                        except Exception:
+                            restored_w = {}
+                        if restored_w:
+                            _cfg_module.WEIGHT_CONFIG.clear()
+                            _cfg_module.WEIGHT_CONFIG.update(restored_w)
+                            weights_restored = True
+                            self._log(
+                                f"[续传] 已自动恢复上次权重配置："
+                                f"{len(restored_w)} 道题",
+                                "OK",
+                            )
+                            # 把权重数据重新刷到 GUI 表格显示，让用户可见可改
+                            self._restore_weight_table_from_config(restored_w)
+
+                        msg = (
+                            f"检测到上次未完成的批次：\n\n"
+                            f"  Run #{prev['id']} · 状态 = {prev['status']}\n"
+                            f"  已成功 {done} / {planned} 份\n"
+                            f"  开始时间 {str(prev['started_at'])[:19]}\n\n"
+                        )
+                        if weights_restored:
+                            msg += (
+                                f"✅ 上次权重已自动恢复到表格（{len(restored_w)} 道题），\n"
+                                f"    可在配置 Tab 检查 / 修改后再启动。\n\n"
+                            )
+                        msg += (
+                            f"是否从第 {done + 1} 份继续？"
+                            f"（取消则从第 1 份重新开始，但权重恢复仍生效）"
+                        )
+                        yes = messagebox.askyesno(
+                            "断点续传", msg, icon=messagebox.QUESTION,
+                        )
+                        if yes:
+                            start_idx = done + 1
+                            resume_run_id = int(prev["id"])
+                            self._log(
+                                f"[续传] 恢复 Run #{resume_run_id}："
+                                f"从第 {start_idx} 份继续（共 {planned} 份）",
+                                "OK",
+                            )
+                        else:
+                            self._log(
+                                f"[续传] 已忽略上次中断批次，从第 1 份重新开始"
+                                f"（权重恢复仍生效）",
+                                "INFO",
+                            )
+            except Exception as e:
+                self._log(
+                    f"[续传] 检查可恢复批次失败（不影响运行）: "
+                    f"{type(e).__name__}: {e}",
+                    "WARN",
+                )
+
         self.running = True
         self.stop_flag = False
-        self.success_count = 0
+        # 续传：已成功份数初始化为 start_idx - 1（这样进度条立刻反映真实状态）
+        self.success_count = start_idx - 1
         self.fail_count = 0
-        self.current_round = 0
+        self.current_round = start_idx
         self.total_rounds = total
 
         self.start_btn.configure(state=tk.DISABLED)
@@ -1770,14 +2689,28 @@ class SurveyGUI:
         self.qr_btn.configure(state=tk.DISABLED)
         self._set_status("运行中...", COLORS["primary"])
 
-        self._progress_value = 0.0
+        self._progress_value = (
+            (self.success_count + self.fail_count) / self.total_rounds
+            if self.total_rounds else 0.0
+        )
         self._redraw_progress()
+        self._update_progress()
 
         self._log("═" * 40, "HEADER")
-        self._log(f"▶ 开始执行，目标 {total} 份", "HEADER")
+        if start_idx > 1:
+            self._log(
+                f"▶ 断点续传启动：从第 {start_idx} 份 → 第 {total} 份（共 {total - start_idx + 1} 份待跑）",
+                "HEADER",
+            )
+        else:
+            self._log(f"▶ 开始执行，目标 {total} 份", "HEADER")
         self._log("═" * 40, "HEADER")
 
-        threading.Thread(target=self._run_loop, args=(url, total), daemon=True).start()
+        threading.Thread(
+            target=self._run_loop,
+            args=(url, total, start_idx, resume_run_id),
+            daemon=True,
+        ).start()
 
     def _on_stop(self) -> None:
         if not self.running:
@@ -1787,15 +2720,64 @@ class SurveyGUI:
         self._set_status("正在停止...", COLORS["warning"])
         self._log("用户请求停止，等待当前轮次完成...", "WARN")
 
-    def _run_loop(self, url: str, total: int) -> None:
+    def _run_loop(
+        self,
+        url: str,
+        total: int,
+        start_idx: int = 1,
+        resume_run_id: int | None = None,
+    ) -> None:
         driver = None
+        history_db: "SubmissionHistory | None" = None
+        run_id: int | None = resume_run_id  # 断点续传：复用上次 run_id
+        final_status = "failed"
+        t0 = time.time()
         try:
+            # ---- V2：若历史模块可用，开启本次运行记录 ----
+            db = self._history_get_db()
+            if db is not None:
+                try:
+                    if run_id is None:
+                        # 全新批次：start_run + 持久化当前权重配置快照
+                        # （V2.1：用 dict() 深拷贝，避免后续 WEIGHT_CONFIG 变动影响快照）
+                        wc_snapshot = {
+                            int(k): dict(v) if isinstance(v, dict) else v
+                            for k, v in _cfg_module.WEIGHT_CONFIG.items()
+                        }
+                        run_id = db.start_run(
+                            survey_url=url[:500],
+                            total_submissions=total,
+                            browser=self.browser_var.get(),
+                            use_uc=self.use_uc_var.get(),
+                            weight_config=wc_snapshot if wc_snapshot else None,
+                        )
+                        self._log(
+                            f"[历史] Run #{run_id} 已记录起点"
+                            + (f" · 权重快照 {len(wc_snapshot)} 道题" if wc_snapshot else " · 等权重"),
+                            "INFO",
+                        )
+                    else:
+                        # 断点续传：复用上次 run_id，不重新建表
+                        # （上次写入的 weight_config_json 仍是当时的快照，不需要覆盖）
+                        self._log(
+                            f"[历史] 续传模式 · 复用 Run #{run_id}（不重置计数，权重沿用上次）",
+                            "INFO",
+                        )
+                    history_db = db
+                except Exception as e:
+                    self._log(f"[历史] start_run 失败（不影响答题）: "
+                              f"{type(e).__name__}: {e}", "WARN")
+                    history_db = None
+                    run_id = None
+
             driver = create_driver(
                 self.browser_var.get(), use_uc=self.use_uc_var.get(),
             )
-            for idx in range(1, total + 1):
+            # 断点续传：循环从 start_idx 起步（已成功的 start_idx-1 份数不计入本轮）
+            for idx in range(start_idx, total + 1):
                 if self.stop_flag:
-                    self._log("已停止运行", "WARN")
+                    final_status = "interrupted"  # 用户主动停止 → 可恢复
+                    self._log("已停止运行（已成功份数可下次恢复）", "WARN")
                     break
 
                 self.current_round = idx
@@ -1804,7 +2786,12 @@ class SurveyGUI:
                 self._log(f"[{idx}/{total}] 提交中...", "INFO")
 
                 try:
-                    ok = run_one_submission(driver, url)
+                    ok = run_one_submission(
+                        driver, url,
+                        history_db=history_db,
+                        run_id=run_id,
+                        submission_index=idx,
+                    )
                 except InvalidSessionIdException:
                     self._log("浏览器断开，正在重建...", "WARN")
                     try: driver.quit()
@@ -1841,10 +2828,48 @@ class SurveyGUI:
                     )
 
                 time.sleep(random.uniform(ROUND_INTERVAL_MIN, ROUND_INTERVAL_MAX))
+            else:
+                # for 正常跑完（没 break）
+                final_status = "finished"
 
         except Exception as e:
+            final_status = "failed"
             self._log(f"运行异常: {type(e).__name__}: {e}", "FAIL")
         finally:
+            # ---- V2：写入结束状态 ----
+            if history_db is not None and run_id is not None:
+                try:
+                    note = (
+                        f"GUI · browser={self.browser_var.get()} "
+                        f"uc={self.use_uc_var.get()}"
+                    )
+                    elapsed = time.time() - t0
+                    if final_status == "interrupted":
+                        # 中断：用 mark_interrupted 别名，语义清晰
+                        history_db.mark_interrupted(
+                            run_id,
+                            success_count=self.success_count,
+                            fail_count=self.fail_count,
+                            total_elapsed_seconds=elapsed,
+                            error_message=note,
+                        )
+                    else:
+                        history_db.finish_run(
+                            run_id,
+                            success_count=self.success_count,
+                            fail_count=self.fail_count,
+                            total_elapsed_seconds=elapsed,
+                            status=final_status,
+                            error_message=note if final_status != "finished" else None,
+                        )
+                    self._log(
+                        f"[历史] Run #{run_id} 已闭合: {final_status} "
+                        f"(✓ {self.success_count} / ✕ {self.fail_count})",
+                        "INFO",
+                    )
+                except Exception as he:
+                    self._log(f"[历史] finish_run 失败: {type(he).__name__}: {he}",
+                              "WARN")
             if driver:
                 try: driver.quit()
                 except Exception: pass
@@ -1863,6 +2888,11 @@ class SurveyGUI:
             "HEADER",
         )
         self._log("═" * 40, "HEADER")
+        # V2：刷新历史记录 Tab
+        try:
+            self._history_refresh()
+        except Exception:
+            pass
 
     def _update_progress(self) -> None:
         self.success_var.set(str(self.success_count))
