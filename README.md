@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.0.0-brightgreen.svg)](src/__init__.py)
+[![Version](https://img.shields.io/badge/Version-2.1.0-brightgreen.svg)](src/__init__.py)
 
 ---
 
@@ -20,6 +20,9 @@
 - **🆕 V2 · 配置文件导入导出**：JSON 配置（schema_version=2.0）+ 启动自动加载默认权重，支持 GUI 一键导入导出
 - **🆕 V2 · 运行历史记录**：SQLite 持久化 runs + answers 双表，GUI 「历史记录」Tab 可查询、导出 CSV、清理过期数据
 - **🆕 V2 · CLI 增强**：`--config` / `--save-config` / `--history` / `--stats` 四个新参数
+- **🆕 V2.1 · 断点续填（单次提交内）**：`detect_answered_questions` 一次 JS 注入扫描 6 类题型已填状态，retry 重试时跳过已答的题（避免重复点击触发反检测）
+- **🆕 V2.1 · 断点续传（跨进程批次）**：runs 表新增 `interrupted` 状态 + `find_resumable_run` 接口，下次启动同 URL 时弹「是否从第 K+1 份继续」对话框
+- **🆕 V2.1 · 权重持久化**：`runs.weight_config_json` 列存本次批次权重快照，跨进程续传时自动反序列化注入 + 重建 GUI 表格显示，确保"最后完成的权重还是用户设置的"
 
 ---
 
@@ -76,6 +79,8 @@ python run_cli.py --history ./data/history.db
 python run_cli.py --stats
 ```
 
+> **V2.1 续传行为**：CLI 启动时若发现同 URL 下 24 小时内有 `interrupted` 状态的 run，会自动加载上次的权重配置到 `WEIGHT_CONFIG`（但 CLI 当前不弹对话框，需要用户自行决定是否从第 K+1 份继续；GUI 才有交互式恢复对话框）。
+
 ### GUI 使用
 
 ```bash
@@ -95,6 +100,12 @@ GUI 界面操作流程：
 5. （可选）点 **⭐ 另存默认** 把当前表格存成 `configs/default_weight_config.json`，下次启动自动加载
 6. 点 **▶ 开始运行**；运行过程中可随时切到 **📜 历史记录** Tab 查看 runs 列表和答题明细
 
+> **V2.1 断点续传流程**：
+> - 运行中点 **⏹ 停止** → 当前 run 标记为 `interrupted`（区别于 `finished` / `failed`），已成功份数 K 不丢失
+> - 下次启动同 URL → GUI 自动检测 `find_resumable_run(url)` → 弹对话框"Run #N · 已成功 K/M 份 · 是否从第 K+1 份继续？"
+> - 同时自动从 `runs.weight_config_json` 反序列化上次权重 → 注入 `WEIGHT_CONFIG` + 刷回表格（用户可检查/修改后再启动）
+> - 点"是" → 进度条立刻显示 `K/M`，从第 K+1 份开始跑，闭合时 `interrupted → finished`
+
 ---
 
 ## 项目结构
@@ -109,18 +120,18 @@ automation/
 ├── data/                       # V2 新增：历史记录 SQLite 默认目录
 │   └── history.db
 ├── src/
-│   ├── __init__.py             # 版本号（v2.0.0）
+│   ├── __init__.py             # 版本号（v2.1.0）
 │   ├── config.py               # 全局配置：权重定义、运行时常量、反检测参数
-│   ├── pipeline.py             # 核心编排：单次问卷填写 + 提交流程（history 可选接入）
-│   ├── detection.py            # 题目结构自动探测（JS 注入扫描 6 类题型 DOM）
+│   ├── pipeline.py             # 核心编排：单次问卷填写 + 提交流程（含断点续填跳过已答题 + history 可选接入）
+│   ├── detection.py            # 题目结构自动探测（JS 注入扫描 6 类题型 DOM + detect_answered_questions 续填扫描）
 │   ├── answering.py            # V1：单选/多选 答案生成策略（保留，完全兼容）
 │   ├── answering_v2.py         # V2：6 类题型统一 dict 格式答案生成器
 │   ├── interaction.py          # DOM 交互层（点击/填空/量表/下拉/矩阵 + 提交按钮）
 │   ├── verification.py         # 智能验证码检测与人工等待
 │   ├── utils.py                # 工具库：正态分布、指数退避、UA 池、人工介入锁
-│   ├── cli.py                  # 命令行入口：批量循环 + V2 参数
+│   ├── cli.py                  # 命令行入口：批量循环 + V2 参数 + weight_config 持久化
 │   ├── config_io.py            # V2：JSON 权重配置读写 + JSON Schema 风格校验
-│   ├── history.py              # V2：SubmissionHistory（runs + answers SQLite）
+│   ├── history.py              # V2 SubmissionHistory（runs+answers SQLite）+ V2.1 find_resumable_run / mark_interrupted / weight_config 持久化
 │   └── browser/
 │       ├── driver_factory.py           # Edge/Chrome 驱动 + CDP Stealth 配置
 │       └── driver_factory_stealth.py   # Stealth JS 反检测脚本构建器
@@ -129,10 +140,11 @@ automation/
 │   └── qr_utils.py             # 二维码 URL 解析
 └── tests/
     ├── test_answering.py       # V1 答案生成逻辑测试
-    ├── test_answering_v2.py    # V2 6 类题型答案生成测试（16 项）
-    ├── test_cli.py             # CLI 参数解析（含 V2 --config 等）
+    ├── test_answering_v2.py    # V2 6 类题型答案生成测试（15 项）
+    ├── test_cli.py             # CLI 参数解析（含 V2 --config 等，17 项）
     ├── test_config_io.py       # 配置读写 / 校验测试（10 项）
-    ├── test_history.py         # SQLite 历史记录测试（12 项）
+    ├── test_history.py         # SQLite 历史记录测试（18 项，含 V2.1 续传 + 权重持久化 6 项）
+    ├── test_detection_resume.py # V2.1 detect_answered_questions 容错测试（6 项）
     ├── test_e2e_integration.py # headless E2E：检测 → 答题 → 交互 → history 全链路
     ├── fixtures/
     │   └── mock_wjx.html       # V2 测试夹具：含 10 题 6 类型的 mock 问卷
@@ -150,19 +162,26 @@ automation/
         ↓
 打开问卷页面 → JS 注入探测 6 类题型
         ↓
-SubmissionHistory.start_run（若启用）
+V2.1 检查 find_resumable_run(url)
+  ├── 有 interrupted 的旧 run + 用户点"是" → 复用 run_id + 反序列化上次权重
+  └── 无 → 全新 start_run（V2.1 同时持久化当前 WEIGHT_CONFIG 到 weight_config_json）
         ↓
-循环 N 次 submission：
+循环 N 次 submission（V2.1 续传时从 start_idx 起）：
   ├── detection 返回 questions 列表
-  ├── answering_v2.generate_answer(q) 或 answering.build_answer_strategy(q)
-  ├── interaction.js_* 系列 JS 注入模拟人类操作
-  ├── history.record_answer(...)
+  ├── detect_answered_questions 扫描 DOM 已答集合（retry 重试场景）
+  ├── for q in questions:
+  │     ├── if q.q in answered_set: continue   ← 跳过已答的题
+  │     ├── answering_v2.generate_answer(q) 按 WEIGHT_CONFIG 加权
+  │     ├── interaction.js_* JS 注入模拟人类操作
+  │     └── history.record_answer(...)
   ├── 正态分布随机停顿
   └── 遇验证码 → 弹窗等待人工介入
         ↓
 模拟点击提交 → success_count / fail_count 统计
         ↓
-SubmissionHistory.finish_run（写入 status / ok / fail / note）
+用户主动停止 → mark_interrupted（V2.1 续传状态，下次可恢复）
+正常完成 → finish_run(status="finished")
+异常崩溃 → finish_run(status="failed")
 ```
 
 ---
@@ -249,7 +268,7 @@ WEIGHT_CONFIG = {
 
 每次运行会在 `data/history.db` 生成两张表：
 
-- **runs**：`id, started_at, finished_at, status, survey_url, total_submissions, ok_count, fail_count, note`
+- **runs**：`id, started_at, finished_at, status, survey_url, total_submissions, ok_count, fail_count, note, weight_config_json (V2.1)`
 - **answers**：`run_id, submission_index, q_number, q_type, options_selected(JSON), text_answer, elapsed_ms, recorded_at`
 
 三种使用方式：
@@ -260,20 +279,35 @@ WEIGHT_CONFIG = {
 
 默认保留策略：GUI 的「🗑 清理 7 天前」按钮调用 `SubmissionHistory.purge_old(days=7)`。
 
+### V2.1 新增：断点续传 + 权重持久化 API
+
+| API | 用途 |
+|---|---|
+| `find_resumable_run(survey_url, max_age_hours=24)` | 找同 URL 下最近一次 `interrupted`/`running` 的 run（断点续传入口） |
+| `mark_interrupted(run_id, success_count, fail_count, ...)` | 用户主动停止时调用，把 status 写为 `interrupted`（区别于 finished/failed） |
+| `count_done_submissions(run_id)` | 读 runs.success_count（用于决定从第几份继续） |
+| `start_run(..., weight_config=dict)` | 启动批次时把当前 WEIGHT_CONFIG 序列化为 JSON 存入 `weight_config_json` 列 |
+| `SubmissionHistory.deserialize_weight_config(row)` (静态) | 反序列化 row 里的 weight_config_json，键名 str → int，损坏 JSON 返回空 dict |
+
+老 DB 自动迁移：第一次打开时 `_apply_migrations()` 用 `PRAGMA table_info` 检测到缺 `weight_config_json` 列 → 自动 `ALTER TABLE ADD COLUMN`。幂等，多次打开不会报错。
+
 ---
 
 ## 运行测试
 
 ```bash
-# V1 + V2 单元 + 集成 + E2E（headless，不需要 GUI）
+# V1 + V2 + V2.1 全量单元 + 集成 + E2E（headless，不需要 GUI）
 python -m pytest tests/ -v
 
-# 仅跑 V2 新增
+# 仅跑 V2 新增（answering_v2 + config_io + history + e2e）
 python -m pytest tests/test_answering_v2.py tests/test_config_io.py \
                  tests/test_history.py tests/test_e2e_integration.py -v
+
+# 仅跑 V2.1 断点续传相关（detection 续填容错 + history 续传/权重持久化）
+python -m pytest tests/test_detection_resume.py tests/test_history.py -v
 ```
 
-当前 V2 模块测试全部通过（36+2 项），E2E 使用 `tests/fixtures/mock_wjx.html` 离线跑通检测 → 答题 → 交互 → history 的完整链路。
+当前测试全部通过：**93/93** —— V1 (38) + V2 answering_v2/config_io (25) + V2 history (12) + V2 E2E (2) + V2.1 续传与权重持久化 (12) + utils (4)。E2E 使用 `tests/fixtures/mock_wjx.html` 离线跑通检测 → 答题 → 交互 → history 的完整链路。
 
 ---
 
