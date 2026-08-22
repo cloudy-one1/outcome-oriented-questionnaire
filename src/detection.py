@@ -278,3 +278,147 @@ return (function() {
 })();
     """)
     return json.loads(raw)
+
+
+def detect_answered_questions(driver: Any) -> set[int]:
+    """扫描当前页面，返回「已经填好的题号集合」（用于断点续填）。
+
+    单次 JS 注入，覆盖 V2 全部 6 类题型的"已答"判定规则：
+
+    ================================ ===========================================
+    题型                              判定"已填"的 DOM 条件
+    ================================ ===========================================
+    single / radio                  ``input[name=qN]:checked`` 存在
+    multi / checkbox                ``input[name=qN]:checked`` 数量 > 0
+    dropdown                        ``select[name=qN].selectedIndex > 0``
+                                     （0 = "请选择"占位项，视为未填）
+    scale / rating                  同 single（隐藏 radio 命中 :checked）
+                                     兜底：容器内有 ``.jqchecked/.checked/.on`` 子项
+    text / textarea                  ``#qN.value`` 或 ``textarea[name=qN].value``
+                                     非空字符串；contentEditable 走 ``innerText``
+    matrix_single                    每行 ``input[name=qN_R]:checked`` 都存在
+                                     （任一行未选 → 整题视为未填，跳过不填）
+    ================================ ===========================================
+
+    :param driver: Selenium WebDriver
+    :return:       set[int]，元素是已答的题号；探测失败/页面无题 → 空集合
+    """
+    raw = driver.execute_script(r"""
+return (function() {
+    var answered = {};
+
+    // ---------- 1. 单选 / 多选 ----------
+    document.querySelectorAll('input[type="radio"], input[type="checkbox"]').forEach(function(el) {
+        var m = (el.name || '').match(/q(\d+)/) || (el.id || '').match(/q(\d+)/);
+        if (!m) return;
+        var q = parseInt(m[1]);
+        if (el.checked) {
+            answered[q] = true;
+        }
+    });
+
+    // ---------- 2. 下拉 ----------
+    document.querySelectorAll('select').forEach(function(sel) {
+        var nm = sel.name || '', id = sel.id || '';
+        var m = nm.match(/q(\d+)/) || id.match(/q(\d+)/) || id.match(/selectq(\d+)/);
+        if (!m) return;
+        var q = parseInt(m[1]);
+        // selectedIndex === 0 通常是"请选择"占位项 → 不算已填
+        // 但如果第一个 option 就是真实选项（无占位），selectedIndex > 0 才算
+        // 这里采用：selectedIndex > 0 OR (selectedIndex === 0 且第一个 option.value 非空)
+        if (sel.selectedIndex > 0) {
+            answered[q] = true;
+        } else if (sel.selectedIndex === 0 && sel.options.length > 0) {
+            var firstOpt = sel.options[0];
+            var firstVal = firstOpt ? (firstOpt.value || '') : '';
+            var firstTxt = firstOpt ? ((firstOpt.textContent || '').trim()) : '';
+            // 第一个 option 有 value 且不是 "请选择" 类提示 → 视为已选第一项
+            if (firstVal && !/请选择|选择|---|^\s*$/.test(firstTxt)) {
+                answered[q] = true;
+            }
+        }
+    });
+
+    // ---------- 3. 量表 / 评分（兜底：:checked 已在 1. 中命中；这里补 jqchecked 类检测） ----------
+    var scaleSel = '[class*="rate"],[class*="star"],[class*="level"],[class*="score"],[class*="rating"]';
+    document.querySelectorAll(scaleSel).forEach(function(area) {
+        var host = area.closest ? area.closest('.field,.div_question,.q-item,li,.question,div[id^="div"]') : null;
+        if (!host) return;
+        var idm = (host.id || '').match(/div(\d+)/) || (host.id || '').match(/q(\d+)/);
+        if (!idm) return;
+        var q = parseInt(idm[1]);
+        if (answered[q]) return;  // 已被 :checked 命中
+        // 兜底：容器内有 .jqchecked / .checked / .on / .active 类的子项
+        var hit = area.querySelector('.jqchecked, .checked, .on, .active');
+        if (hit) {
+            answered[q] = true;
+        }
+    });
+
+    // ---------- 4. 填空 ----------
+    var fillables = document.querySelectorAll(
+        'input[type="text"], input[type="tel"], input[type="number"], input:not([type]), textarea'
+    );
+    fillables.forEach(function(el) {
+        if (el.disabled || el.readOnly) return;
+        var id = el.id || '', name = el.name || '';
+        var m = id.match(/^q(\d+)$/) || id.match(/^answerq(\d+)$/) ||
+                name.match(/^q(\d+)$/) || id.match(/q(\d+)/);
+        if (!m) {
+            var parent = el.closest ? el.closest('[id*="div"]') : null;
+            if (parent) {
+                var pm = (parent.id || '').match(/div(\d+)/);
+                if (pm) m = pm;
+            }
+        }
+        if (!m) return;
+        var q = parseInt(m[1]);
+
+        var val = '';
+        if (el.isContentEditable) {
+            val = (el.innerText || '').trim();
+        } else {
+            val = (el.value || '').toString().trim();
+        }
+        if (val) {
+            answered[q] = true;
+        }
+    });
+
+    // ---------- 5. 矩阵单选：每行都有 :checked 才算整题已答 ----------
+    var matrixMap = {};  // qN -> { total: Set(rows), answered: Set(rows) }
+    document.querySelectorAll('input[type="radio"]').forEach(function(r) {
+        var m = (r.name || '').match(/^q(\d+)_(\d+)$/);
+        if (!m) return;
+        var qN = parseInt(m[1]);
+        var rowN = parseInt(m[2]);
+        if (!matrixMap[qN]) matrixMap[qN] = { total: {}, answered: {} };
+        matrixMap[qN].total[rowN] = true;
+        if (r.checked) {
+            matrixMap[qN].answered[rowN] = true;
+        }
+    });
+    Object.keys(matrixMap).forEach(function(qN) {
+        var qi = parseInt(qN);
+        var info = matrixMap[qN];
+        var totalRows = Object.keys(info.total);
+        var answeredRows = Object.keys(info.answered);
+        // 矩阵的"已答"判定：所有行都有 :checked
+        if (totalRows.length > 0 && answeredRows.length === totalRows.length) {
+            // 不直接标记为已答，因为矩阵如果某行被检测出来但实际只有部分行选中，
+            // 应当只跳过已选的行——简化：整题全选才算跳过；否则整题重填
+            answered[qi] = true;
+        } else if (answeredRows.length > 0) {
+            // 部分行已答：从 answered 中移除，让 pipeline 整题重填
+            // （pipeline 的 _answer_one_question 不支持部分行续填，简单起见整题重填）
+            delete answered[qi];
+        }
+    });
+
+    return JSON.stringify(Object.keys(answered).map(function(k) { return parseInt(k); }));
+})();
+    """)
+    try:
+        return set(int(x) for x in json.loads(raw))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return set()

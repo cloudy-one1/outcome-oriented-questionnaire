@@ -60,7 +60,7 @@ from .answering import build_answer_strategy
 # V2 新增：answering_v2.generate_answer（统一 dict 格式 + 新题型）
 from .answering_v2 import generate_answer as generate_answer_v2
 
-from .detection import detect_questions
+from .detection import detect_answered_questions, detect_questions
 from .interaction import (
     find_and_click_submit,
     js_click_option,
@@ -358,6 +358,17 @@ def _do_one_submission_core(
         driver.switch_to.default_content()
         return False
 
+    # Step 5.5 断点续填：扫描已填好的题号集合（A 层核心）
+    # 场景：本次提交上一轮因网络波动/交互异常中断，但 DOM 上已答若干题，
+    #       重新 driver.get(url) 后页面是空白——所以正常情况下 answered 是空集；
+    #       只有 driver 没关、retry_with_backoff 重试同一份提交时，DOM 才保留已填状态。
+    #       这种重试场景下跳过已填题可以避免重复点击 → 反检测更自然。
+    try:
+        answered_set: set[int] = detect_answered_questions(driver)
+    except Exception:
+        answered_set = set()
+    skipped_count = 0
+
     # Step 6 逐题作答（V2 统一分发 + 可选 history 落盘）
     for qi, q in enumerate(questions):
         # 每 N 题检查一次验证码（每 2 题 → 更敏感）
@@ -365,6 +376,12 @@ def _do_one_submission_core(
             if not _check_verification_with_lock(driver, lock):
                 driver.switch_to.default_content()
                 return False
+
+        # 断点续填：跳过已答的题
+        q_num = int(q["q"])
+        if q_num in answered_set:
+            skipped_count += 1
+            continue
 
         _answer_one_question(
             driver,
@@ -382,6 +399,10 @@ def _do_one_submission_core(
             long_lo=Q_LONG_PAUSE_LO,
             long_hi=Q_LONG_PAUSE_HI,
         )
+
+    # 调试日志：跳过了多少题（仅在有跳过时输出，避免日志噪音）
+    if skipped_count > 0:
+        print(f"  [续填] 跳过 {skipped_count} 道已填题，本次重答 {len(questions) - skipped_count} 道")
 
     # Step 7 全题答完后再检查一次验证码（提交前问卷星最爱弹）
     if not _check_verification_with_lock(driver, lock):

@@ -150,6 +150,7 @@ def run_batch(
     browser: str = DEFAULT_BROWSER,
     use_uc: bool = DEFAULT_USE_UC,
     history_db: Any | None = None,
+    weight_config: dict | None = None,
 ) -> tuple[int, int]:
     """批量执行指定份数的问卷提交（v2.0：支持 history 逐题记录）。
 
@@ -159,6 +160,9 @@ def run_batch(
     V2 参数：
         history_db : SubmissionHistory 实例或 None；非 None 时会
                      start_run → 逐题 record_answer → finish_run 完整落盘。
+    V2.1 参数：
+        weight_config : 启用 history 时把当前 WEIGHT_CONFIG 一并持久化到
+                        runs.weight_config_json，下次 CLI 调用可用 --resume 恢复。
     """
     # ----- 延迟导入（运行时强依赖） -----
     from selenium.common.exceptions import InvalidSessionIdException  # type: ignore
@@ -192,6 +196,7 @@ def run_batch(
                 total_submissions=int(total_submissions),
                 browser=browser,
                 use_uc=bool(use_uc),
+                weight_config=weight_config,
             )
             total_elapsed_start = sys.float_info.get("perf_counter", lambda: 0.0)()
             # 跨版本兼容：实际使用 time.perf_counter 统计
@@ -351,6 +356,7 @@ def main(argv: list[str] | None = None) -> None:
         browser=BROWSER,
         use_uc=USE_UC,
         history_db=history_db,
+        weight_config=dict(WEIGHT_CONFIG) if WEIGHT_CONFIG else None,
     )
     print(f"运行结束 — 成功 {success}, 失败 {fail}")
 

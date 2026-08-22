@@ -40,11 +40,12 @@ CREATE TABLE IF NOT EXISTS runs (
     total_submissions       INTEGER NOT NULL,
     browser                 TEXT    NOT NULL,           -- 'edge' | 'chrome'
     use_uc                  INTEGER NOT NULL DEFAULT 0,  -- 0=False, 1=True
-    status                  TEXT    NOT NULL DEFAULT 'running',  -- 'running' | 'finished' | 'failed'
+    status                  TEXT    NOT NULL DEFAULT 'running',  -- 'running' | 'finished' | 'failed' | 'interrupted'
     success_count           INTEGER NOT NULL DEFAULT 0,
     fail_count              INTEGER NOT NULL DEFAULT 0,
     total_elapsed_seconds   REAL    NOT NULL DEFAULT 0.0,
     error_message           TEXT,
+    weight_config_json      TEXT,                       -- V2.1 断点续传：本次批次的权重配置 JSON
     started_at              TEXT    NOT NULL DEFAULT (datetime('now')),
     finished_at             TEXT
 );
@@ -69,6 +70,15 @@ CREATE INDEX IF NOT EXISTS idx_runs_status   ON runs(status);
 CREATE INDEX IF NOT EXISTS idx_answers_run   ON answers(run_id);
 CREATE INDEX IF NOT EXISTS idx_answers_qnum  ON answers(question_number);
 """
+
+# ============================================================================
+#  Schema 迁移：老 DB 升级到 V2.1（新增 weight_config_json 列）
+# ============================================================================
+_MIGRATION_ADD_WEIGHT_COLUMN: str = (
+    # SQLite 没有 IF NOT EXISTS 的 ADD COLUMN 语法，需要先 PRAGMA table_info 检测
+    # 这里只存 SQL 文本，实际执行见 _apply_migrations
+    "ALTER TABLE runs ADD COLUMN weight_config_json TEXT;"
+)
 
 
 class SubmissionHistory:
@@ -101,6 +111,20 @@ class SubmissionHistory:
         # 建表
         with self._locked():
             self._conn.executescript(_SCHEMA_SQL)
+        # 老库迁移：补列（幂等）
+        self._apply_migrations()
+
+    def _apply_migrations(self) -> None:
+        """V2.1 迁移：把老 runs 表加上 weight_config_json 列。幂等。
+
+        SQLite 没有 ``ALTER TABLE ADD COLUMN IF NOT EXISTS`` 语法，
+        所以用 ``PRAGMA table_info`` 查列名集合后再决定是否 ADD。
+        """
+        with self._locked():
+            cur = self._conn.execute("PRAGMA table_info(runs)")
+            cols = {row["name"] for row in cur.fetchall()}
+            if "weight_config_json" not in cols:
+                self._conn.execute(_MIGRATION_ADD_WEIGHT_COLUMN)
 
     def close(self) -> None:
         """关闭数据库连接（幂等）。"""
@@ -153,18 +177,70 @@ class SubmissionHistory:
         total_submissions: int,
         browser: str,
         use_uc: bool,
+        weight_config: Optional[dict] = None,
     ) -> int:
-        """开始一次批量运行，插入 runs 表并返回 run_id。"""
+        """开始一次批量运行，插入 runs 表并返回 run_id。
+
+        :param weight_config: V2.1 断点续传 —— 把本次批次的权重配置序列化为 JSON
+                              存入 ``runs.weight_config_json``，下次启动时可反序列化恢复。
+                              传 None 则留空，下次无法续传权重。
+        """
+        wc_json: Optional[str] = None
+        if weight_config is not None:
+            # 序列化时键名一律转 str（JSON 规范要 str key）；
+            # 反序列化时再转回 int（WEIGHT_CONFIG 是 dict[int, dict]）
+            serializable: dict[str, Any] = {
+                str(k): (v if isinstance(v, dict) else {"value": v})
+                for k, v in weight_config.items()
+            }
+            wc_json = json.dumps(serializable, ensure_ascii=False)
+
         sql = (
-            "INSERT INTO runs (survey_url, total_submissions, browser, use_uc, status)"
-            " VALUES (?, ?, ?, ?, 'running')"
+            "INSERT INTO runs (survey_url, total_submissions, browser, use_uc, status,"
+            " weight_config_json)"
+            " VALUES (?, ?, ?, ?, 'running', ?)"
         )
         with self._locked():
             cur = self._conn.execute(
                 sql,
-                (survey_url, int(total_submissions), browser, 1 if use_uc else 0),
+                (
+                    survey_url,
+                    int(total_submissions),
+                    browser,
+                    1 if use_uc else 0,
+                    wc_json,
+                ),
             )
             return int(cur.lastrowid)
+
+    @staticmethod
+    def deserialize_weight_config(row: sqlite3.Row) -> dict[int, dict]:
+        """从 runs row 反序列化 weight_config_json，返回 WEIGHT_CONFIG 兼容的 dict。
+
+        - 空 / 损坏 JSON → 返回空 dict（调用方应判断空，避免覆盖已有配置）
+        - JSON 合法 → 把 str 键转回 int 键
+        - 单值字段（如 scale 的整数权重）会保留原结构
+        """
+        raw = row["weight_config_json"] if "weight_config_json" in row.keys() else None
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        result: dict[int, dict] = {}
+        for k, v in data.items():
+            try:
+                qi = int(k)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(v, dict):
+                result[qi] = v
+            else:
+                result[qi] = {"value": v}
+        return result
 
     def finish_run(
         self,
@@ -240,6 +316,66 @@ class SubmissionHistory:
             return self._query(sql, (status, int(limit)))
         sql = "SELECT * FROM runs ORDER BY started_at DESC LIMIT ?"
         return self._query(sql, (int(limit),))
+
+    def find_resumable_run(
+        self,
+        survey_url: str,
+        max_age_hours: int = 24,
+    ) -> Optional[sqlite3.Row]:
+        """查找同一问卷 URL 下最近一次未完成的 run（status='interrupted' 或 'running'）。
+
+        用于「断点续传」场景：上次批量提交因网络/进程崩溃中断，
+        下次启动时调用此方法找到上次的 run_id 与已成功份数 K，
+        然后从 K+1 份继续。
+
+        :param survey_url:    问卷 URL（完全匹配，含 hash 片段）
+        :param max_age_hours: 只查最近 N 小时内的 run（避免把几天前的老 run 误恢复）
+        :return:              Row(run.id, total_submissions, success_count, ...) 或 None
+        """
+        sql = (
+            "SELECT * FROM runs "
+            "WHERE survey_url = ? "
+            "  AND status IN ('interrupted', 'running') "
+            "  AND started_at >= datetime('now', ?) "
+            "ORDER BY started_at DESC LIMIT 1"
+        )
+        return self._query_one(sql, (survey_url, f"-{int(max_age_hours)} hours"))
+
+    def count_done_submissions(self, run_id: int) -> int:
+        """统计某个 run 已成功提交的份数（success_count 字段，简单可靠）。
+
+        等价于直接读 runs.success_count；保留方法名是为了和
+        「answers 表精确统计」未来切换时接口不变。
+        """
+        sql = "SELECT success_count FROM runs WHERE id = ?"
+        row = self._query_one(sql, (int(run_id),))
+        return int(row["success_count"]) if row else 0
+
+    def mark_interrupted(
+        self,
+        run_id: int,
+        success_count: int,
+        fail_count: int,
+        total_elapsed_seconds: float = 0.0,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """把 run 标记为「中断」（区别于 finished/failed）：下次启动时可恢复。
+
+        适用场景：
+          - 用户主动点「停止」按钮 → 调用本方法
+          - 进程异常退出（无法调用，但可在下次启动时通过 find_resumable_run 恢复）
+          - 浏览器崩溃但 GUI 进程还在 → 调用本方法后重启浏览器继续
+        """
+        # 兼容旧调用方：如果有人已经用 finish_run(status='interrupted')，
+        # 这里只是更语义化的别名
+        self.finish_run(
+            run_id,
+            success_count=success_count,
+            fail_count=fail_count,
+            total_elapsed_seconds=total_elapsed_seconds,
+            status="interrupted",
+            error_message=error_message,
+        )
 
     def query_answers(
         self,

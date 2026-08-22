@@ -2483,6 +2483,78 @@ class SurveyGUI:
 
         threading.Thread(target=_worker, daemon=True).start()
 
+    def _restore_weight_table_from_config(self, restored_w: dict[int, dict]) -> None:
+        """V2.1 续传：从持久化的 weight_config 重建 GUI 表格显示。
+
+        当用户跨进程续传时，``self.questions`` 是空的（页面还没探测），
+        无法直接调 ``_populate_weight_table`` —— 这里从 restored_w 反向构造
+        一个最小化的 questions list，让表格能正确显示题号 + 类型 Badge +
+        填入用户上次的权重字符串。
+
+        反向构造规则：
+          - single/multi/dropdown：choices 长度 = weights 长度
+          - scale：scale 字段或 weights 长度
+          - text：无 choices；若 options 字段存在则填入候选
+          - matrix_single：rows/cols 字段；若 row_weights 存在则填入
+        """
+        if not restored_w:
+            return
+
+        # 检查 self.questions 是否已有数据（用户已探测过 + 已填表）
+        # 若有，直接走 _populate_weight_table 复用现有 self.questions
+        # 没有 → 反向构造
+        if self.questions:
+            # 已有 questions，直接刷新表格（_populate_weight_table 会从
+            # _cfg_module.WEIGHT_CONFIG 读取已恢复的配置）
+            self._populate_weight_table(self.questions)
+            return
+
+        # 反向构造最小化 questions
+        reconstructed: list[dict] = []
+        for qi in sorted(restored_w.keys()):
+            cfg = restored_w[qi]
+            if not isinstance(cfg, dict):
+                continue
+            qtype = cfg.get("type", "single")
+            q: dict = {"q": qi, "type": qtype}
+
+            if qtype in ("single", "radio", "multi", "checkbox", "dropdown"):
+                weights = cfg.get("weights") or []
+                # choices 用占位索引（仅用于显示"选项数"列）
+                q["choices"] = list(range(1, len(weights) + 1)) if weights else [1, 2]
+            elif qtype in ("scale", "rating"):
+                # 优先用 scale 字段，否则用 weights 长度
+                scale = cfg.get("scale")
+                if scale is None:
+                    weights = cfg.get("weights") or []
+                    scale = len(weights) if weights else 5
+                q["scale"] = int(scale)
+                q["scale_min"] = 1
+                q["choices"] = list(range(1, int(scale) + 1))
+            elif qtype in ("text", "input", "textarea", "fillblank"):
+                q["field"] = cfg.get("field")
+                q["choices"] = []
+            elif qtype in ("matrix_single", "matrix"):
+                rows = cfg.get("rows") or [1, 2]
+                cols = cfg.get("cols") or [1, 2]
+                # 如果有 row_weights，从 row_weights 推断 rows
+                row_weights = cfg.get("row_weights") or {}
+                if row_weights:
+                    rows = sorted(int(k) for k in row_weights.keys())
+                    if not cols and row_weights:
+                        first_rw = next(iter(row_weights.values()))
+                        cols = list(range(1, len(first_rw) + 1)) if first_rw else [1, 2]
+                q["rows"] = rows
+                q["cols"] = cols
+                q["choices"] = cols  # 给 _populate_weight_table 用作"选项数"列
+            else:
+                q["choices"] = cfg.get("choices") or [1, 2]
+
+            reconstructed.append(q)
+
+        if reconstructed:
+            self._populate_weight_table(reconstructed)
+
     def _on_questions_detected(self, questions: list[dict]) -> None:
         self._populate_weight_table(questions)
         single_n = sum(1 for q in questions if q.get("type")
@@ -2534,11 +2606,81 @@ class SurveyGUI:
             _cfg_module.WEIGHT_CONFIG.clear()
             self._log("未配置权重表格，所有题目使用等权重随机", "WARN")
 
+        # ---- V2 断点续传：检查是否有可恢复的上次批次 ----
+        start_idx = 1
+        resume_run_id: int | None = None
+        weights_restored = False
+        db_for_resume = self._history_get_db()
+        if db_for_resume is not None:
+            try:
+                prev = db_for_resume.find_resumable_run(url[:500])
+                if prev is not None:
+                    done = int(prev["success_count"])
+                    planned = int(prev["total_submissions"])
+                    # 只有"已成功 ≥ 1 且 < 计划总数"时才提示恢复
+                    if 0 < done < planned:
+                        # V2.1：从 row 反序列化上次的权重配置，自动恢复
+                        try:
+                            restored_w = type(db_for_resume).deserialize_weight_config(prev)
+                        except Exception:
+                            restored_w = {}
+                        if restored_w:
+                            _cfg_module.WEIGHT_CONFIG.clear()
+                            _cfg_module.WEIGHT_CONFIG.update(restored_w)
+                            weights_restored = True
+                            self._log(
+                                f"[续传] 已自动恢复上次权重配置："
+                                f"{len(restored_w)} 道题",
+                                "OK",
+                            )
+                            # 把权重数据重新刷到 GUI 表格显示，让用户可见可改
+                            self._restore_weight_table_from_config(restored_w)
+
+                        msg = (
+                            f"检测到上次未完成的批次：\n\n"
+                            f"  Run #{prev['id']} · 状态 = {prev['status']}\n"
+                            f"  已成功 {done} / {planned} 份\n"
+                            f"  开始时间 {str(prev['started_at'])[:19]}\n\n"
+                        )
+                        if weights_restored:
+                            msg += (
+                                f"✅ 上次权重已自动恢复到表格（{len(restored_w)} 道题），\n"
+                                f"    可在配置 Tab 检查 / 修改后再启动。\n\n"
+                            )
+                        msg += (
+                            f"是否从第 {done + 1} 份继续？"
+                            f"（取消则从第 1 份重新开始，但权重恢复仍生效）"
+                        )
+                        yes = messagebox.askyesno(
+                            "断点续传", msg, icon=messagebox.QUESTION,
+                        )
+                        if yes:
+                            start_idx = done + 1
+                            resume_run_id = int(prev["id"])
+                            self._log(
+                                f"[续传] 恢复 Run #{resume_run_id}："
+                                f"从第 {start_idx} 份继续（共 {planned} 份）",
+                                "OK",
+                            )
+                        else:
+                            self._log(
+                                f"[续传] 已忽略上次中断批次，从第 1 份重新开始"
+                                f"（权重恢复仍生效）",
+                                "INFO",
+                            )
+            except Exception as e:
+                self._log(
+                    f"[续传] 检查可恢复批次失败（不影响运行）: "
+                    f"{type(e).__name__}: {e}",
+                    "WARN",
+                )
+
         self.running = True
         self.stop_flag = False
-        self.success_count = 0
+        # 续传：已成功份数初始化为 start_idx - 1（这样进度条立刻反映真实状态）
+        self.success_count = start_idx - 1
         self.fail_count = 0
-        self.current_round = 0
+        self.current_round = start_idx
         self.total_rounds = total
 
         self.start_btn.configure(state=tk.DISABLED)
@@ -2547,14 +2689,28 @@ class SurveyGUI:
         self.qr_btn.configure(state=tk.DISABLED)
         self._set_status("运行中...", COLORS["primary"])
 
-        self._progress_value = 0.0
+        self._progress_value = (
+            (self.success_count + self.fail_count) / self.total_rounds
+            if self.total_rounds else 0.0
+        )
         self._redraw_progress()
+        self._update_progress()
 
         self._log("═" * 40, "HEADER")
-        self._log(f"▶ 开始执行，目标 {total} 份", "HEADER")
+        if start_idx > 1:
+            self._log(
+                f"▶ 断点续传启动：从第 {start_idx} 份 → 第 {total} 份（共 {total - start_idx + 1} 份待跑）",
+                "HEADER",
+            )
+        else:
+            self._log(f"▶ 开始执行，目标 {total} 份", "HEADER")
         self._log("═" * 40, "HEADER")
 
-        threading.Thread(target=self._run_loop, args=(url, total), daemon=True).start()
+        threading.Thread(
+            target=self._run_loop,
+            args=(url, total, start_idx, resume_run_id),
+            daemon=True,
+        ).start()
 
     def _on_stop(self) -> None:
         if not self.running:
@@ -2564,22 +2720,50 @@ class SurveyGUI:
         self._set_status("正在停止...", COLORS["warning"])
         self._log("用户请求停止，等待当前轮次完成...", "WARN")
 
-    def _run_loop(self, url: str, total: int) -> None:
+    def _run_loop(
+        self,
+        url: str,
+        total: int,
+        start_idx: int = 1,
+        resume_run_id: int | None = None,
+    ) -> None:
         driver = None
         history_db: "SubmissionHistory | None" = None
-        run_id: int | None = None
-        final_status = "error"
+        run_id: int | None = resume_run_id  # 断点续传：复用上次 run_id
+        final_status = "failed"
+        t0 = time.time()
         try:
             # ---- V2：若历史模块可用，开启本次运行记录 ----
             db = self._history_get_db()
             if db is not None:
                 try:
-                    run_id = db.start_run(
-                        total_submissions=total,
-                        survey_url=url[:500],
-                    )
+                    if run_id is None:
+                        # 全新批次：start_run + 持久化当前权重配置快照
+                        # （V2.1：用 dict() 深拷贝，避免后续 WEIGHT_CONFIG 变动影响快照）
+                        wc_snapshot = {
+                            int(k): dict(v) if isinstance(v, dict) else v
+                            for k, v in _cfg_module.WEIGHT_CONFIG.items()
+                        }
+                        run_id = db.start_run(
+                            survey_url=url[:500],
+                            total_submissions=total,
+                            browser=self.browser_var.get(),
+                            use_uc=self.use_uc_var.get(),
+                            weight_config=wc_snapshot if wc_snapshot else None,
+                        )
+                        self._log(
+                            f"[历史] Run #{run_id} 已记录起点"
+                            + (f" · 权重快照 {len(wc_snapshot)} 道题" if wc_snapshot else " · 等权重"),
+                            "INFO",
+                        )
+                    else:
+                        # 断点续传：复用上次 run_id，不重新建表
+                        # （上次写入的 weight_config_json 仍是当时的快照，不需要覆盖）
+                        self._log(
+                            f"[历史] 续传模式 · 复用 Run #{run_id}（不重置计数，权重沿用上次）",
+                            "INFO",
+                        )
                     history_db = db
-                    self._log(f"[历史] Run #{run_id} 已记录起点", "INFO")
                 except Exception as e:
                     self._log(f"[历史] start_run 失败（不影响答题）: "
                               f"{type(e).__name__}: {e}", "WARN")
@@ -2589,10 +2773,11 @@ class SurveyGUI:
             driver = create_driver(
                 self.browser_var.get(), use_uc=self.use_uc_var.get(),
             )
-            for idx in range(1, total + 1):
+            # 断点续传：循环从 start_idx 起步（已成功的 start_idx-1 份数不计入本轮）
+            for idx in range(start_idx, total + 1):
                 if self.stop_flag:
-                    final_status = "stopped"
-                    self._log("已停止运行", "WARN")
+                    final_status = "interrupted"  # 用户主动停止 → 可恢复
+                    self._log("已停止运行（已成功份数可下次恢复）", "WARN")
                     break
 
                 self.current_round = idx
@@ -2645,11 +2830,10 @@ class SurveyGUI:
                 time.sleep(random.uniform(ROUND_INTERVAL_MIN, ROUND_INTERVAL_MAX))
             else:
                 # for 正常跑完（没 break）
-                if final_status == "error":
-                    final_status = "done"
+                final_status = "finished"
 
         except Exception as e:
-            final_status = "error"
+            final_status = "failed"
             self._log(f"运行异常: {type(e).__name__}: {e}", "FAIL")
         finally:
             # ---- V2：写入结束状态 ----
@@ -2659,13 +2843,25 @@ class SurveyGUI:
                         f"GUI · browser={self.browser_var.get()} "
                         f"uc={self.use_uc_var.get()}"
                     )
-                    history_db.finish_run(
-                        run_id,
-                        status=final_status,
-                        ok_count=self.success_count,
-                        fail_count=self.fail_count,
-                        note=note,
-                    )
+                    elapsed = time.time() - t0
+                    if final_status == "interrupted":
+                        # 中断：用 mark_interrupted 别名，语义清晰
+                        history_db.mark_interrupted(
+                            run_id,
+                            success_count=self.success_count,
+                            fail_count=self.fail_count,
+                            total_elapsed_seconds=elapsed,
+                            error_message=note,
+                        )
+                    else:
+                        history_db.finish_run(
+                            run_id,
+                            success_count=self.success_count,
+                            fail_count=self.fail_count,
+                            total_elapsed_seconds=elapsed,
+                            status=final_status,
+                            error_message=note if final_status != "finished" else None,
+                        )
                     self._log(
                         f"[历史] Run #{run_id} 已闭合: {final_status} "
                         f"(✓ {self.success_count} / ✕ {self.fail_count})",
