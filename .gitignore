@@ -47,3 +47,6 @@ htmlcov/
 # Misc
 *.tmp
 *.bak
+
+# Local-only docs
+docs/
