@@ -361,24 +361,34 @@ class RunState:
 
     使用约定:
         - CLI ``run_batch`` 内部用 ``RunState`` 替代散落的局部计数器
-        - GUI ``_run_loop`` 当前仍维护自己的计数器,后续拆分时迁移
-          到 ``RunState``（避免一次改动 2611 行 GUI 文件）
+        - GUI ``_run_loop`` 通过 ``RunState`` 管理 counters / resume /
+          stop_flag / final_status / weight_config snapshot / browser 选择,
+          避免 ``self.success_count`` / ``self.fail_count`` /
+          ``self.current_round`` / ``self.stop_flag`` 等实例变量散落。
         - ``history_db.finish_run`` 直接读 ``state.success_count`` /
           ``state.fail_count`` 等字段
     """
 
+    # ------------ 共用字段（CLI/GUI 都用） ------------
     run_id: Optional[int] = None              # SQLite runs 表的批次 id
     success_count: int = 0                   # 已确认成功份数
-    fail_count: int = 0                      # 已确认失败份数(含未知)
+    fail_count: int = 0                      # 已确认失败份数(含 unknown)
     unknown_count: int = 0                   # 提交结果未知分项(已计入 fail_count)
-    is_interrupted: bool = False              # 是否被 Ctrl+C 中断
+    is_interrupted: bool = False              # 是否被用户中断(Ctrl+C / GUI 停止)
     total_elapsed_start: float = 0.0          # 批次起始 perf_counter 时间戳
-    attempts_cap: int = 0                     # 最大尝试次数(target_success 模式)
-    current_attempt: int = 0                 # 当前已尝试次数
+    attempts_cap: int = 0                     # 最大尝试次数(target_success / GUI 总计划)
+    current_attempt: int = 0                  # 当前已尝试次数(基础计数;CLI 用)
 
-    # ------------------------------------------------------------------
-    #  只读派生属性
-    # ------------------------------------------------------------------
+    # ------------ GUI 字段（断点续传 / UI 状态） ------------
+    resume_start_idx: int = 1                 # 续传起点（= 已成功 + 1）
+    total_target: int = 0                     # 计划总份数（GUI total_rounds）
+    browser: str = "edge"                     # 浏览器名称（edge/chrome 等）
+    use_uc: bool = False                      # 是否使用 undetected-chromedriver
+    weight_config_snapshot: Any = None        # 启动时 WEIGHT_CONFIG 快照（dict|None）
+    stop_flag: bool = False                   # GUI 用户点击"停止"的标志位
+    survey_url: str = ""                      # 问卷 URL（续传 find_resumable_run 已用）
+
+    # ------------ 只读派生属性 ------------
     @property
     def total_count(self) -> int:
         """总尝试次数 = 成功 + 失败(含未知)。"""
@@ -388,6 +398,21 @@ class RunState:
     def has_any_submission(self) -> bool:
         """是否跑过至少一次提交(用于 history 状态判定)。"""
         return self.total_count > 0
+
+    @property
+    def displayed_round(self) -> int:
+        """GUI 进度条展示的「当前第几份」。
+
+        对全新批次：等于 current_attempt（range 1..attempts_cap）
+        对续传批次：等于 resume_start_idx + current_attempt - 1
+        即 GUI 原 self.current_round 的语义。
+        """
+        return max(1, self.resume_start_idx + self.current_attempt - 1)
+
+    @property
+    def remaining(self) -> int:
+        """剩余尝试次数。"""
+        return max(0, self.attempts_cap - self.current_attempt)
 
     # ------------------------------------------------------------------
     #  状态变更方法(集中更新,避免散落分支不同步)
@@ -410,8 +435,17 @@ class RunState:
         self.fail_count += 1
 
     def mark_interrupted(self) -> None:
-        """标记批次被用户中断(Ctrl+C)。"""
+        """标记批次被用户中断(Ctrl+C / GUI 停止按钮)。"""
         self.is_interrupted = True
+        self.stop_flag = True
+
+    def request_stop(self) -> None:
+        """GUI 点击停止：先写 stop_flag；最终结束时再 mark_interrupted。
+
+        与 CLI Ctrl+C 的差别：CLI 立即抛 KeyboardInterrupt 走 mark_interrupted；
+        GUI 需要等待当前单轮结果返回，所以用"软 flag + 延迟 mark"的语义。
+        """
+        self.stop_flag = True
 
     def advance_attempt(self) -> int:
         """前进一次尝试计数,返回新的当前尝试序号(从 1 开始)。"""
@@ -419,26 +453,45 @@ class RunState:
         return self.current_attempt
 
     # ------------------------------------------------------------------
+    #  GUI 便利：构造快照 dict 深拷贝 WEIGHT_CONFIG（V2 续传用）
+    # ------------------------------------------------------------------
+    @staticmethod
+    def snapshot_weight_config(wc: dict) -> dict | None:
+        if not wc:
+            return None
+        return {
+            int(k): dict(v) if isinstance(v, dict) else v
+            for k, v in wc.items()
+        }
+
+    # ------------------------------------------------------------------
     #  history 表状态字段导出
     # ------------------------------------------------------------------
     def history_status(self) -> str:
         """根据当前状态返回 SQLite runs 表的 ``status`` 字段值。
 
-        - 中断 → ``"interrupted"``(find_resumable_run 可恢复)
+        - 中断(主动 stop 或 Ctrl+C) → ``"interrupted"``
         - 连一次都没跑就退出 → ``"interrupted"``(极端情况,可恢复)
         - 否则 → ``"finished"``
         """
-        if self.is_interrupted:
+        if self.is_interrupted or self.stop_flag:
             return "interrupted"
         if not self.has_any_submission:
-            # 极端:连一次都没跑就退出 → 仍标记为 interrupted(可恢复)
             return "interrupted"
         return "finished"
 
-    def history_error_message(self) -> Optional[str]:
-        """返回 SQLite runs 表的 ``error_message`` 字段值。"""
-        if self.is_interrupted:
-            return "Ctrl+C 用户中断"
-        if not self.has_any_submission:
-            return "未执行任何提交即退出"
-        return None
+    def history_error_message(self, suffix: str = "") -> Optional[str]:
+        """返回 SQLite runs 表的 ``error_message`` 字段值。
+
+        :param suffix: 可选追加备注，例如 GUI 浏览器/模式信息。
+        """
+        base: Optional[str]
+        if self.is_interrupted or self.stop_flag:
+            base = "Ctrl+C 用户中断"
+        elif not self.has_any_submission:
+            base = "未执行任何提交即退出"
+        else:
+            base = None
+        if base and suffix:
+            return f"{base} · {suffix}"
+        return base or (suffix if suffix else None)

@@ -31,6 +31,11 @@ from .config import (
     DEFAULT_USE_UC,
     WEIGHT_CONFIG,
 )
+from .exceptions import (
+    TRANSIENT_DOM_EXCEPTIONS,
+    format_exc_log,
+    raise_non_recoverable,
+)
 from .models import RunState
 
 
@@ -168,7 +173,13 @@ def _cleanup_browser_state(driver) -> None:
         driver.delete_all_cookies()
         driver.execute_script("window.localStorage.clear();")
         driver.execute_script("window.sessionStorage.clear();")
-    except Exception:
+    except TRANSIENT_DOM_EXCEPTIONS:
+        # 建议 5.1：Cookie/Storage 清理是"最好情况"优化，DOM/会话异常不影响答题
+        pass
+    except Exception as _e:
+        # 建议 5.3：Ctrl+C/SystemExit 必须上抛
+        raise_non_recoverable(_e)
+        # 其他清理失败仍然忽略
         pass  # 清理失败不影响后续流程
 
 
@@ -266,8 +277,20 @@ def run_batch(
             # 跨版本兼容：实际使用 time.perf_counter 统计
             import time as _t
             state.total_elapsed_start = _t.perf_counter()
+        except OSError as _e:
+            # 建议 5.1：把 IO/SQLite 异常和代码 bug 分开——只有磁盘/权限/DB 损坏允许降级
+            # （ValueError/KeyError 等数据契约错误应该上抛暴露问题）
+            print("  " + format_exc_log(
+                _e, action="history.start_run", recovery="降级为本次不记录历史，继续运行",
+            ))
+            state.run_id = None
         except Exception as _e:
-            print(f"[history] start_run 失败，继续不记录: {type(_e).__name__}")
+            # 建议 5.3：Ctrl+C/SystemExit 必须上抛
+            raise_non_recoverable(_e)
+            # 其他异常：仍用降级策略，但统一格式日志
+            print("  " + format_exc_log(
+                _e, action="history.start_run", recovery="降级为本次不记录历史，继续运行",
+            ))
             state.run_id = None
 
     try:
@@ -304,7 +327,11 @@ def run_batch(
                 print("BROWSER_DEAD", end=" ", flush=True)
                 try:
                     driver.quit()
-                except Exception:
+                except TRANSIENT_DOM_EXCEPTIONS:
+                    pass  # 清理失败不影响后续流程
+                except Exception as _e:
+                    # 建议 5.3：Ctrl+C/SystemExit 必须上抛
+                    raise_non_recoverable(_e)
                     pass
                 driver = create_driver(browser, use_uc=use_uc)  # 重新创建浏览器
                 state.mark_failure()
@@ -331,7 +358,11 @@ def run_batch(
                 print("RESTART", end=" ", flush=True)
                 try:
                     driver.quit()
-                except Exception:
+                except TRANSIENT_DOM_EXCEPTIONS:
+                    pass  # 清理失败不影响后续流程
+                except Exception as _e:
+                    # 建议 5.3：Ctrl+C/SystemExit 必须上抛
+                    raise_non_recoverable(_e)
                     pass
                 driver = create_driver(browser, use_uc=use_uc)
 
@@ -366,8 +397,20 @@ def run_batch(
                     status=state.history_status(),
                     error_message=state.history_error_message(),
                 )
+            except OSError as _e2:
+                # 建议 5.1：IO/磁盘异常允许降级；ValueError/KeyError 往上抛
+                print("  " + format_exc_log(
+                    _e2, action="history.finish_run", recovery="忽略，统计结果仍已打印到 stdout",
+                    run_id=state.run_id,
+                ))
             except Exception as _e2:
-                print(f"[history] finish_run 失败: {type(_e2).__name__}")
+                # 建议 5.3：Ctrl+C/SystemExit 必须上抛
+                raise_non_recoverable(_e2)
+                # 其他异常：统一格式日志
+                print("  " + format_exc_log(
+                    _e2, action="history.finish_run", recovery="忽略，统计结果仍已打印到 stdout",
+                    run_id=state.run_id,
+                ))
 
         # UNKNOWN 分项统计日志（便于事后复盘服务端是否真未收到提交）
         if state.unknown_count > 0:
@@ -377,7 +420,11 @@ def run_batch(
         # 无论如何都要关闭浏览器，避免进程残留
         try:
             driver.quit()
-        except Exception:
+        except TRANSIENT_DOM_EXCEPTIONS:
+            pass  # 清理失败不影响后续流程
+        except Exception as _e:
+            # 建议 5.3：Ctrl+C/SystemExit 必须上抛
+            raise_non_recoverable(_e)
             pass
 
     return state.success_count, state.fail_count
@@ -409,7 +456,14 @@ def main(argv: list[str] | None = None) -> None:
             print(f"[config] 已加载权重配置：{args.config}（{n_q} 道题）")
             if cfg_meta.get("name"):
                 print(f"[config] 预设名称: {cfg_meta['name']}")
+        except (FileNotFoundError, ValueError, OSError) as e:
+            # 建议 5.1：只收窄到预期失败（文件不存在/JSON 结构非法/IO 错误）
+            # ValueError 覆盖 JSONDecodeError/结构校验错误；其他异常往上抛
+            print(f"[config] 加载失败: {type(e).__name__}: {e}")
+            sys.exit(2)
         except Exception as e:
+            # 建议 5.3：Ctrl+C/SystemExit 必须上抛；其他异常仍按失败退出
+            raise_non_recoverable(e)
             print(f"[config] 加载失败: {type(e).__name__}: {e}")
             sys.exit(2)
 
@@ -420,8 +474,21 @@ def main(argv: list[str] | None = None) -> None:
             from .history import SubmissionHistory
             history_db = SubmissionHistory(args.history)
             print(f"[history] 历史记录已启用: {args.history}")
+        except OSError as e:
+            # 建议 5.1：磁盘/权限/SQLite 打开失败 → 降级为不记录
+            print("  " + format_exc_log(
+                e, action="history 初始化", recovery="降级为本次不记录历史，继续运行",
+                path=args.history,
+            ))
+            history_db = None
         except Exception as e:
-            print(f"[history] 初始化失败，继续不记录: {type(e).__name__}: {e}")
+            # 建议 5.3：Ctrl+C/SystemExit 必须上抛
+            raise_non_recoverable(e)
+            # 其他异常：仍用降级策略
+            print("  " + format_exc_log(
+                e, action="history 初始化", recovery="降级为本次不记录历史，继续运行",
+                path=args.history,
+            ))
             history_db = None
 
     print("=" * 60)
@@ -471,7 +538,12 @@ def main(argv: list[str] | None = None) -> None:
             meta_out.setdefault("name", "自动导出模板")
             saved = save_weight_config(args.save_config, dict(_wc), meta_out)
             print(f"[config] 已保存配置模板: {saved}")
+        except OSError as e:
+            # 建议 5.1：收窄到文件/磁盘 IO 类异常；ValueError/TypeError 等数据契约异常上抛
+            print(f"[config] 保存失败: {type(e).__name__}: {e}")
         except Exception as e:
+            # 建议 5.3：Ctrl+C/SystemExit 必须上抛
+            raise_non_recoverable(e)
             print(f"[config] 保存失败: {type(e).__name__}: {e}")
 
     # ---------- V2：--stats 打印全库统计 ----------
@@ -485,8 +557,13 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"[history] 累计成功: {s['total_success']} / 失败: {s['total_fail']}")
                 print(f"[history] 累计成功率: {round(s['success_rate'] * 100, 2)}%")
                 print("-" * 60)
+            except OSError as e:
+                # 建议 5.1：磁盘/DB 查询异常降级为打印失败；KeyError/ValueError 等数据契约异常上抛
+                print("  " + format_exc_log(e, action="history.stats_summary"))
             except Exception as e:
-                print(f"[history] 统计失败: {type(e).__name__}: {e}")
+                # 建议 5.3：Ctrl+C/SystemExit 必须上抛
+                raise_non_recoverable(e)
+                print("  " + format_exc_log(e, action="history.stats_summary"))
         else:
             print("[history] --stats 需要配合 -H/--history 指定 DB 路径")
 
@@ -494,8 +571,12 @@ def main(argv: list[str] | None = None) -> None:
     if history_db is not None:
         try:
             history_db.close()
-        except Exception:
-            pass
+        except OSError:
+            pass  # 清理：关闭失败不影响退出
+        except Exception as _e:
+            # 建议 5.3：Ctrl+C/SystemExit 必须上抛
+            raise_non_recoverable(_e)
+            pass  # 其他清理失败仍然忽略
 
     # 失败时以非零码退出，方便脚本判断成功/失败
     sys.exit(0 if fail == 0 else 1)

@@ -354,9 +354,11 @@ class SubmissionHistory:
                     ),
                 )
                 return int(cur.lastrowid)
-            except Exception:
-                # 兜底：唯一索引未创建（老库 dedup 失败的极端情况）
-                # 手动 DELETE + INSERT 实现幂等
+            except sqlite3.IntegrityError:
+                # 可读性建议 5.1：收窄到唯一能触发兜底的异常——违反唯一索引
+                # （老库 dedup 失败或极端并发产生重复）。
+                # 其他异常（连接关闭、磁盘 IO 错误等）必须上抛暴露问题，
+                # 不应被误当作"幂等冲突"走 DELETE+INSERT。
                 return self._record_answer_fallback(
                     run_id, submission_index, question_number,
                     question_type, opts_json, text_answer, elapsed_ms,

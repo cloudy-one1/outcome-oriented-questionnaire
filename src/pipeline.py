@@ -1,27 +1,15 @@
-"""单次问卷填写 + 提交流程编排模块（v2.0 全题型增强版）。
+"""核心业务编排模块（V2.3 第一章第 3 条整改后：只剩「编排」职责，实现下沉到 pipeline_stages/*）。
 
-相比 v1 的改进：
-    反检测稳定性
-    ├─ 全程共享同一个 ManualHoldLock：任何步骤检测到验证码都 hold 住
-    ├─ 验证码检测频率从每 3 题 → 每 2 题（更敏感），且 URL/title/shadow 三信号并行
-    ├─ 页面 driver.get() 失败使用指数退避重试（PAGE_LOAD_MAX_ATTEMPTS 次）
-    └─ 整次提交 run_one_submission 使用指数退避重试
+本章第 3 条建议：pipeline.py 职责收窄为"协调各阶段顺序"，不承担具体实现。
+拆分后的 4 类实现：
+    1. 页面加载 / ready-state / iframe  →  ``src/pipeline_stages/page_loader.py``
+    2. 题目识别 / 等待 / 单题答题分发      →  ``src/pipeline_stages/question_stage.py``
+    3. 验证码检查 + 人工介入等待           →  ``src/pipeline_stages/verification_stage.py``
+    4. 提交按钮查找 + 提交效果确认         →  ``src/interactions/submit.py``（第一章第 2 条拆分）
 
-    速率提升
-    ├─ 页面加载等待：readyState + 有题目元素立即返回，替换固定 sleep(1.5)
-    ├─ 答题：整题一次性批量设置（js_click_question_options），多选题 N 选项 → 1 次往返
-    ├─ 提交后：URL 变化 + 成功关键词立即返回，替换固定 sleep(2-3)
-    └─ 所有思考/点击等待使用正态分布，均值 0.22s / 0.5s 比旧 uniform(0.15-0.35) / (0.3-0.8) 更快
-
-    V2 新题型（answering_v2 + 新 interaction 函数）
-    ├─ text / textarea          → js_fill_text（填空，内置中文数据池：姓名/手机/邮箱/地址）
-    ├─ scale / rating           → js_set_scale（1..N 分星评/量表）
-    ├─ dropdown                 → js_select_dropdown（<select> 下拉选择）
-    └─ matrix_single            → js_fill_matrix_single（每行一题的矩阵单选）
-
-    V2 历史记录（SubmissionHistory SQLite 持久化）
-    └─ 可接收 history_db + run_id + submission_index，逐题 record_answer 明细，
-       全 V1 / V2 题型统一落盘。
+本文件剩余的 3 个公开函数就是：
+    - ``run_one_submission(driver, url, ...)``        → 最外层（带 retry + 异常清理）
+    - ``_do_one_submission_core(driver, url, lock)`` → 单次核心流程（Step 1~8 编排）
 """
 
 from __future__ import annotations
@@ -30,11 +18,8 @@ import time
 from typing import Any, Optional
 
 from selenium.common.exceptions import WebDriverException
-from selenium.webdriver.support.ui import WebDriverWait
 
 from .config import (
-    PAGE_LOAD_INITIAL_DELAY,
-    PAGE_LOAD_MAX_ATTEMPTS,
     Q_LONG_PAUSE_HI,
     Q_LONG_PAUSE_LO,
     Q_LONG_PAUSE_PROB,
@@ -46,288 +31,56 @@ from .config import (
     SUBMISSION_BACKOFF,
     SUBMISSION_INITIAL_DELAY,
     SUBMISSION_MAX_ATTEMPTS,
-    VERIFICATION_TIMEOUT,
     VERIFY_EVERY_N_QUESTIONS,
+)
+# V2.3 第 1 章第 3 条：下沉各阶段实现到 pipeline_stages 子包
+from .pipeline_stages import (
+    _answer_one_question,
+    _check_verification_with_lock,
+    _ensure_questions_context,
+    _robust_driver_get,
+    _wait_for_questions,
+    _wait_for_ready_state,
+)
+# 题目探测（断点续填/题目结构识别）来自 detection 模块，不属于 pipeline 职责
+from .detection import detect_answered_questions, detect_questions
+# 提交三态 + 查找提交按钮来自 interactions.submit（第一章第 2 条已拆分）
+from .interactions.submit import (
+    SUBMIT_FAILED,
+    SUBMIT_SUCCESS,
+    SUBMIT_UNKNOWN,
+    SubmitOutcome,
+    find_and_click_submit,
 )
 from .utils import (
     ManualHoldLock,
     human_pause,
     retry_with_backoff,
 )
-
-# V1 兼容：answering.build_answer_strategy 保留
-from .answering import build_answer_strategy
-# V2 新增：answering_v2.generate_answer（统一 dict 格式 + 新题型）
-from .answering_v2 import generate_answer as generate_answer_v2
-
-from .detection import detect_answered_questions, detect_questions
-from .interaction import (
-    SUBMIT_FAILED,
-    SUBMIT_SUCCESS,
-    SUBMIT_UNKNOWN,
-    SubmitOutcome,
-    find_and_click_submit,
-    js_click_option,
-    js_click_question_options,
-    js_fill_matrix_single,
-    js_fill_text,
-    js_select_dropdown,
-    js_set_scale,
+# V2.3 第五章：异常分层（只在编排层「兜底 + 重抛」时使用）
+from .exceptions import (
+    TRANSIENT_DOM_EXCEPTIONS,
+    format_exc_log,
+    raise_non_recoverable,
 )
-from .verification import is_smart_verification_showing, wait_for_manual_verification
 
 # history 模块为可选（纯 import 期不强依赖；真正 record 时检查参数是否传入）
 try:
     from .history import SubmissionHistory  # type: ignore
     _HAS_HISTORY: bool = True
-except Exception:  # pragma: no cover
+except TRANSIENT_DOM_EXCEPTIONS:
+    # 理论上不会——history 是纯 Python 无 Selenium 依赖
+    SubmissionHistory = None  # type: ignore
+    _HAS_HISTORY = False
+except Exception as _e:  # pragma: no cover
+    raise_non_recoverable(_e)
     SubmissionHistory = None  # type: ignore
     _HAS_HISTORY = False
 
 
-def _ensure_questions_context(driver: Any) -> bool:
-    """确保当前 WebDriver 上下文指向包含题目的 frame。"""
-    selector = 'input[type="radio"], input[type="checkbox"], select, textarea, input[type="text"]'
-    has = driver.execute_script(
-        f"return document.querySelectorAll('{selector}').length"
-    )
-    if has:
-        return True
-
-    iframes = driver.execute_script("return document.querySelectorAll('iframe').length")
-    for i in range(iframes):
-        driver.switch_to.frame(i)
-        if driver.execute_script(
-            f"return document.querySelectorAll('{selector}').length"
-        ):
-            return True
-        driver.switch_to.default_content()
-
-    driver.switch_to.default_content()
-    return False
-
-
-def _wait_for_ready_state(driver: Any, page_timeout: float = 25.0) -> None:
-    """等待 document.readyState == 'complete'（失败不抛异常，继续流程）。"""
-    try:
-        WebDriverWait(driver, page_timeout).until(
-            lambda d: d.execute_script("return document.readyState") == "complete"
-        )
-    except Exception:
-        pass
-
-
-def _wait_for_questions(driver: Any, timeout: float) -> bool:
-    """等待题目输入框出现在 DOM 中（V2 扩展：覆盖 6 类题型的常见输入控件）。"""
-    selector = (
-        'input[type="radio"], input[type="checkbox"],'
-        ' select, textarea, input[type="text"], input[type="tel"], input[type="number"]'
-    )
-    try:
-        WebDriverWait(driver, timeout).until(
-            lambda d: d.execute_script(
-                f"return document.querySelectorAll('{selector}').length > 0"
-            )
-        )
-        return True
-    except Exception:
-        return False
-
-
-def _check_verification_with_lock(driver: Any, lock: ManualHoldLock) -> bool:
-    """检查是否弹出了验证，如果是 → 进入 hold 等待人工处理。
-
-    返回 True ：验证已解决（或根本没弹）
-    返回 False：验证超时
-    """
-    if not is_smart_verification_showing(driver):
-        return True
-    return wait_for_manual_verification(
-        driver,
-        timeout_seconds=VERIFICATION_TIMEOUT,
-        hold_lock=lock,
-    )
-
-
 # ---------------------------------------------------------------------------
-#  页面加载重试包装（指数退避）
+#  核心编排：单次提交真正实现（无外层重试）
 # ---------------------------------------------------------------------------
-
-@retry_with_backoff(
-    max_attempts=PAGE_LOAD_MAX_ATTEMPTS,
-    initial_delay=PAGE_LOAD_INITIAL_DELAY,
-    backoff_factor=2.0,
-    jitter=True,
-    retry_on=(WebDriverException, TimeoutError),
-)
-def _robust_driver_get(driver: Any, survey_url: str) -> None:
-    """稳定版 driver.get()：遇到 WebDriver/Timeout 自动重试。"""
-    driver.get(survey_url)
-
-
-# ---------------------------------------------------------------------------
-#  V2 统一答题分发器：根据 q.type 调用 answering_v2 + 对应 interaction
-# ---------------------------------------------------------------------------
-
-def _answer_one_question(
-    driver: Any,
-    q: dict,
-    history_db: Any | None = None,
-    run_id: int | None = None,
-    submission_index: int | None = None,
-    *,
-    no_record_text: bool = False,
-) -> bool:
-    """为单道题生成答案并写入 DOM，可选地落盘 history.answers。
-
-    - V1 题型 (single/multi)：沿用 ``build_answer_strategy`` +
-      ``js_click_question_options``，保证 100% 行为不变。
-    - V2 题型 (text/scale/dropdown/matrix_single)：使用
-      ``answering_v2.generate_answer``（统一 dict）+ 对应 interaction 新函数。
-
-    :param no_record_text: 审查 P2-3 隐私保护 —— True 时填空题答案
-                            不会写入 SQLite 的 text_answer 列（写 NULL 占位），
-                            避免明文保存用户自定义的姓名/手机/邮箱等敏感内容。
-                            DOM 仍然会填入实际文本（流程需要），只是不持久化。
-
-    :return: 是否答题成功（不影响外层统计 —— 失败通常只是识别不到 DOM，
-             整次提交会在提交后统一判断）。
-    """
-    qnum = int(q["q"])
-    qtype = str(q.get("type", "single")).lower()
-
-    # 用于 history 记录（options_selected / text_answer / elapsed_ms）
-    options_selected: list[int] | None = None
-    text_answer: str | None = None
-    t0 = time.perf_counter()
-    is_ok = False
-
-    # ------------------------------------------------------------------
-    #  V1 题型：单选 / 多选（完全保留原逻辑，不做任何破坏性改动）
-    # ------------------------------------------------------------------
-    if qtype in ("single", "multi"):
-        answer_values = build_answer_strategy(q)  # list[int]
-        try:
-            is_ok = js_click_question_options(driver, qnum, qtype, answer_values)
-        except Exception:
-            is_ok = True
-            for c in answer_values:
-                if not js_click_option(driver, qnum, c):
-                    is_ok = False
-                    break
-                human_pause(
-                    Q_THINK_MU * 0.3, Q_THINK_SIGMA * 0.3,
-                    0.04, 0.15,
-                )
-        # history 记录：选项值列表
-        options_selected = list(answer_values) if answer_values else None
-
-    # ------------------------------------------------------------------
-    #  V2 题型：text / scale / dropdown / matrix_single
-    # ------------------------------------------------------------------
-    else:
-        ans = generate_answer_v2(q)  # dict 结构
-        ans_type = str(ans.get("type", qtype)).lower()
-
-        try:
-            if ans_type == "text":
-                text_answer = str(ans.get("text", ""))
-                is_ok = js_fill_text(driver, qnum, text_answer)
-
-            elif ans_type == "scale":
-                val = int(ans.get("value", 3))
-                smax = q.get("scale")
-                is_ok = js_set_scale(driver, qnum, val, scale_max=smax)
-                options_selected = [val]
-
-            elif ans_type == "dropdown":
-                sel_list = ans.get("selected") or []
-                if sel_list:
-                    is_ok = js_select_dropdown(driver, qnum, sel_list[0])
-                    options_selected = [sel_list[0]] if isinstance(sel_list[0], int) else None
-                    # 文本型下拉值 → 写 text_answer 备查
-                    if options_selected is None and sel_list:
-                        text_answer = str(sel_list[0])
-
-            elif ans_type in ("matrix_single", "matrix"):
-                row_map = ans.get("rows") or {}  # {row_idx: col_idx/val}
-                is_ok = js_fill_matrix_single(driver, qnum, row_map)
-                # matrix 的 answers 表：把 {row: col} 作为 JSON 写到 options_selected？
-                # 设计：把所有被选列值收集成一个 list，便于统计
-                if isinstance(row_map, dict):
-                    options_selected = [
-                        v if isinstance(v, int) else int(v)
-                        for v in row_map.values()
-                        if isinstance(v, int) or (isinstance(v, str) and v.isdigit())
-                    ]
-
-            else:
-                # 兜底：如果有 choices，降级成单选（与 answering_v2 的兜底一致）
-                if q.get("choices"):
-                    from .answering import build_answer_strategy as _ba
-                    answer_values = _ba(q)
-                    is_ok = js_click_question_options(driver, qnum, "single", answer_values)
-                    options_selected = list(answer_values)
-                else:
-                    is_ok = False
-        except Exception as _e:
-            # V2 交互偶发异常不影响整次提交流程（只记失败，不中断）
-            print(f"  [Q{qnum} {qtype}] 交互异常: {type(_e).__name__}: {_e}")
-            is_ok = False
-
-    # ------------------------------------------------------------------
-    #  V2 可选：逐题答案明细落盘（history DB）
-    # ------------------------------------------------------------------
-    elapsed_ms = int((time.perf_counter() - t0) * 1000)
-    if (
-        history_db is not None
-        and run_id is not None
-        and submission_index is not None
-    ):
-        try:
-            # 统一类型名（与 history.answers 表约束对齐）
-            norm_type = {
-                "single": "single",
-                "radio": "single",
-                "multi": "multi",
-                "checkbox": "multi",
-                "scale": "scale",
-                "rating": "scale",
-                "dropdown": "dropdown",
-                "text": "text",
-                "input": "text",
-                "textarea": "text",
-                "fillblank": "text",
-                "matrix": "matrix",
-                "matrix_single": "matrix",
-            }.get(qtype, qtype)
-
-            # 审查 P2-3 隐私保护：no_record_text=True 时填空题文本不落盘
-            # （DOM 已写入实际文本，只是 SQLite 不存敏感内容）
-            persisted_text: str | None = text_answer
-            if no_record_text and norm_type == "text":
-                persisted_text = None  # 写 NULL 占位，不存敏感内容
-
-            history_db.record_answer(
-                run_id=run_id,
-                submission_index=submission_index,
-                question_number=qnum,
-                question_type=norm_type,
-                options_selected=options_selected,
-                text_answer=persisted_text,
-                elapsed_ms=elapsed_ms,
-            )
-        except Exception as _he:
-            # history 写失败只打印提示，不影响主流程
-            print(f"  [history] record_answer(Q{qnum}) 失败: {type(_he).__name__}")
-
-    return bool(is_ok)
-
-
-# ---------------------------------------------------------------------------
-#  核心流程
-# ---------------------------------------------------------------------------
-
 def _do_one_submission_core(
     driver: Any,
     survey_url: str,
@@ -340,28 +93,25 @@ def _do_one_submission_core(
 ) -> SubmitOutcome:
     """单次提交的真正实现（无外层重试，由调用者包 retry）。
 
-    V2 新增参数（全部可选，向后兼容）：
-        history_db       : SubmissionHistory 实例（未传则不记录）
-        run_id           : 本次批量运行在 runs 表中的 id
-        submission_index : 当前是第几份提交（1-based）
-
-    审查 P2-3 新增参数：
-        no_record_text : True 时填空题答案不写入 SQLite（隐私保护）
-
-    返回值（审查 P1 修复，三态）：
-        "success" : 提交按钮已点击且页面出现成功信号（URL 变化 / 成功文本）
-        "failed"  : 提交按钮未找到 / 业务前置步骤失败（验证码超时 / 题目探测失败等）
-        "unknown" : 提交按钮已点击但效果超时（不重试，避免重复提交污染样本）
+    三态返回：
+        "success" : 提交按钮已点击且页面出现成功信号
+        "failed"  : 业务前置步骤失败（验证码超时 / 题目探测失败等）
+        "unknown" : 提交按钮已点击但效果超时
     """
     # Step 1 打开页面 + 等 ready
     _robust_driver_get(driver, survey_url)
     _wait_for_ready_state(driver)
     # 比原来的 sleep(1.5) 更快：仅等 DOM 有基本内容
     try:
-        WebDriverWait(driver, 3).until(
+        from selenium.webdriver.support.ui import WebDriverWait as _WDWait
+        _WDWait(driver, 3).until(
             lambda d: d.execute_script("return document.body != null")
         )
-    except Exception:
+    except TRANSIENT_DOM_EXCEPTIONS:
+        # body 存在性探测（短超时 3s），失败继续让后续 WebDriverWait 兜底
+        pass
+    except Exception as _e:
+        raise_non_recoverable(_e)
         pass
 
     # Step 2 验证码检查（打开页面立刻弹的情况）
@@ -373,37 +123,34 @@ def _do_one_submission_core(
         driver.switch_to.default_content()
         return SUBMIT_FAILED
 
-    # Step 4 等题目元素（V2 扩展到 6 类控件）
+    # Step 4 等题目元素
     if not _wait_for_questions(driver, QUESTION_DETECT_TIMEOUT):
         driver.switch_to.default_content()
         return SUBMIT_FAILED
 
-    # Step 5 探测题目结构（V2 返回包含 text/scale/dropdown/matrix）
+    # Step 5 探测题目结构
     questions = detect_questions(driver)
     if not questions:
         driver.switch_to.default_content()
         return SUBMIT_FAILED
 
-    # Step 5.5 断点续填：扫描已填好的题号集合（A 层核心）
-    # 场景：本次提交上一轮因网络波动/交互异常中断，但 DOM 上已答若干题，
-    #       重新 driver.get(url) 后页面是空白——所以正常情况下 answered 是空集；
-    #       只有 driver 没关、retry_with_backoff 重试同一份提交时，DOM 才保留已填状态。
-    #       这种重试场景下跳过已填题可以避免重复点击 → 反检测更自然。
+    # Step 5.5 断点续填：扫描已填好的题号集合
     try:
         answered_set: set[int] = detect_answered_questions(driver)
-    except Exception:
+    except TRANSIENT_DOM_EXCEPTIONS:
+        answered_set = set()
+    except Exception as _e:
+        raise_non_recoverable(_e)
         answered_set = set()
     skipped_count = 0
 
-    # Step 6 逐题作答（V2 统一分发 + 可选 history 落盘）
+    # Step 6 逐题作答
     for qi, q in enumerate(questions):
-        # 每 N 题检查一次验证码（每 2 题 → 更敏感）
         if qi > 0 and qi % VERIFY_EVERY_N_QUESTIONS == 0:
             if not _check_verification_with_lock(driver, lock):
                 driver.switch_to.default_content()
                 return SUBMIT_FAILED
 
-        # 断点续填：跳过已答的题
         q_num = int(q["q"])
         if q_num in answered_set:
             skipped_count += 1
@@ -427,7 +174,6 @@ def _do_one_submission_core(
             long_hi=Q_LONG_PAUSE_HI,
         )
 
-    # 调试日志：跳过了多少题（仅在有跳过时输出，避免日志噪音）
     if skipped_count > 0:
         print(f"  [续填] 跳过 {skipped_count} 道已填题，本次重答 {len(questions) - skipped_count} 道")
 
@@ -436,10 +182,8 @@ def _do_one_submission_core(
         driver.switch_to.default_content()
         return SUBMIT_FAILED
 
-    # Step 8 点击提交 + 提交后快进（审查 P1 修复：返回三态）
+    # Step 8 点击提交 + 提交后快进
     submit_result = find_and_click_submit(driver)
-    # 只在 "success" 时计成功；"failed" / "unknown" 都不计
-    # "unknown" 不重试（避免对同一份问卷重复提交，污染样本）
     if submit_result == SUBMIT_FAILED:
         driver.switch_to.default_content()
         return SUBMIT_FAILED
@@ -449,22 +193,30 @@ def _do_one_submission_core(
         driver.switch_to.default_content()
         return SUBMIT_UNKNOWN
 
-    # 提交后偶尔也会弹最终验证（问卷星"提交时先做验证"逻辑）
-    # 再检查一次，但只等较短时间（因为流程已接近结束）
+    # 提交后偶尔也会弹最终验证
     try:
+        from .verification import is_smart_verification_showing, wait_for_manual_verification
+        from .config import VERIFICATION_TIMEOUT
         if is_smart_verification_showing(driver):
             wait_for_manual_verification(
                 driver,
                 timeout_seconds=min(VERIFICATION_TIMEOUT, 60),
                 hold_lock=lock,
             )
-    except Exception:
+    except TRANSIENT_DOM_EXCEPTIONS:
+        # 提交后验证码探测是二次检查，失败不影响最终成功判定
+        pass
+    except Exception as _e:
+        raise_non_recoverable(_e)
         pass
 
     driver.switch_to.default_content()
     return SUBMIT_SUCCESS
 
 
+# ---------------------------------------------------------------------------
+#  最外层：带重试 + 清理的 run_one_submission 入口
+# ---------------------------------------------------------------------------
 @retry_with_backoff(
     max_attempts=SUBMISSION_MAX_ATTEMPTS,
     initial_delay=SUBMISSION_INITIAL_DELAY,
@@ -475,36 +227,19 @@ def _do_one_submission_core(
 def run_one_submission(
     driver: Any,
     survey_url: str,
+    lock: ManualHoldLock,
     *,
     history_db: Any | None = None,
     run_id: int | None = None,
     submission_index: int | None = None,
     no_record_text: bool = False,
 ) -> SubmitOutcome:
-    """执行一次完整的问卷填写 + 提交流程（外层包 WebDriver 异常重试）。
+    """外层 retry + 清理 + 重抛异常（供 GUI / CLI 批处理循环调用）。
 
-    重试策略：
-      - 过程中抛出 WebDriverException（如 StaleElementReference / 浏览器断开）→
-        等待 SUBMISSION_INITIAL_DELAY * (2 ** attempt) 秒后重试
-      - 普通业务失败（返回 "failed" / "unknown"）→ 不重试，交给调用方统计
-        （审查 P1 修复：尤其 "unknown" 绝不能重试，避免对同一份问卷重复提交污染样本）
-      - 所有重试用完 → 抛最后一次异常（外层捕获后记为失败）
-
-    V2 新增可选关键字参数：
-        history_db       : SubmissionHistory 实例（会逐题写入 answers 表）
-        run_id           : 对应 history.start_run() 的返回值
-        submission_index : 当前第几份（1-based），对应 answers.submission_index
-
-    审查 P2-3 新增参数：
-        no_record_text : True 时填空题答案不写入 SQLite（隐私保护）
-
-    :return:
-      "success" : 已确认提交成功（URL 变化 / 成功文本）
-      "failed"  : 已确认失败（前置步骤失败 / 提交按钮未找到）
-      "unknown" : 按钮已点击但效果超时（保守计为失败，便于事后复盘）
+    - 指数退避重试（只在 WebDriverException 层做）
+    - 异常时：打印日志 + 切回默认上下文 + 重抛给 retry_with_backoff 判定
+    - 正常时：返回三态 SubmitOutcome
     """
-    # 每轮提交流程共享一个人工介入锁，确保验证期间任何子步骤都被 hold
-    lock = ManualHoldLock()
     try:
         return _do_one_submission_core(
             driver,
@@ -516,9 +251,18 @@ def run_one_submission(
             no_record_text=no_record_text,
         )
     except Exception as e:
-        print(f"  EX: {type(e).__name__}: {e}")
+        # Ctrl+C/SystemExit 直接上抛（不做任何清理尝试以免吞）
+        raise_non_recoverable(e)
+        print("  " + format_exc_log(
+            e, action="单次提交核心流程", recovery="尝试回到默认上下文并重抛给外层重试",
+            submission_index=submission_index,
+        ))
         try:
             driver.switch_to.default_content()
-        except Exception:
+        except TRANSIENT_DOM_EXCEPTIONS:
+            # 清理：switch_to 失败属于正常（iframe 已销毁/会话已关闭）
+            pass
+        except Exception as _e2:
+            raise_non_recoverable(_e2)
             pass
         raise  # 重抛异常，让 retry_with_backoff 判定是否重试

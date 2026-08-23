@@ -30,7 +30,12 @@
 - **🆕 V2.2 · CLI 隐私 + 语义（审查整改 P2-2/P2-3）**：`--no-record-text` 不把填空答案写入 SQLite（避免明文保存姓名/手机/邮箱）；`--target-success` / `--max-attempts` 厘清"目标份数 vs 总尝试次数"语义
 - **🆕 V2.2 · 依赖锁定（审查整改 P2-4）**：`requirements.txt` 锁定 `selenium==4.39.0` / `numpy==2.2.4`，可选依赖也给出实测可用版本
 - **🆕 V2.3 · 数据模型（可读性建议第 3 章）**：[`src/models.py`](src/models.py) 引入 `QuestionType` 枚举 + `QuestionData` / `AnswerData` / `SubmitResult` / `WeightConfigEntry` dataclass，替代在模块间裸传的 `dict[str, Any]`；所有 dataclass 提供 `from_dict` / `as_dict` 双向兼容
-- **🆕 V2.3 · RunState 状态对象（可读性建议第 4 章）**：集中管理 `success_count` / `fail_count` / `unknown_count` / `is_interrupted` / `run_id` / `attempts_cap` / `current_attempt`，CLI `run_batch` 替代散落局部计数器；状态判定下沉到 `history_status()` / `history_error_message()`，避免分支间状态不同步
+- **🆕 V2.3 · RunState 状态对象（可读性建议第 4 章）**：集中管理 `success_count` / `fail_count` / `unknown_count` / `is_interrupted` / `run_id` / `attempts_cap` / `current_attempt`，CLI `run_batch` **与 GUI `_run_loop` 共用**同款状态机；状态判定下沉到 `history_status()` / `history_error_message()`，避免分支间状态不同步
+- **🆕 V2.3 · 代码模块化（可读性建议第 1 章 / 第 6 章）**：
+  - `src/interactions/`：按题型拆分为 `choices.py / text.py / scale.py / dropdown.py / matrix.py / submit.py / _scripts.py`（JS 内嵌脚本集中管理 + 不变量测试 13 项），原 `interaction.py` 保留为转发层
+  - `src/pipeline_stages/`：拆出 `load_page.py / captcha.py / questions_stage.py` 具体阶段实现，`pipeline.py` 仅保留流程编排
+  - `gui/`：原 2611 行 `app.py` 按职责拆为 `theme.py`（颜色/渐变/主题）+ `widgets.py`（通用 UI 工厂）+ `history_panel.py`（runs/answers 双表面板）+ `weight_panel.py`（权重表卡片）+ `log_view.py`（日志终端）+ `controller.py`（_on_* 处理器），精简为编排层 1400 行
+- **🆕 V2.3 · 异常分层（批判式审查 P2-4 兜底）**：新增 `src/exceptions.py`，分类 `TRANSIENT_DOM_EXCEPTIONS` / `NON_RECOVERABLE_BASE_EXCEPTIONS`；`pipeline.py` 收窄 `except Exception` → 仅 `TRANSIENT_DOM_EXCEPTIONS / OSError / IntegrityError`，添加统一 `format_exc_log`
 - **🆕 V2.3 · 命名整改（可读性建议第 2 章）**：布尔变量统一 `is_` / `has_` / `should_` / `use_` 前缀（`is_interrupted` / `is_ok`）；README 加术语表统一 `run` / `submission` / `attempt` / `success_count` / `fail_count` / `target_count` / `question` 含义
 
 ---
@@ -145,12 +150,15 @@ automation/
 ├── src/
 │   ├── __init__.py             # 版本号（v2.3.0）+ 模块变更日志
 │   ├── config.py               # 全局配置：权重定义、运行时常量、反检测参数
-│   ├── pipeline.py             # 核心编排：单次问卷填写 + 提交流程（含断点续填跳过已答题 + history 可选接入 + V2.2 三态返回 + no_record_text 透传 + V2.3 is_ok 命名）
+│   ├── pipeline.py             # V2.3 编排层：pipeline_stages/*.py 的调用顺序，单次问卷填写 + 提交（含三态返回、续填跳过、history 接入、no_record_text 透传）
+│   ├── pipeline_stages/        # V2.3 pipeline 具体阶段：load_page / captcha / questions_stage
 │   ├── detection.py            # 题目结构自动探测（JS 注入扫描 6 类题型 DOM + detect_answered_questions 续填扫描）
 │   ├── answering.py            # V1：单选/多选 答案生成策略（保留，完全兼容）
 │   ├── answering_v2.py         # V2：6 类题型统一 dict 格式答案生成器
-│   ├── interaction.py          # DOM 交互层（点击/填空/量表/下拉/矩阵 + 提交按钮 V2.2 三态 SubmitOutcome）
+│   ├── interaction.py          # V2.3 转发层：所有 API 直接从 src/interactions/ 再导出
+│   ├── interactions/           # V2.3 按题型拆分 DOM 交互：choices / text / scale / dropdown / matrix / submit + _scripts.py（JS 集中管理）
 │   ├── models.py               # V2.3 数据模型：QuestionType 枚举 + QuestionData/AnswerData/SubmitResult/WeightConfigEntry/RunState dataclass
+│   ├── exceptions.py           # V2.3 异常分类：TRANSIENT_DOM_EXCEPTIONS / NON_RECOVERABLE_BASE_EXCEPTIONS + format_exc_log
 │   ├── verification.py         # 智能验证码检测与人工等待
 │   ├── utils.py                # 工具库：正态分布、指数退避、UA 池、人工介入锁
 │   ├── cli.py                  # 命令行入口：批量循环 + V2 参数 + V2.2 no_record_text/target_success/max_attempts + V2.3 RunState 集成 + interrupted 状态
@@ -160,7 +168,13 @@ automation/
 │       ├── driver_factory.py           # Edge/Chrome 驱动 + CDP Stealth 配置
 │       └── driver_factory_stealth.py   # Stealth JS 反检测脚本构建器
 ├── gui/
-│   ├── app.py                  # Tkinter GUI 主窗口（双 Tab：配置 / 历史记录 · V2.2 三态结果统计）
+│   ├── app.py                  # V2.3 GUI 编排层主窗口（双 Tab：配置 / 历史记录 · 共用 RunState · V2.2 三态结果统计；原 2611 → ~1430 行）
+│   ├── theme.py                # V2.3 提取：颜色常量、渐变绘制、ttk 主题样式
+│   ├── widgets.py              # V2.3 提取：卡片/icon 按钮/spin/toggle/stat_badge 通用 UI 工厂
+│   ├── history_panel.py        # V2.3 提取：历史记录 Tab（runs/answers 双表 + 工具栏）
+│   ├── weight_panel.py         # V2.3 提取：权重 Tab（权重表卡片 + 类型 badge + 悬停高亮）
+│   ├── log_view.py             # V2.3 提取：日志终端（扫描线、光标闪烁、Queue 轮询）
+│   ├── controller.py           # V2.3 提取：配置 IO / 二维码 / 探测题目线程骨架
 │   └── qr_utils.py             # 二维码 URL 解析
 └── tests/
     ├── test_answering.py       # V1 答案生成逻辑测试
@@ -170,6 +184,8 @@ automation/
     ├── test_history.py         # SQLite 历史记录测试（含 V2.2 幂等化 + dedup 迁移 4 项，共 27 项）
     ├── test_interaction_submit.py # V2.2 提交三态（success/failed/unknown）单元测试（7 项，fake driver）
     ├── test_models.py          # V2.3 数据模型 + RunState 单元测试（36 项，含题型枚举/dataclass 互逆/状态机）
+    ├── test_exceptions.py      # V2.3 异常分类 + format_exc_log/raise_non_recoverable（15 项）
+    ├── test_js_scripts.py      # V2.3 JS 脚本集中管理不变量测试（13 项）
     ├── test_detection_resume.py # V2.1 detect_answered_questions 容错测试（6 项）
     ├── test_e2e_integration.py # headless E2E：检测 → 答题 → 交互 → history 全链路（依赖真实浏览器驱动）
     ├── fixtures/
@@ -401,16 +417,16 @@ python -m pytest tests/test_interaction_submit.py tests/test_history.py \
                  tests/test_config_io.py tests/test_cli.py -v
 ```
 
-当前测试全部通过：**166/166** ——
+当前测试全部通过：**196/196**（非 E2E 独立套件 194 项 + 含浏览器 E2E 共 196 项）——
 - V1 `test_answering` (6) + `test_utils` (15) = 21
 - V2 `test_answering_v2` (15) + `test_config_io` (28) + `test_history` (27) + `test_e2e_integration` (2) = 72
 - V2.1 `test_detection_resume` (6)
 - V2.2 `test_interaction_submit` (7) + `test_history` 幂等化 (4) + `test_config_io` 增强校验 (18) + `test_cli` 新参数 (7) = 36（含跨文件）
-- V2.3 `test_models` (36)：QuestionType 枚举 (6) + QuestionData 互逆 (7) + AnswerData 互逆 (5) + SubmitResult (3) + WeightConfigEntry 互逆 (5) + RunState 状态机 (10)
+- V2.3 `test_models` (36) · `test_exceptions` (15) · `test_js_scripts` (13) = 64
 
-> **E2E 测试依赖真实浏览器驱动**：`tests/test_e2e_integration.py`（2 项）使用 `tests/fixtures/mock_wjx.html` 作为离线 mock 问卷，但仍需要本机装好 Edge / Chrome + 对应 WebDriver 才能跑通 Selenium 全链路（检测 → 答题 → 交互 → history）。无浏览器环境或 CI 上建议加 `--ignore=tests/test_e2e_integration.py` 跳过这两项，其余 164 项可在纯 Python 环境下完整通过。
+> **E2E 测试依赖真实浏览器驱动**：`tests/test_e2e_integration.py`（2 项）使用 `tests/fixtures/mock_wjx.html` 作为离线 mock 问卷，但仍需要本机装好 Edge / Chrome + 对应 WebDriver 才能跑通 Selenium 全链路（检测 → 答题 → 交互 → history）。无浏览器环境或 CI 上建议加 `--ignore=tests/test_e2e_integration.py --ignore=tests/test_e2e_pipeline.py --ignore=tests/test_cli_history_e2e.py` 跳过 E2E，其余 194 项可在纯 Python 环境下完整通过。
 >
-> 审查报告原先提到「README 声称 93/93 但实际 91 passed 2 skipped」的问题已在 V2.2 整改中修正：现在 166 项全部通过，不再有 skipped 项，README 测试数与实际一致。
+> 审查报告原先提到「README 声称 93/93 但实际 91 passed 2 skipped」的问题已在 V2.2 整改中修正；V2.3 模块化与 RunState 共用改造后测试数同步更新，README 测试数与 `pytest -q tests/ --ignore=tests/test_e2e_*.py` 实际通过数一致。
 
 ---
 
