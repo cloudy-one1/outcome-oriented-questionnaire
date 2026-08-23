@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import sys
 from argparse import Namespace
+from typing import Any
 
 from .config import (
     BROWSER_OPTIONS,
@@ -30,6 +31,12 @@ from .config import (
     DEFAULT_USE_UC,
     WEIGHT_CONFIG,
 )
+from .exceptions import (
+    TRANSIENT_DOM_EXCEPTIONS,
+    format_exc_log,
+    raise_non_recoverable,
+)
+from .models import RunState
 
 
 def _positive_int(value: str) -> int:
@@ -130,6 +137,33 @@ def parse_args(argv: list[str] | None = None) -> Namespace:
         default=False,
         help="结束时打印全库统计（需配合 -H 或 --history 使用，否则空库）。",
     )
+    # ---------- V2.2 审查整改新增参数 ----------
+    parser.add_argument(
+        "--no-record-text",
+        dest="no_record_text",
+        action="store_true",
+        default=False,
+        help="[隐私保护] 不把填空题答案写入 SQLite（text_answer 列写 NULL 占位）。"
+             " 避免明文保存姓名/手机/邮箱等敏感内容；DOM 仍会填入实际文本（流程需要）。",
+    )
+    parser.add_argument(
+        "--target-success",
+        dest="target_success",
+        action="store_true",
+        default=False,
+        help="[语义] 把 --count 解释为「目标成功提交数」而非「总尝试次数」。"
+             " 循环会持续到成功数达标或 max_attempts 用尽。"
+             " 默认 False（旧行为：count = 总尝试次数，跑满即结束）。",
+    )
+    parser.add_argument(
+        "--max-attempts",
+        dest="max_attempts",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="[仅 --target-success 时生效] 最大尝试次数上限，防止死循环。"
+             " 默认为 --count 的 2 倍。",
+    )
     return parser.parse_args(argv)
 
 
@@ -139,7 +173,13 @@ def _cleanup_browser_state(driver) -> None:
         driver.delete_all_cookies()
         driver.execute_script("window.localStorage.clear();")
         driver.execute_script("window.sessionStorage.clear();")
-    except Exception:
+    except TRANSIENT_DOM_EXCEPTIONS:
+        # 建议 5.1：Cookie/Storage 清理是"最好情况"优化，DOM/会话异常不影响答题
+        pass
+    except Exception as _e:
+        # 建议 5.3：Ctrl+C/SystemExit 必须上抛
+        raise_non_recoverable(_e)
+        # 其他清理失败仍然忽略
         pass  # 清理失败不影响后续流程
 
 
@@ -151,6 +191,9 @@ def run_batch(
     use_uc: bool = DEFAULT_USE_UC,
     history_db: Any | None = None,
     weight_config: dict | None = None,
+    no_record_text: bool = False,
+    target_success: bool = False,
+    max_attempts: int | None = None,
 ) -> tuple[int, int]:
     """批量执行指定份数的问卷提交（v2.0：支持 history 逐题记录）。
 
@@ -163,6 +206,24 @@ def run_batch(
     V2.1 参数：
         weight_config : 启用 history 时把当前 WEIGHT_CONFIG 一并持久化到
                         runs.weight_config_json，下次 CLI 调用可用 --resume 恢复。
+    V2.2 参数（审查整改）：
+        no_record_text : True 时填空题答案不会写入 SQLite（隐私保护，避免
+                          明文保存用户自定义的姓名/手机/邮箱等敏感内容）。
+        target_success : 审查 P2-2 语义厘清 ——
+                          False（默认）：``total_submissions`` 解释为
+                          "总尝试次数"，跑满 N 次即结束（不论成功失败，旧行为）。
+                          True：``total_submissions`` 解释为"目标成功提交数"，
+                          循环会持续到 ``success_count == total_submissions`` 为止，
+                          并以 ``max_attempts`` 作为最大尝试次数上限防止死循环。
+        max_attempts   : 仅当 ``target_success=True`` 时生效；为 None 时
+                          默认 ``total_submissions * 2``（最多 2 倍尝试达成目标）。
+                          防止极端失败场景下死循环刷接口。
+
+    返回值（审查 P1-1 修复）：
+        (success_count, fail_count) ——
+        其中 fail_count 包含 "failed" 和 "unknown" 两类，
+        "unknown" 会单独打印一行 UNKNOWN 以便事后复盘。
+        run_one_submission 返回 "success" / "failed" / "unknown" 三态字符串。
     """
     # ----- 延迟导入（运行时强依赖） -----
     from selenium.common.exceptions import InvalidSessionIdException  # type: ignore
@@ -178,47 +239,87 @@ def run_batch(
         ROUND_WAIT_MU,
         ROUND_WAIT_SIGMA,
     )
+    from .interaction import SUBMIT_SUCCESS  # noqa: F401  - 明确"成功"判定
     from .pipeline import run_one_submission
     from .utils import human_pause
 
     # 首次创建浏览器实例
     driver = create_driver(browser, use_uc=use_uc)
-    success = 0
-    fail = 0
+
+    # 审查 P2-2：target_success 模式下决定循环上限
+    #   - 默认模式：total_submissions 解释为"总尝试次数"，跑满即结束（旧行为）
+    #   - target_success=True：total_submissions 是"目标成功数"，循环直到达成
+    #     或 max_attempts 用尽（防死循环），submission_index 仍递增以保 history 连续
+    attempts_cap: int
+    if target_success:
+        attempts_cap = int(max_attempts) if max_attempts else (int(total_submissions) * 2)
+        print(
+            f"[模式] 目标成功数 = {total_submissions}，最大尝试次数 = {attempts_cap}"
+            + (f"（不记录填空文本）" if no_record_text else "")
+        )
+    else:
+        attempts_cap = int(total_submissions)
+
+    # V2.3 命名整改（建议第四章）：用 RunState 集中管理批次状态,
+    # 替代散落的 success/fail/unknown_count/is_interrupted/run_id 等局部变量
+    state = RunState(attempts_cap=attempts_cap)
 
     # ---- V2：start_run ----
-    run_id: int | None = None
-    total_elapsed_start = 0.0
     if history_db is not None:
         try:
-            run_id = history_db.start_run(
+            state.run_id = history_db.start_run(
                 survey_url=survey_url,
                 total_submissions=int(total_submissions),
                 browser=browser,
                 use_uc=bool(use_uc),
                 weight_config=weight_config,
             )
-            total_elapsed_start = sys.float_info.get("perf_counter", lambda: 0.0)()
             # 跨版本兼容：实际使用 time.perf_counter 统计
             import time as _t
-            total_elapsed_start = _t.perf_counter()
+            state.total_elapsed_start = _t.perf_counter()
+        except OSError as _e:
+            # 建议 5.1：把 IO/SQLite 异常和代码 bug 分开——只有磁盘/权限/DB 损坏允许降级
+            # （ValueError/KeyError 等数据契约错误应该上抛暴露问题）
+            print("  " + format_exc_log(
+                _e, action="history.start_run", recovery="降级为本次不记录历史，继续运行",
+            ))
+            state.run_id = None
         except Exception as _e:
-            print(f"[history] start_run 失败，继续不记录: {type(_e).__name__}")
-            run_id = None
+            # 建议 5.3：Ctrl+C/SystemExit 必须上抛
+            raise_non_recoverable(_e)
+            # 其他异常：仍用降级策略，但统一格式日志
+            print("  " + format_exc_log(
+                _e, action="history.start_run", recovery="降级为本次不记录历史，继续运行",
+            ))
+            state.run_id = None
 
     try:
-        for idx in range(1, total_submissions + 1):
-            # 打印进度（不换行，后续打印 OK/FAIL）
-            print(f"[{idx}/{total_submissions}]", end=" ", flush=True)
+        # 审查 P2-2：循环上限改为 attempts_cap
+        # target_success 模式下 success_count == total_submissions 时也跳出
+        while state.current_attempt < state.attempts_cap:
+            # target_success 模式：达成目标成功数即可提前结束
+            if target_success and state.success_count >= int(total_submissions):
+                print(f"[达成] 成功数 {state.success_count} 已达目标 {int(total_submissions)}，停止")
+                break
+            state.advance_attempt()
+            # 打印进度（不换行，后续打印 OK/FAIL/UNKNOWN）
+            if target_success:
+                print(f"[尝试{state.current_attempt}/{state.attempts_cap} · 成功{state.success_count}/{total_submissions}]",
+                      end=" ", flush=True)
+            else:
+                print(f"[{state.current_attempt}/{total_submissions}]", end=" ", flush=True)
 
             try:
                 # V2：把 history_db + run_id + submission_index 通过关键字传进 pipeline
-                ok = run_one_submission(
+                # 审查 P1-1：run_one_submission 返回 "success" / "failed" / "unknown" 三态
+                # 审查 P2-3：no_record_text 透传到 _answer_one_question 屏蔽填空文本落盘
+                outcome = run_one_submission(
                     driver,
                     survey_url,
                     history_db=history_db,
-                    run_id=run_id,
-                    submission_index=idx,
+                    run_id=state.run_id,
+                    submission_index=state.current_attempt,
+                    no_record_text=no_record_text,
                 )
 
             except InvalidSessionIdException:
@@ -226,18 +327,26 @@ def run_batch(
                 print("BROWSER_DEAD", end=" ", flush=True)
                 try:
                     driver.quit()
-                except Exception:
+                except TRANSIENT_DOM_EXCEPTIONS:
+                    pass  # 清理失败不影响后续流程
+                except Exception as _e:
+                    # 建议 5.3：Ctrl+C/SystemExit 必须上抛
+                    raise_non_recoverable(_e)
                     pass
                 driver = create_driver(browser, use_uc=use_uc)  # 重新创建浏览器
-                fail += 1
+                state.mark_failure()
                 continue
 
-            # --- 统计本轮结果 ---
-            if ok:
-                success += 1
+            # --- 统计本轮结果（审查 P1-1：三态判定；V2.3 用 RunState 集中更新） ---
+            if outcome == "success":
+                state.mark_success()
                 print("OK")
+            elif outcome == "unknown":
+                # 按钮已点击但效果超时 → 保守计为失败，但单独打 UNKNOWN 便于复盘
+                state.mark_unknown()
+                print("UNKNOWN")
             else:
-                fail += 1
+                state.mark_failure()
                 print("FAIL")
 
             # --- 清理浏览器状态（为下一轮做准备） ---
@@ -245,11 +354,15 @@ def run_batch(
 
             # --- 每 N 轮主动重启浏览器 ---
             # 原因：长时间运行会导致浏览器内存堆积，最终崩溃。
-            if idx % RESTART_BROWSER_EVERY == 0:
+            if state.current_attempt % RESTART_BROWSER_EVERY == 0:
                 print("RESTART", end=" ", flush=True)
                 try:
                     driver.quit()
-                except Exception:
+                except TRANSIENT_DOM_EXCEPTIONS:
+                    pass  # 清理失败不影响后续流程
+                except Exception as _e:
+                    # 建议 5.3：Ctrl+C/SystemExit 必须上抛
+                    raise_non_recoverable(_e)
                     pass
                 driver = create_driver(browser, use_uc=use_uc)
 
@@ -263,38 +376,63 @@ def run_batch(
             )
 
     except KeyboardInterrupt:
-        # 用户按下 Ctrl+C → 优雅退出
+        # 用户按下 Ctrl+C → 优雅退出（审查 P1-3：标记 interrupted 而非 finished）
+        state.mark_interrupted()
         print("\n用户中断")
 
     finally:
         # ---- V2：finish_run（无论成功/失败/中断都要写） ----
-        if history_db is not None and run_id is not None:
+        if history_db is not None and state.run_id is not None:
             try:
                 import time as _t2
-                total_elapsed = _t2.perf_counter() - total_elapsed_start
-                status = "running" if (success + fail == 0) else "finished"
+                total_elapsed = _t2.perf_counter() - state.total_elapsed_start
+                # V2.3：状态判定下沉到 RunState.history_status / history_error_message
+                # 审查 P1-3：Ctrl+C → status='interrupted'（区别于 finished/failed）
+                #            历史模块 find_resumable_run 会把 interrupted/running 都视作可恢复
                 history_db.finish_run(
-                    run_id=run_id,
-                    success_count=success,
-                    fail_count=fail,
+                    run_id=state.run_id,
+                    success_count=state.success_count,
+                    fail_count=state.fail_count,
                     total_elapsed_seconds=max(0.0, total_elapsed),
-                    status=status,
-                    error_message=None if success + fail > 0 else "Ctrl+C 中断",
+                    status=state.history_status(),
+                    error_message=state.history_error_message(),
                 )
+            except OSError as _e2:
+                # 建议 5.1：IO/磁盘异常允许降级；ValueError/KeyError 往上抛
+                print("  " + format_exc_log(
+                    _e2, action="history.finish_run", recovery="忽略，统计结果仍已打印到 stdout",
+                    run_id=state.run_id,
+                ))
             except Exception as _e2:
-                print(f"[history] finish_run 失败: {type(_e2).__name__}")
+                # 建议 5.3：Ctrl+C/SystemExit 必须上抛
+                raise_non_recoverable(_e2)
+                # 其他异常：统一格式日志
+                print("  " + format_exc_log(
+                    _e2, action="history.finish_run", recovery="忽略，统计结果仍已打印到 stdout",
+                    run_id=state.run_id,
+                ))
+
+        # UNKNOWN 分项统计日志（便于事后复盘服务端是否真未收到提交）
+        if state.unknown_count > 0:
+            print(f"[统计] 其中 {state.unknown_count} 次提交结果未知（按钮已点击但未观察到成功信号），"
+                  f"已保守计入失败数。")
 
         # 无论如何都要关闭浏览器，避免进程残留
         try:
             driver.quit()
-        except Exception:
+        except TRANSIENT_DOM_EXCEPTIONS:
+            pass  # 清理失败不影响后续流程
+        except Exception as _e:
+            # 建议 5.3：Ctrl+C/SystemExit 必须上抛
+            raise_non_recoverable(_e)
             pass
 
-    return success, fail
+    return state.success_count, state.fail_count
 
 
 def main(argv: list[str] | None = None) -> None:
-    """CLI 主入口函数（v2.0：支持 --config / --history / --stats）。
+    """CLI 主入口函数（v2.0：支持 --config / --history / --stats；
+    V2.2 审查整改：支持 --no-record-text / --target-success / --max-attempts）。
 
     优先级：命令行参数 > config.py 中的默认值。
 
@@ -318,7 +456,14 @@ def main(argv: list[str] | None = None) -> None:
             print(f"[config] 已加载权重配置：{args.config}（{n_q} 道题）")
             if cfg_meta.get("name"):
                 print(f"[config] 预设名称: {cfg_meta['name']}")
+        except (FileNotFoundError, ValueError, OSError) as e:
+            # 建议 5.1：只收窄到预期失败（文件不存在/JSON 结构非法/IO 错误）
+            # ValueError 覆盖 JSONDecodeError/结构校验错误；其他异常往上抛
+            print(f"[config] 加载失败: {type(e).__name__}: {e}")
+            sys.exit(2)
         except Exception as e:
+            # 建议 5.3：Ctrl+C/SystemExit 必须上抛；其他异常仍按失败退出
+            raise_non_recoverable(e)
             print(f"[config] 加载失败: {type(e).__name__}: {e}")
             sys.exit(2)
 
@@ -329,8 +474,21 @@ def main(argv: list[str] | None = None) -> None:
             from .history import SubmissionHistory
             history_db = SubmissionHistory(args.history)
             print(f"[history] 历史记录已启用: {args.history}")
+        except OSError as e:
+            # 建议 5.1：磁盘/权限/SQLite 打开失败 → 降级为不记录
+            print("  " + format_exc_log(
+                e, action="history 初始化", recovery="降级为本次不记录历史，继续运行",
+                path=args.history,
+            ))
+            history_db = None
         except Exception as e:
-            print(f"[history] 初始化失败，继续不记录: {type(e).__name__}: {e}")
+            # 建议 5.3：Ctrl+C/SystemExit 必须上抛
+            raise_non_recoverable(e)
+            # 其他异常：仍用降级策略
+            print("  " + format_exc_log(
+                e, action="history 初始化", recovery="降级为本次不记录历史，继续运行",
+                path=args.history,
+            ))
             history_db = None
 
     print("=" * 60)
@@ -348,6 +506,14 @@ def main(argv: list[str] | None = None) -> None:
         print(f"权重配置 : {args.config}")
     if history_db is not None:
         print(f"历史记录 : {args.history}")
+    # V2.2 审查整改：模式提示
+    if args.target_success:
+        print(f"运行模式 : 目标成功数 {TOTAL_SUBMISSIONS}"
+              + (f"，最大尝试 {args.max_attempts or TOTAL_SUBMISSIONS * 2}" ))
+    else:
+        print(f"运行模式 : 总尝试次数 {TOTAL_SUBMISSIONS}（成功与否都跑满）")
+    if args.no_record_text:
+        print("隐私保护 : 填空题答案不写入 SQLite（--no-record-text）")
     print("=" * 60)
 
     success, fail = run_batch(
@@ -357,6 +523,9 @@ def main(argv: list[str] | None = None) -> None:
         use_uc=USE_UC,
         history_db=history_db,
         weight_config=dict(WEIGHT_CONFIG) if WEIGHT_CONFIG else None,
+        no_record_text=args.no_record_text,
+        target_success=args.target_success,
+        max_attempts=args.max_attempts,
     )
     print(f"运行结束 — 成功 {success}, 失败 {fail}")
 
@@ -369,7 +538,12 @@ def main(argv: list[str] | None = None) -> None:
             meta_out.setdefault("name", "自动导出模板")
             saved = save_weight_config(args.save_config, dict(_wc), meta_out)
             print(f"[config] 已保存配置模板: {saved}")
+        except OSError as e:
+            # 建议 5.1：收窄到文件/磁盘 IO 类异常；ValueError/TypeError 等数据契约异常上抛
+            print(f"[config] 保存失败: {type(e).__name__}: {e}")
         except Exception as e:
+            # 建议 5.3：Ctrl+C/SystemExit 必须上抛
+            raise_non_recoverable(e)
             print(f"[config] 保存失败: {type(e).__name__}: {e}")
 
     # ---------- V2：--stats 打印全库统计 ----------
@@ -383,8 +557,13 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"[history] 累计成功: {s['total_success']} / 失败: {s['total_fail']}")
                 print(f"[history] 累计成功率: {round(s['success_rate'] * 100, 2)}%")
                 print("-" * 60)
+            except OSError as e:
+                # 建议 5.1：磁盘/DB 查询异常降级为打印失败；KeyError/ValueError 等数据契约异常上抛
+                print("  " + format_exc_log(e, action="history.stats_summary"))
             except Exception as e:
-                print(f"[history] 统计失败: {type(e).__name__}: {e}")
+                # 建议 5.3：Ctrl+C/SystemExit 必须上抛
+                raise_non_recoverable(e)
+                print("  " + format_exc_log(e, action="history.stats_summary"))
         else:
             print("[history] --stats 需要配合 -H/--history 指定 DB 路径")
 
@@ -392,8 +571,12 @@ def main(argv: list[str] | None = None) -> None:
     if history_db is not None:
         try:
             history_db.close()
-        except Exception:
-            pass
+        except OSError:
+            pass  # 清理：关闭失败不影响退出
+        except Exception as _e:
+            # 建议 5.3：Ctrl+C/SystemExit 必须上抛
+            raise_non_recoverable(_e)
+            pass  # 其他清理失败仍然忽略
 
     # 失败时以非零码退出，方便脚本判断成功/失败
     sys.exit(0 if fail == 0 else 1)

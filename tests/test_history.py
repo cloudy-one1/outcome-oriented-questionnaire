@@ -418,6 +418,100 @@ class TestSubmissionHistory(unittest.TestCase):
         self.assertIn("weight_config_json", cols3)
         db3.close()
 
+    # ==================================================================
+    #  V2.2 审查 P1-2 整改：record_answer 幂等化 + answers 唯一索引
+    # ==================================================================
+    def test_record_answer_idempotent_overwrites_same_key(self) -> None:
+        """同一 (run_id, submission_index, question_number) 第二次写入应覆盖，
+        而不是新增第二条 → retry 重试不会产生重复记录。"""
+        rid = self.db.start_run("https://wjx.example/x", 1, "edge", False)
+        # 第一次写入
+        self.db.record_answer(rid, 1, 5, "single", [0], None, 100)
+        # 第二次写入（模拟 retry 重试同一份提交，重新答题）
+        new_id = self.db.record_answer(rid, 1, 5, "single", [2], None, 250)
+        # 表里应该只有 1 条记录
+        rows = self.db._query(
+            "SELECT * FROM answers WHERE run_id=? AND submission_index=? AND question_number=?",
+            (rid, 1, 5),
+        )
+        self.assertEqual(len(rows), 1, f"幂等失败，应有 1 条，实际 {len(rows)}")
+        # 最新值生效（覆盖了第一次的）
+        import json as _json
+        self.assertEqual(_json.loads(rows[0]["options_selected"]), [2])
+        self.assertEqual(rows[0]["elapsed_ms"], 250)
+        # 返回的 id 应是覆盖后的有效 id
+        self.assertEqual(rows[0]["id"], new_id)
+
+    def test_record_answer_different_keys_coexist(self) -> None:
+        """不同 (run_id, submission_index, question_number) 仍然各自独立存储，
+        幂等化只对同一三元组生效。"""
+        rid = self.db.start_run("https://wjx.example/x", 2, "edge", False)
+        self.db.record_answer(rid, 1, 1, "single", [0], None, 100)
+        self.db.record_answer(rid, 1, 2, "single", [1], None, 100)
+        self.db.record_answer(rid, 2, 1, "single", [2], None, 100)
+        all_rows = self.db._query("SELECT * FROM answers WHERE run_id=?", (rid,))
+        self.assertEqual(len(all_rows), 3)
+
+    def test_unique_index_created_on_new_db(self) -> None:
+        """新 DB 建表时应创建 idx_answers_unique 唯一索引。"""
+        idxs = self.db._query(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='answers'"
+        )
+        names = {r[0] for r in idxs}
+        self.assertIn("idx_answers_unique", names)
+        # 索引应该是 UNIQUE
+        idx_info = self.db._query_one(
+            "SELECT sql FROM sqlite_master WHERE name='idx_answers_unique'"
+        )
+        self.assertIn("UNIQUE", idx_info["sql"])
+
+    def test_dedup_migration_cleans_existing_duplicates(self) -> None:
+        """老库可能已有重复行（旧版 record_answer 无幂等保证时 retry 产生）。
+        _apply_migrations 应先 dedup 保留 max(id) 的那条，再建唯一索引成功。"""
+        # 手动构造一个有重复数据的 answers 表（绕过新版的幂等 record_answer）
+        import sqlite3 as _sqlite3
+        self.db.close()
+        conn = _sqlite3.connect(self._tmppath)
+        # 先清掉新版的唯一索引（模拟老库没有它）
+        conn.execute("DROP INDEX IF EXISTS idx_answers_unique")
+        # 插入 3 条重复（同 run_id+submission_index+question_number）
+        conn.execute("DELETE FROM answers")
+        conn.execute("DELETE FROM runs")
+        conn.execute(
+            "INSERT INTO runs (survey_url, total_submissions, browser, use_uc, status)"
+            " VALUES ('url', 1, 'edge', 0, 'running')"
+        )
+        rid = conn.execute("SELECT id FROM runs").fetchone()[0]
+        for opts in ([0], [1], [2]):
+            import json as _json
+            conn.execute(
+                "INSERT INTO answers (run_id, submission_index, question_number,"
+                " question_type, options_selected, text_answer, elapsed_ms)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (rid, 1, 5, "single", _json.dumps(opts), None, 100),
+            )
+        conn.commit()
+        conn.close()
+
+        # 重新打开 → _apply_migrations 应清理重复 + 建唯一索引
+        from src.history import SubmissionHistory
+        db2 = SubmissionHistory(self._tmppath)
+        rows = db2._query(
+            "SELECT * FROM answers WHERE run_id=? AND submission_index=? AND question_number=?",
+            (rid, 1, 5),
+        )
+        self.assertEqual(len(rows), 1, "dedup 后应只剩 1 条（max id）")
+        import json as _json2
+        # 应保留 max(id) 的那条，opts=[2]
+        self.assertEqual(_json2.loads(rows[0]["options_selected"]), [2])
+        # 唯一索引现在应该存在
+        idxs = db2._query(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='answers'"
+        )
+        names = {r[0] for r in idxs}
+        self.assertIn("idx_answers_unique", names)
+        db2.close()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
