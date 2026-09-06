@@ -24,11 +24,32 @@ __all__ = [
     "create_driver",
     "create_edge_driver",
     "create_chrome_driver",
+    "cleanup_browser_state",
     "BROWSER_TYPES",
 ]
 
 # 支持的浏览器类型字符串（供 CLI/GUI 校验入参）
 BROWSER_TYPES = ("edge", "chrome")
+
+
+def cleanup_browser_state(driver: Any) -> None:
+    """清理浏览器状态（Cookie / LocalStorage / SessionStorage），为下一轮提交做准备。
+
+    CLI（run_batch）与 GUI（_run_loop）共用；清理失败不影响后续流程。
+    """
+    from ..exceptions import TRANSIENT_DOM_EXCEPTIONS, raise_non_recoverable
+
+    try:
+        driver.delete_all_cookies()
+        driver.execute_script("window.localStorage.clear();")
+        driver.execute_script("window.sessionStorage.clear();")
+    except TRANSIENT_DOM_EXCEPTIONS:
+        # Cookie/Storage 清理是"最好情况"优化，DOM/会话异常不影响答题
+        pass
+    except Exception as _e:
+        # Ctrl+C/SystemExit 必须上抛；其他清理失败仍然忽略
+        raise_non_recoverable(_e)
+        pass
 
 
 def create_driver(

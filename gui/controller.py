@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from tkinter import filedialog, messagebox
@@ -29,14 +30,18 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from selenium.webdriver.support.ui import WebDriverWait
 
+# V2.4 修复：原先从 src.interactions 导入 detect_questions 等三个名字
+# （它们实际在 src.detection / src.verification），且 src.utils.qr 路径不存在
+# （二维码实现在 gui.qr_utils）——整个 try 块必然失败并被吞掉，
+# 导致"探测题目 / 扫码导入"按钮静默失效。
 try:
     from src.browser import create_driver
-    from src.interactions import (
-        detect_questions,
+    from src.detection import detect_questions
+    from src.verification import (
         is_smart_verification_showing,
         wait_for_manual_verification,
     )
-    from src.utils.qr import decode_qr_from_image
+    from .qr_utils import decode_qr_from_image
 except Exception:  # pragma: no cover - 导入失败在方法内部会告警
     create_driver = None  # type: ignore[assignment]
     detect_questions = None  # type: ignore[assignment]
@@ -44,9 +49,35 @@ except Exception:  # pragma: no cover - 导入失败在方法内部会告警
     wait_for_manual_verification = None  # type: ignore[assignment]
     decode_qr_from_image = None  # type: ignore[assignment]
 
+from src.models import normalize_question_type  # noqa: E402
+
+# 探测用"页面题目控件计数"JS（原先在 _worker 内重复 3 份，V2.4 收敛为一份）
+_QUESTION_COUNT_JS: str = (
+    "return ("
+    "document.querySelectorAll('input[type=\"radio\"], input[type=\"checkbox\"]').length"
+    " + document.querySelectorAll('input[type=\"text\"], textarea').length"
+    " + document.querySelectorAll('select').length"
+    " + document.querySelectorAll('div.ui-slider, div.star, div.question-rating, div.scale-span').length"
+    " + document.querySelectorAll('div.field div.label').length"
+    ");"
+)
+
+# 存储名 → 展示标签（配合 models.normalize_question_type 使用）
+_TYPE_LABELS: dict[str, str] = {
+    "single": "单选",
+    "multi": "多选",
+    "dropdown": "下拉",
+    "scale": "量表",
+    "text": "填空",
+    "matrix": "矩阵",
+}
+
 
 if TYPE_CHECKING:
     import tkinter as tk
+
+# V2.4：静默降级路径统一走 logger.debug 留痕（详见 src/logging_setup.py）
+logger = logging.getLogger("wjx.gui.controller")
 
 
 class GuiController:
@@ -270,9 +301,11 @@ class GuiController:
             messagebox.showwarning("提示", "请先填写问卷 URL")
             return
         try: self.host.detect_btn.configure(state="disabled")
-        except Exception: pass
+        except Exception:
+            logger.debug("detect_btn 置灰失败（忽略）", exc_info=True)
         try: self.host.qr_btn.configure(state="disabled")
-        except Exception: pass
+        except Exception:
+            logger.debug("qr_btn 置灰失败（忽略）", exc_info=True)
         self._set_status("正在探测题目...", "#b38700")  # =COLORS.warning
         self._log("正在连接问卷页面，探测题目结构...", "HEADER")
 
@@ -293,7 +326,7 @@ class GuiController:
                         ) == "complete"
                     )
                 except Exception:
-                    pass
+                    logger.debug("探测页 readyState 等待未完成（继续探测）", exc_info=True)
                 _t.sleep(2)
 
                 if (is_smart_verification_showing is not None
@@ -304,15 +337,7 @@ class GuiController:
                             self._log("验证超时，探测失败", "FAIL")
                             return
 
-                has_any_q = driver.execute_script(
-                    "return ("
-                    "document.querySelectorAll('input[type=\"radio\"], input[type=\"checkbox\"]').length"
-                    " + document.querySelectorAll('input[type=\"text\"], textarea').length"
-                    " + document.querySelectorAll('select').length"
-                    " + document.querySelectorAll('div.ui-slider, div.star, div.question-rating, div.scale-span').length"
-                    " + document.querySelectorAll('div.field div.label').length"
-                    ");"
-                )
+                has_any_q = driver.execute_script(_QUESTION_COUNT_JS)
                 if not has_any_q:
                     iframes = driver.execute_script(
                         "return document.querySelectorAll('iframe').length"
@@ -320,15 +345,7 @@ class GuiController:
                     found_frame = False
                     for i in range(iframes):
                         driver.switch_to.frame(i)
-                        in_frame = driver.execute_script(
-                            "return ("
-                            "document.querySelectorAll('input[type=\"radio\"], input[type=\"checkbox\"]').length"
-                            " + document.querySelectorAll('input[type=\"text\"], textarea').length"
-                            " + document.querySelectorAll('select').length"
-                            " + document.querySelectorAll('div.ui-slider, div.star, div.scale-span').length"
-                            " + document.querySelectorAll('div.field div.label').length"
-                            ");"
-                        )
+                        in_frame = driver.execute_script(_QUESTION_COUNT_JS)
                         if in_frame:
                             found_frame = True
                             break
@@ -340,18 +357,10 @@ class GuiController:
 
                 try:
                     WebDriverWait(driver, 15).until(
-                        lambda d: d.execute_script(
-                            "return ("
-                            "document.querySelectorAll('input[type=\"radio\"], input[type=\"checkbox\"]').length"
-                            " + document.querySelectorAll('input[type=\"text\"], textarea').length"
-                            " + document.querySelectorAll('select').length"
-                            " + document.querySelectorAll('div.ui-slider, div.star, div.scale-span').length"
-                            " + document.querySelectorAll('div.field div.label').length"
-                            ") > 0;"
-                        )
+                        lambda d: d.execute_script(_QUESTION_COUNT_JS) > 0
                     )
                 except Exception:
-                    pass
+                    logger.debug("等待题目控件渲染超时（继续探测）", exc_info=True)
 
                 questions = detect_questions(driver)
                 driver.switch_to.default_content()
@@ -366,7 +375,8 @@ class GuiController:
             finally:
                 if driver:
                     try: driver.quit()
-                    except Exception: pass
+                    except Exception:
+                        logger.debug("探测收尾 driver.quit() 失败（忽略）", exc_info=True)
                 self.host.root.after(
                     0, lambda: self._safe_conf(self.host, "detect_btn", "normal")
                 )
@@ -397,14 +407,8 @@ class GuiController:
         self.host._populate_weight_table(questions)
         counts: dict[str, int] = {}
         for q in questions:
-            qt = q.get("type")
-            bucket = None
-            if qt in ("single", "radio"): bucket = "单选"
-            elif qt in ("multi", "checkbox"): bucket = "多选"
-            elif qt == "dropdown": bucket = "下拉"
-            elif qt in ("scale", "rating"): bucket = "量表"
-            elif qt in ("text", "input", "textarea", "fillblank"): bucket = "填空"
-            elif qt in ("matrix_single", "matrix"): bucket = "矩阵"
+            # V2.4 整改：别名归一化统一走 models.normalize_question_type（单一真相）
+            bucket = _TYPE_LABELS.get(normalize_question_type(q.get("type")))
             if bucket:
                 counts[bucket] = counts.get(bucket, 0) + 1
         parts = [f"{v} {k}" for k, v in counts.items()]

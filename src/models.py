@@ -84,6 +84,44 @@ class QuestionType(str, enum.Enum):
 
 
 # ============================================================================
+# 题型别名 → 存储名的单一真相表
+# ============================================================================
+# history.answers.question_type 列的存储名约定为 6 类：
+#   single / multi / dropdown / scale / text / matrix
+# （注意 matrix 的存储名是 ``matrix`` 而非枚举成员名 ``matrix_single``，
+#   与历史库既有数据保持兼容）。此前同一份别名知识散落在
+#   question_stage / weight_panel / controller / config_io 四处，
+#   现统一收敛到这张表。
+QUESTION_TYPE_ALIASES: dict[str, str] = {
+    "single": "single",
+    "radio": "single",
+    "multi": "multi",
+    "checkbox": "multi",
+    "dropdown": "dropdown",
+    "scale": "scale",
+    "rating": "scale",
+    "text": "text",
+    "input": "text",
+    "textarea": "text",
+    "fillblank": "text",
+    "matrix": "matrix",
+    "matrix_single": "matrix",
+}
+
+
+def normalize_question_type(raw: str | None) -> str:
+    """把任意题型字符串归一化为 history 存储名（6 类之一）。
+
+    未识别的字符串原样返回（与旧 ``dict.get(qtype, qtype)`` 行为一致），
+    ``None`` 返回空字符串。
+    """
+    if raw is None:
+        return ""
+    s = str(raw).lower()
+    return QUESTION_TYPE_ALIASES.get(s, s)
+
+
+# ============================================================================
 # 题目数据模型
 # ============================================================================
 @dataclass(slots=True)
@@ -357,6 +395,7 @@ class RunState:
         running   ──success/fail/unknown──>  running
         running   ──Ctrl+C────────────────>  interrupted
         running   ──目标达成/用尽尝试──────>  finished
+        running   ──未捕获异常────────────>  failed   （mark_crashed，历史库可区分崩溃批次）
         interrupted ──(下次启动同 URL)─────>  running  （通过 find_resumable_run 恢复）
 
     使用约定:
@@ -387,6 +426,7 @@ class RunState:
     weight_config_snapshot: Any = None        # 启动时 WEIGHT_CONFIG 快照（dict|None）
     stop_flag: bool = False                   # GUI 用户点击"停止"的标志位
     survey_url: str = ""                      # 问卷 URL（续传 find_resumable_run 已用）
+    crash_message: Optional[str] = None       # 未捕获异常说明（非空 = 批次崩溃 → history 记 failed）
 
     # ------------ 只读派生属性 ------------
     @property
@@ -439,6 +479,15 @@ class RunState:
         self.is_interrupted = True
         self.stop_flag = True
 
+    def mark_crashed(self, reason: str) -> None:
+        """标记批次因未捕获异常终止。
+
+        与 mark_interrupted 的区别：崩溃不可恢复（页面/驱动状态未知），
+        history_status() 会返回 ``"failed"`` 而非 ``"interrupted"``，
+        避免崩溃批次被误标 finished 污染成功率、或被 find_resumable_run 误恢复。
+        """
+        self.crash_message = reason or "unknown error"
+
     def request_stop(self) -> None:
         """GUI 点击停止：先写 stop_flag；最终结束时再 mark_interrupted。
 
@@ -470,10 +519,13 @@ class RunState:
     def history_status(self) -> str:
         """根据当前状态返回 SQLite runs 表的 ``status`` 字段值。
 
+        - 崩溃(未捕获异常, mark_crashed) → ``"failed"``
         - 中断(主动 stop 或 Ctrl+C) → ``"interrupted"``
         - 连一次都没跑就退出 → ``"interrupted"``(极端情况,可恢复)
         - 否则 → ``"finished"``
         """
+        if self.crash_message:
+            return "failed"
         if self.is_interrupted or self.stop_flag:
             return "interrupted"
         if not self.has_any_submission:
@@ -486,7 +538,9 @@ class RunState:
         :param suffix: 可选追加备注，例如 GUI 浏览器/模式信息。
         """
         base: Optional[str]
-        if self.is_interrupted or self.stop_flag:
+        if self.crash_message:
+            base = f"运行异常: {self.crash_message}"
+        elif self.is_interrupted or self.stop_flag:
             base = "Ctrl+C 用户中断"
         elif not self.has_any_submission:
             base = "未执行任何提交即退出"

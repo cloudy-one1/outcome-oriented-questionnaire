@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main, release/**]
+  pull_request:
+
+jobs:
+  test:
+    # 项目面向 Windows（Edge 驱动 / MessageBox 人工介入），与开发机保持一致
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest ruff
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Run offline test suite
+        # E2E 集成测试需要真实 Edge/Chrome + WebDriver，CI 跳过
+        run: pytest tests/ --ignore=tests/test_e2e_integration.py -v

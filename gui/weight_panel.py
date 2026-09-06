@@ -16,27 +16,26 @@
 
 from __future__ import annotations
 
+import logging
+
 import tkinter as tk
 from tkinter import ttk
 from typing import Any, Callable
 
 from .theme import COLORS, FONT_PRESETS, GRAD_SUCCESS, _lerp_color
 from .widgets import _make_card as _default_make_card
+# V2.4：题型别名单一真相（models.normalize_question_type 统一归一化）
+from src.models import normalize_question_type  # noqa: E402
 
+# V2.4 整改：别名键（radio/checkbox/rating/input/textarea/fillblank/matrix_single）
+# 收敛到 models.normalize_question_type 统一归一化，本表只保留 6 个存储名的样式
 _QTYPE_BADGE_MAP: dict[str, tuple[str, str]] = {
-    "single":       (COLORS["primary"],             "单选"),
-    "radio":        (COLORS["primary"],             "单选"),
-    "multi":        (COLORS["success_dim"],         "多选"),
-    "checkbox":     (COLORS["success_dim"],         "多选"),
-    "dropdown":     (COLORS["warning_dim"],         "下拉"),
-    "scale":        (COLORS["primary_2"],           "量表"),
-    "rating":       (COLORS["primary_2"],           "量表"),
-    "text":         ("#64748b",                     "填空"),
-    "input":        ("#64748b",                     "填空"),
-    "textarea":     ("#64748b",                     "填空"),
-    "fillblank":    ("#64748b",                     "填空"),
-    "matrix":       (COLORS["danger_dim"],          "矩阵"),
-    "matrix_single":(COLORS["danger_dim"],          "矩阵"),
+    "single":   (COLORS["primary"],     "单选"),
+    "multi":    (COLORS["success_dim"], "多选"),
+    "dropdown": (COLORS["warning_dim"], "下拉"),
+    "scale":    (COLORS["primary_2"],   "量表"),
+    "text":     ("#64748b",             "填空"),
+    "matrix":   (COLORS["danger_dim"],  "矩阵"),
 }
 
 _FIELD_LABEL_MAP: dict[str, str] = {
@@ -44,6 +43,9 @@ _FIELD_LABEL_MAP: dict[str, str] = {
     "address": "地址", "age": "年龄", "company": "公司",
     "mobile": "手机", "tel": "手机", "addr": "地址", "org": "公司",
 }
+
+# V2.4：静默降级路径（except: pass）统一走 logger.debug 留痕
+logger = logging.getLogger("wjx.gui.weight_panel")
 
 
 class WeightPanel:
@@ -275,7 +277,8 @@ class WeightPanel:
             type_cell.pack_propagate(False)
 
             badge_c, badge_text = _QTYPE_BADGE_MAP.get(
-                qtype, (COLORS["primary"], qtype[:4].upper())
+                normalize_question_type(qtype),
+                (COLORS["primary"], str(qtype)[:4].upper()),
             )
             badge_fg = "white"
             badge_canvas = tk.Canvas(type_cell, height=22, width=78,
@@ -351,20 +354,24 @@ class WeightPanel:
             def _enter(_e, cells=all_cells, orig=stripe_bg):
                 for c in cells:
                     try: c.configure(bg=COLORS["table_hover"])
-                    except Exception: pass
+                    except Exception:
+                        logger.debug("悬停配色失败（忽略）", exc_info=True)
                 for cell in cells:
                     for child in cell.winfo_children():
                         try: child.configure(bg=COLORS["table_hover"])
-                        except Exception: pass
+                        except Exception:
+                            logger.debug("悬停配色失败（忽略）", exc_info=True)
 
             def _leave(_e, cells=all_cells, orig=stripe_bg):
                 for c in cells:
                     try: c.configure(bg=orig)
-                    except Exception: pass
+                    except Exception:
+                        logger.debug("悬停恢复配色失败（忽略）", exc_info=True)
                 for cell in cells:
                     for child in cell.winfo_children():
                         try: child.configure(bg=orig)
-                        except Exception: pass
+                        except Exception:
+                            logger.debug("悬停恢复配色失败（忽略）", exc_info=True)
 
             for c in all_cells:
                 c.bind("<Enter>", _enter)

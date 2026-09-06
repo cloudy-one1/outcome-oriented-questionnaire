@@ -43,19 +43,14 @@ import os
 from typing import Any
 
 from . import config as _config_module
+from .models import QUESTION_TYPE_ALIASES
 
 
 SCHEMA_VERSION = "2.0"
 
-# v2.0 支持的合法题型（与 answering_v2 对齐）
-_VALID_TYPES = {
-    "single", "radio",
-    "multi", "checkbox",
-    "dropdown",
-    "scale", "rating",
-    "text", "input", "textarea", "fillblank",
-    "matrix_single", "matrix",
-}
+# v2.0 支持的合法题型（V2.4 整改：从 models.QUESTION_TYPE_ALIASES 派生，
+# 与 question_stage / GUI 的别名归一化共用同一份"单一真相"）
+_VALID_TYPES = set(QUESTION_TYPE_ALIASES.keys())
 
 
 # ============================================================================

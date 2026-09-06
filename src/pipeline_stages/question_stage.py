@@ -24,6 +24,7 @@ from ..config import (
     Q_THINK_SIGMA,
 )
 from ..exceptions import TRANSIENT_DOM_EXCEPTIONS, format_exc_log, raise_non_recoverable
+from ..models import normalize_question_type
 from ..interactions.choices import js_click_option, js_click_question_options
 from ..interactions.dropdown import js_select_dropdown
 from ..interactions.matrix import js_fill_matrix_single
@@ -186,22 +187,8 @@ def _answer_one_question(
         and submission_index is not None
     ):
         try:
-            # 统一类型名（与 history.answers 表约束对齐）
-            norm_type = {
-                "single": "single",
-                "radio": "single",
-                "multi": "multi",
-                "checkbox": "multi",
-                "scale": "scale",
-                "rating": "scale",
-                "dropdown": "dropdown",
-                "text": "text",
-                "input": "text",
-                "textarea": "text",
-                "fillblank": "text",
-                "matrix": "matrix",
-                "matrix_single": "matrix",
-            }.get(qtype, qtype)
+            # V2.4 整改：题型别名归一化收敛到 models.normalize_question_type（单一真相）
+            norm_type = normalize_question_type(qtype)
 
             # 隐私保护：no_record_text=True 时填空题文本不落盘
             persisted_text: str | None = text_answer

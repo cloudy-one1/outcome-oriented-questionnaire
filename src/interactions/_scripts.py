@@ -403,16 +403,26 @@ def fill_matrix_single_script(q: int, row_selections: dict) -> str:
 #  submit 模块（较小 JS 片段，也集中便于维护）
 # ============================================================================
 
-SUBMIT_SELECTORS_ARRAY_LITERAL: str = """["#divSubmit","#submit_button","#ctlNext",
-    "button[type='submit']","input[type='submit']",
-    ".submitbtn","#submitBtn","#submitDiv",".btn-submit",
-    ".submitbtn.clickable","#ctl00_ContentPlaceHolder1_ctlSubmit"]"""
+# V2.4 整改：提交按钮选择器的"单一真相"——原先 submit.py 的 SELECTORS 与
+# 这里的数组字面量各维护一份，存在漂移隐患；现在 Python 侧（submit.SELECTORS）
+# 与 JS 兜底脚本都从这一个列表派生。
+SUBMIT_SELECTORS: list[str] = [
+    "#divSubmit", "#submit_button", "#ctlNext",
+    "button[type='submit']", "input[type='submit']",
+    ".submitbtn", "#submitBtn", "#submitDiv", ".btn-submit",
+    ".submitbtn.clickable", "#ctl00_ContentPlaceHolder1_ctlSubmit",
+]
 
 
 def submit_button_fallback_script() -> str:
-    """find_and_click_submit 的 JS 兜底：遍历提交选择器逐个点击。"""
+    """find_and_click_submit 的 JS 兜底：遍历提交选择器逐个点击。
+
+    选择器数组由 SUBMIT_SELECTORS 经 json.dumps 生成（合法 JS 数组字面量），
+    保证与 Python 侧循环使用的选择器永远一致。
+    """
+    sels_json = json.dumps(SUBMIT_SELECTORS)
     return f"""
-        var sels = {SUBMIT_SELECTORS_ARRAY_LITERAL};
+        var sels = {sels_json};
         for (var i=0; i<sels.length; i++) {{
             var el = document.querySelector(sels[i]);
             if (el) {{

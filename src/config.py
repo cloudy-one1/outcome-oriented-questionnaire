@@ -63,8 +63,9 @@ WEIGHT_CONFIG: dict = {
 #  运行时常量（一般无需修改）
 # ============================================================================
 
-# 默认问卷 URL（命令行入口使用）
-DEFAULT_SURVEY_URL: str = "https://v.wjx.cn/vm/eo733a1.aspx#"
+# 默认问卷 URL（V2.4 起置空：出于合规考虑不再内置真实线上问卷，
+# CLI -u/--url 必填，GUI 由用户在输入框填写）
+DEFAULT_SURVEY_URL: str = ""
 
 # 默认批量提交份数
 DEFAULT_TOTAL_SUBMISSIONS: int = 17
@@ -81,9 +82,8 @@ VERIFICATION_TIMEOUT: int = 120
 # 每多少轮主动重启浏览器（释放内存）
 RESTART_BROWSER_EVERY: int = 30
 
-# 轮次间随机等待区间（秒）
-ROUND_INTERVAL_MIN: float = 4.0
-ROUND_INTERVAL_MAX: float = 7.0
+# 说明：旧 ROUND_INTERVAL_MIN/MAX（均匀随机轮间停顿）已于 V2.4 移除——
+# CLI/GUI 现统一使用下方 ROUND_WAIT_* 高斯参数（见 gui/app.py 与 src/cli.py）。
 
 
 # ============================================================================

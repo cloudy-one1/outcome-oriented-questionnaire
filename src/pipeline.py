@@ -65,15 +65,12 @@ from .exceptions import (
 )
 
 # history 模块为可选（纯 import 期不强依赖；真正 record 时检查参数是否传入）
+# V2.4 整改：收窄到 ImportError——history 是纯 Python 无 Selenium 依赖，
+# 旧版捕获 TRANSIENT_DOM_EXCEPTIONS 的分支永不可达，只会误导维护者。
 try:
     from .history import SubmissionHistory  # type: ignore
     _HAS_HISTORY: bool = True
-except TRANSIENT_DOM_EXCEPTIONS:
-    # 理论上不会——history 是纯 Python 无 Selenium 依赖
-    SubmissionHistory = None  # type: ignore
-    _HAS_HISTORY = False
-except Exception as _e:  # pragma: no cover
-    raise_non_recoverable(_e)
+except ImportError:  # pragma: no cover
     SubmissionHistory = None  # type: ignore
     _HAS_HISTORY = False
 

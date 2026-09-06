@@ -23,9 +23,9 @@ class TestCliArgumentParsing(unittest.TestCase):
     """测试 src.cli 中的参数解析函数。"""
 
     def test_default_values_when_no_args(self) -> None:
-        """不传任何参数 → 返回 config 中的默认 URL 和默认份数。"""
+        """V2.4：URL 无默认值（合规，不再内置真实线上问卷）→ parsed.url 为 None。"""
         parsed = cli.parse_args([])  # 模拟 python run_cli.py
-        self.assertEqual(parsed.url, config.DEFAULT_SURVEY_URL)
+        self.assertIsNone(parsed.url)
         self.assertEqual(parsed.count, config.DEFAULT_TOTAL_SUBMISSIONS)
 
     def test_url_long_option(self) -> None:
@@ -46,7 +46,7 @@ class TestCliArgumentParsing(unittest.TestCase):
         """--count 指定提交份数。"""
         parsed = cli.parse_args(["--count", "99"])
         self.assertEqual(parsed.count, 99)
-        self.assertEqual(parsed.url, config.DEFAULT_SURVEY_URL)
+        self.assertIsNone(parsed.url)
 
     def test_count_short_option(self) -> None:
         """-n 短选项指定提交份数。"""
@@ -188,6 +188,30 @@ class TestCliArgumentParsing(unittest.TestCase):
         self.assertTrue(parsed.target_success)
         self.assertEqual(parsed.max_attempts, 25)
         self.assertEqual(parsed.count, 10)
+
+    # ==================================================================
+    #  V2.4 新增参数：--resume / --log-file
+    # ==================================================================
+
+    def test_resume_default_off(self) -> None:
+        """不传 --resume → 默认 False（全新批次）。"""
+        parsed = cli.parse_args([])
+        self.assertFalse(parsed.resume)
+
+    def test_resume_flag(self) -> None:
+        """--resume → resume=True。"""
+        parsed = cli.parse_args(["--resume"])
+        self.assertTrue(parsed.resume)
+
+    def test_log_file_default_none(self) -> None:
+        """不传 --log-file → 默认 None（不落盘）。"""
+        parsed = cli.parse_args([])
+        self.assertIsNone(parsed.log_file)
+
+    def test_log_file_value(self) -> None:
+        """--log-file PATH → 生效。"""
+        parsed = cli.parse_args(["--log-file", "logs/run.log"])
+        self.assertEqual(parsed.log_file, "logs/run.log")
 
 
 if __name__ == "__main__":

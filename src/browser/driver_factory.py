@@ -149,31 +149,18 @@ def create_edge_driver(
     except Exception:
         pass
 
-    # --- CDP (a) ：HTTP 请求头伪装（每次 HTTP 请求都生效） ---
-    try:
-        d.execute_cdp_cmd("Network.setExtraHTTPHeaders", {"headers": _cdp_extra_headers(browser="edge")})
-    except Exception:
-        pass  # 某些 Selenium Manager 版本不支持，不影响主流程
-
-    # --- CDP (b) ：每个新文档加载前注入 Stealth JS（比 addScriptToEvaluate 更早） ---
-    stealth_js = build_stealth_js(
+    # --- CDP 全局配置（V2.4 整改：复用 Edge/Chrome 通用的 _apply_stealth_cdp，
+    #     消除原先内联复制的三步 CDP 注入） ---
+    _apply_stealth_cdp(
+        d,
+        ua=ua,
+        browser="edge",
         screen_w=screen_w,
         screen_h=screen_h,
         avail_top=avail_top,
         device_memory=device_memory,
         hw_concurrency=hw_concurrency,
-        timezone_offset_min=TIMEZONE_OFFSET_MIN,
     )
-    d.execute_cdp_cmd(
-        "Page.addScriptToEvaluateOnNewDocument",
-        {"source": stealth_js},
-    )
-
-    # --- CDP (c) ：UA 也通过 CDP 再覆写一次（双重保险，兼容 Selenium bug） ---
-    try:
-        _apply_user_agent_override(d, ua, browser="edge")
-    except Exception:
-        pass  # 老版本 Selenium 可能不支持 userAgentMetadata
 
     return d
 

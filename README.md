@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.3.0-brightgreen.svg)](src/__init__.py)
+[![Version](https://img.shields.io/badge/Version-2.4.0-brightgreen.svg)](src/__init__.py)
 
 ---
 
@@ -33,10 +33,14 @@
 - **🆕 V2.3 · RunState 状态对象（可读性建议第 4 章）**：集中管理 `success_count` / `fail_count` / `unknown_count` / `is_interrupted` / `run_id` / `attempts_cap` / `current_attempt`，CLI `run_batch` **与 GUI `_run_loop` 共用**同款状态机；状态判定下沉到 `history_status()` / `history_error_message()`，避免分支间状态不同步
 - **🆕 V2.3 · 代码模块化（可读性建议第 1 章 / 第 6 章）**：
   - `src/interactions/`：按题型拆分为 `choices.py / text.py / scale.py / dropdown.py / matrix.py / submit.py / _scripts.py`（JS 内嵌脚本集中管理 + 不变量测试 13 项），原 `interaction.py` 保留为转发层
-  - `src/pipeline_stages/`：拆出 `load_page.py / captcha.py / questions_stage.py` 具体阶段实现，`pipeline.py` 仅保留流程编排
+  - `src/pipeline_stages/`：拆出 `page_loader.py / question_stage.py / verification_stage.py` 具体阶段实现，`pipeline.py` 仅保留流程编排
   - `gui/`：原 2611 行 `app.py` 按职责拆为 `theme.py`（颜色/渐变/主题）+ `widgets.py`（通用 UI 工厂）+ `history_panel.py`（runs/answers 双表面板）+ `weight_panel.py`（权重表卡片）+ `log_view.py`（日志终端）+ `controller.py`（_on_* 处理器），精简为编排层 1400 行
 - **🆕 V2.3 · 异常分层（批判式审查 P2-4 兜底）**：新增 `src/exceptions.py`，分类 `TRANSIENT_DOM_EXCEPTIONS` / `NON_RECOVERABLE_BASE_EXCEPTIONS`；`pipeline.py` 收窄 `except Exception` → 仅 `TRANSIENT_DOM_EXCEPTIONS / OSError / IntegrityError`，添加统一 `format_exc_log`
 - **🆕 V2.3 · 命名整改（可读性建议第 2 章）**：布尔变量统一 `is_` / `has_` / `should_` / `use_` 前缀（`is_interrupted` / `is_ok`）；README 加术语表统一 `run` / `submission` / `attempt` / `success_count` / `fail_count` / `target_count` / `question` 含义
+
+- **🆕 V2.4 · 集成修复（扫描整改批次）**：修复 v2.3 重构引入的三处 P0 集成回归——`run_one_submission` 必传的 `lock` 参数在 CLI/GUI 两个入口均漏传（CLI 首次提交即 TypeError）；`gui/controller.py` 从错误模块导入 `detect_questions` 等（"探测题目/扫码"静默失效）；`gui/history_panel.py` 引用不存在的列名且对 `sqlite3.Row` 误用 `.get()`（历史 Tab 必然刷不出）
+- **🆕 V2.4 · 语义修复**：`RunState.mark_crashed()` 崩溃语义——未捕获异常的批次在 history 记 `failed`（此前被误标 `finished` 污染成功率）；CLI `--resume` 断点续传落地（复用旧 runs 行、计数绝对累计、submission_index 接续）；GUI 轮间停顿统一为与 CLI 相同的高斯分布
+- **🆕 V2.4 · 工程质量**：题型别名收敛到 `models.QUESTION_TYPE_ALIASES` 单一真相；提交按钮选择器单一真相（`_scripts.SUBMIT_SELECTORS`）；浏览器状态清理 `browser.cleanup_browser_state` CLI/GUI 共用；Edge 工厂复用 `_apply_stealth_cdp`；新增 `src/logging_setup.py`（CLI `--log-file` 落盘 + GUI 静默降级路径留痕）；默认问卷 URL 置空（CLI `-u` 必填，不再内置真实线上问卷）；GUI 版本号取自 `src.__version__`；新增 `pytest.ini` / `conftest.py` / `ruff.toml` / GitHub Actions CI；新增 `tests/test_cli_batch.py`（批处理主链路冒烟）与 `tests/test_history_gui_contract.py`（GUI↔schema 契约）
 
 ---
 
@@ -148,10 +152,10 @@ automation/
 ├── data/                       # V2 新增：历史记录 SQLite 默认目录
 │   └── history.db
 ├── src/
-│   ├── __init__.py             # 版本号（v2.3.0）+ 模块变更日志
+│   ├── __init__.py             # 版本号（v2.4.0）+ 模块变更日志
 │   ├── config.py               # 全局配置：权重定义、运行时常量、反检测参数
 │   ├── pipeline.py             # V2.3 编排层：pipeline_stages/*.py 的调用顺序，单次问卷填写 + 提交（含三态返回、续填跳过、history 接入、no_record_text 透传）
-│   ├── pipeline_stages/        # V2.3 pipeline 具体阶段：load_page / captcha / questions_stage
+│   ├── pipeline_stages/        # V2.3 pipeline 具体阶段：page_loader / question_stage / verification_stage
 │   ├── detection.py            # 题目结构自动探测（JS 注入扫描 6 类题型 DOM + detect_answered_questions 续填扫描）
 │   ├── answering.py            # V1：单选/多选 答案生成策略（保留，完全兼容）
 │   ├── answering_v2.py         # V2：6 类题型统一 dict 格式答案生成器
