@@ -1,5 +1,41 @@
 """问卷自动填写工具 — 核心包。
 
+v2.4 模块变更日志（扫描发现问题的整改批次）：
+    * 2026-09-07（V2.4 P0 集成修复 + 语义修复 + 工程质量）：
+        - P0 修复：``run_one_submission`` 必传的 ``lock`` 参数在 CLI ``run_batch``
+          与 GUI ``_run_loop`` 两个调用点均漏传 → CLI 首次提交即 TypeError。
+          两入口现各自创建 ``ManualHoldLock`` 并贯穿整轮批次（新增
+          ``tests/test_cli_batch.py`` 冒烟测试守护该回归）
+        - P0 修复：``gui/controller.py`` 从 ``src.interactions`` 导入不存在的
+          ``detect_questions`` 等符号 + 引用不存在的 ``src.utils.qr`` 包 →
+          "探测题目/扫码"静默失效；改从 ``src.detection`` / ``src.verification``
+          / ``gui.qr_utils`` 导入
+        - P0 修复：``gui/history_panel.py`` 引用不存在的列（ok_count/q_number/
+          q_type/recorded_at/note）且对 sqlite3.Row 误用 .get() → 历史 Tab
+          必然刷不出；本地 dict 转换 + 列名对齐 schema + purge_old 签名修正，
+          并新增 ``test_history_gui_contract.py`` 锁定 schema 契约
+        - P1 修复：``RunState.mark_crashed`` 崩溃语义——GUI/CLI 未捕获异常
+          记 ``failed``（此前崩溃批次被误标 finished 污染成功率）
+        - P1 修复：CLI ``--resume`` 断点续传落地（写侧 V2.1 已就绪，补读取侧）
+        - P1 修复：GUI 轮间停顿统一为高斯 ``human_pause``（与 CLI 一致，
+          移除均匀随机 ``ROUND_INTERVAL_*``）
+        - P2 整改：题型别名单一真相 ``models.QUESTION_TYPE_ALIASES`` +
+          ``normalize_question_type``（question_stage / config_io / controller /
+          weight_panel 共用）；提交按钮选择器单一真相 ``_scripts.SUBMIT_SELECTORS``；
+          浏览器状态清理 ``browser.cleanup_browser_state`` CLI/GUI 共用；
+          Edge 工厂复用 ``_apply_stealth_cdp``
+        - P2 整改：新增 ``src/logging_setup.py``（``--log-file`` 落盘 +
+          GUI 静默降级路径 logger.debug 留痕）；默认问卷 URL 置空（CLI -u 必填）
+        - P2 整改：版本号单一真相（GUI APP_VERSION 取自 ``src.__version__``）；
+          pytest.ini / conftest.py / ruff.toml / GitHub Actions CI
+
+    待后续批次整改（对照建议文档剩余章节）：
+        - 第五章「异常处理」收窄 GUI 层剩余 ``except Exception``
+        - 第一章「模块职责」缩小 pipeline.py 职责
+        - 第六章「浏览器与 JS」较长 JS 移到独立 .js 或常量模块
+        - 第八章「函数长度」共用批量运行逻辑提到 src（CLI/GUI 共用 RunState）
+        - 第九章「测试与文档」测试名描述业务行为 + README 与代码自动校验
+
 v2.3 模块变更日志（代码可读性改进建议 第 1 批）：
     * 2026-08-23（V2.3 数据模型 + 命名 + 状态对象）：
         - 新增 src/models.py：题型枚举 ``QuestionType`` +
@@ -72,4 +108,4 @@ v2.0 模块变更日志：
 from .config import WEIGHT_CONFIG
 
 __all__ = ["WEIGHT_CONFIG"]
-__version__ = "2.3.0"
+__version__ = "2.4.0"

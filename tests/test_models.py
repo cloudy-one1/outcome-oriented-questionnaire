@@ -365,6 +365,31 @@ class TestRunState(unittest.TestCase):
         self.assertEqual(s.history_status(), "interrupted")
         self.assertEqual(s.history_error_message(), "Ctrl+C 用户中断")
 
+    def test_mark_crashed_yields_failed_status(self) -> None:
+        """V2.4:未捕获异常 → mark_crashed → history_status()='failed'。
+
+        此前 GUI/CLI 崩溃批次会被误标 finished 污染成功率（V2.4 修复的 P1 问题）。
+        """
+        s = RunState()
+        s.mark_success()
+        s.mark_crashed("TypeError: 'NoneType' object is not callable")
+        self.assertEqual(s.history_status(), "failed")
+        self.assertIn("运行异常", s.history_error_message() or "")
+        self.assertIn("TypeError", s.history_error_message() or "")
+
+    def test_crash_overrides_interrupted(self) -> None:
+        """crash_message 优先级高于 interrupted（崩溃批次不可恢复）。"""
+        s = RunState()
+        s.mark_interrupted()
+        s.mark_crashed("boom")
+        self.assertEqual(s.history_status(), "failed")
+
+    def test_crash_clearable_for_fresh_batch(self) -> None:
+        """新批次默认无崩溃 → 状态语义不受影响。"""
+        s = RunState()
+        s.mark_success()
+        self.assertEqual(s.history_status(), "finished")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -19,7 +19,11 @@ from ._common import (
     js_execute_retry,
     raise_non_recoverable,
 )
-from ._scripts import submit_button_fallback_script, submit_success_detect_script
+from ._scripts import (
+    SUBMIT_SELECTORS,
+    submit_button_fallback_script,
+    submit_success_detect_script,
+)
 
 
 # ============================================================================
@@ -35,12 +39,9 @@ SUBMIT_UNKNOWN: SubmitOutcome = "unknown"
 #  提交按钮查找 + 提交后 URL 变化快进
 # ============================================================================
 
-SELECTORS = [
-    "#divSubmit", "#submit_button", "#ctlNext",
-    "button[type='submit']", "input[type='submit']",
-    ".submitbtn", "#submitBtn", "#submitDiv", ".btn-submit",
-    ".submitbtn.clickable", "#ctl00_ContentPlaceHolder1_ctlSubmit",
-]
+# V2.4 整改：选择器单一真相在 _scripts.SUBMIT_SELECTORS（JS 兜底脚本同源派生），
+# 这里拷贝一份供 Python 侧 for 循环使用（拷贝避免调用方意外改动影响 JS 生成）。
+SELECTORS: list[str] = list(SUBMIT_SELECTORS)
 
 
 @js_execute_retry(max_attempts=3, initial_delay=0.15)

@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import tkinter as tk
 from collections.abc import Mapping
 from typing import Any
@@ -28,6 +30,9 @@ from .theme import (
 )
 
 _FONTS_KIND = Mapping[str, tuple]
+
+# V2.4：静默降级路径（except: pass）统一走 logger.debug 留痕
+logger = logging.getLogger("wjx.gui.widgets")
 
 
 def _resolve_fonts(fonts: _FONTS_KIND | None) -> dict[str, tuple]:
@@ -270,11 +275,13 @@ def make_spin_button(
 
     def _ent(_e, b=btn, h=hover):
         try: b.configure(bg=h, fg="white")
-        except Exception: pass
+        except Exception:
+            logger.debug("图标按钮悬停配色失败（忽略）", exc_info=True)
 
     def _lv(_e, b=btn, ob=bg, of=fg):
         try: b.configure(bg=ob, fg=of)
-        except Exception: pass
+        except Exception:
+            logger.debug("图标按钮恢复配色失败（忽略）", exc_info=True)
 
     btn.bind("<Enter>", _ent)
     btn.bind("<Leave>", _lv)

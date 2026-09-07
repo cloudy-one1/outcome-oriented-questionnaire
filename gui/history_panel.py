@@ -204,7 +204,9 @@ class HistoryPanel:
         if db is None or tree is None:
             return
         try:
-            runs = db.query_runs(limit=200)
+            # V2.4 修复：query_runs 返回 sqlite3.Row（没有 .get() 方法）→ 本地转 dict；
+            # 列名对齐 schema（ok_count → success_count，此前整个刷新必然失败）。
+            runs = [dict(r) for r in db.query_runs(limit=200)]
             for iid in tree.get_children():
                 tree.delete(iid)
             ok_cnt = 0
@@ -216,15 +218,17 @@ class HistoryPanel:
                 started = str(r.get("started_at") or "")[:19]
                 finished = str(r.get("finished_at") or "")[:19]
                 tot = r.get("total_submissions", 0) or 0
-                ok = r.get("ok_count", 0) or 0
+                ok = r.get("success_count", 0) or 0
                 fail = r.get("fail_count", 0) or 0
                 url = str(r.get("survey_url") or "")[:180]
                 total_cnt += tot
                 ok_cnt += ok
                 fail_cnt += fail
-                if status in ("done", "success", "finished"):
+                # V2.4：状态标签对齐 history.py schema 的 4 种枚举值
+                #（running/finished/failed/interrupted）
+                if status == "finished":
                     tag: tuple = ("status_ok",)
-                elif status in ("fail", "error", "stopped"):
+                elif status == "failed":
                     tag = ("status_fail",)
                 else:
                     tag = ()
@@ -261,10 +265,12 @@ class HistoryPanel:
         for iid in tree_ans.get_children():
             tree_ans.delete(iid)
         try:
-            answers = db.query_answers(run_id=run_id)
+            # V2.4 修复：Row → dict 转换 + 列名对齐
+            #（q_number/q_type/recorded_at → question_number/question_type/created_at）
+            answers = [dict(a) for a in db.query_answers(run_id=run_id)]
             for a in answers:
-                q = a.get("q_number") or "-"
-                qt = a.get("q_type") or "-"
+                q = a.get("question_number") or "-"
+                qt = a.get("question_type") or "-"
                 sel_raw = a.get("options_selected")
                 if isinstance(sel_raw, str) and sel_raw:
                     sel_s = sel_raw
@@ -274,7 +280,7 @@ class HistoryPanel:
                     sel_s = ""
                 ta = a.get("text_answer") or ""
                 ems = a.get("elapsed_ms") or ""
-                rec_at = str(a.get("recorded_at") or "")[:19]
+                rec_at = str(a.get("created_at") or "")[:19]
                 tree_ans.insert("", tk.END,
                                 values=(q, qt, sel_s, ta, ems, rec_at))
             self.answer_head_var.set(
@@ -301,12 +307,13 @@ class HistoryPanel:
         if not path:
             return
         try:
-            runs = db.query_runs(limit=10000)
+            # V2.4 修复：Row → dict 转换 + CSV 表头/列名对齐 schema
+            runs = [dict(r) for r in db.query_runs(limit=10000)]
             all_answers: list = []
             for r in runs:
                 rid = int(r["id"])
                 try:
-                    all_answers.extend(db.query_answers(run_id=rid))
+                    all_answers.extend(dict(a) for a in db.query_answers(run_id=rid))
                 except Exception:
                     pass
             runs_path = path
@@ -315,20 +322,21 @@ class HistoryPanel:
             with open(runs_path, "w", encoding="utf-8-sig", newline="") as f:
                 w = csv.writer(f)
                 w.writerow(["id", "started_at", "finished_at", "status",
-                            "survey_url", "total", "ok", "fail", "note"])
+                            "survey_url", "total", "success", "fail",
+                            "error_message"])
                 for r in runs:
                     w.writerow([r.get("id"), r.get("started_at"),
                                 r.get("finished_at"), r.get("status"),
                                 r.get("survey_url"),
                                 r.get("total_submissions"),
-                                r.get("ok_count"), r.get("fail_count"),
-                                r.get("note")])
+                                r.get("success_count"), r.get("fail_count"),
+                                r.get("error_message")])
             with open(ans_path, "w", encoding="utf-8-sig", newline="") as f:
                 w = csv.writer(f)
                 w.writerow(["run_id", "submission_index",
-                            "q_number", "q_type",
+                            "question_number", "question_type",
                             "options_selected", "text_answer",
-                            "elapsed_ms", "recorded_at"])
+                            "elapsed_ms", "created_at"])
                 for a in all_answers:
                     sel_raw = a.get("options_selected")
                     if isinstance(sel_raw, (list, tuple)):
@@ -337,10 +345,10 @@ class HistoryPanel:
                         sel_s = str(sel_raw or "")
                     w.writerow([a.get("run_id"),
                                 a.get("submission_index"),
-                                a.get("q_number"), a.get("q_type"),
+                                a.get("question_number"), a.get("question_type"),
                                 sel_s, a.get("text_answer") or "",
                                 a.get("elapsed_ms"),
-                                a.get("recorded_at")])
+                                a.get("created_at")])
             self.log(f"✓ 已导出 runs → {os.path.basename(runs_path)}", "OK")
             self.log(f"✓ 已导出 answers → {os.path.basename(ans_path)}", "OK")
         except Exception as e:
@@ -356,7 +364,8 @@ class HistoryPanel:
             self.log("未加载 src.history，无法清理", "WARN")
             return
         try:
-            removed = db.purge_old(days=7)
+            # V2.4 修复：purge_old 的关键字参数名是 days_older_than（此前 days=7 → TypeError）
+            removed = db.purge_old(days_older_than=7)
             self.log(f"已清理 {removed} 条 7 天前的运行记录", "OK")
             self.refresh()
         except Exception as e:

@@ -11,9 +11,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
-import random
 import sys
 import threading
 import time
@@ -55,17 +55,24 @@ from gui.history_panel import HistoryPanel  # noqa: E402  7C: 历史记录面板
 from gui.weight_panel import WeightPanel  # noqa: E402  7D: 权重表面板剥离
 from gui.log_view import LogView  # noqa: E402  7E: 日志终端面板剥离
 from gui.controller import GuiController  # noqa: E402  7F: 命令处理器剥离
+from src import __version__ as APP_VERSION  # noqa: E402
 from src import config as _cfg_module  # noqa: E402
-from src.browser import create_driver  # noqa: E402
+from src.browser import cleanup_browser_state, create_driver  # noqa: E402
 from src.config import (  # noqa: E402
     BROWSER_OPTIONS,
     DEFAULT_BROWSER,
     DEFAULT_USE_UC,
     RESTART_BROWSER_EVERY,
-    ROUND_INTERVAL_MAX,
-    ROUND_INTERVAL_MIN,
+    ROUND_LONG_PAUSE_HI,
+    ROUND_LONG_PAUSE_LO,
+    ROUND_LONG_PAUSE_PROB,
+    ROUND_WAIT_HI,
+    ROUND_WAIT_LO,
+    ROUND_WAIT_MU,
+    ROUND_WAIT_SIGMA,
     WEIGHT_CONFIG,
 )
+from src.utils import ManualHoldLock, human_pause  # noqa: E402
 from src.detection import detect_questions  # noqa: E402
 from src.models import RunState  # noqa: E402  Step 9: 共用状态对象
 from src.pipeline import run_one_submission  # noqa: E402
@@ -90,8 +97,11 @@ try:
     from src.history import SubmissionHistory  # noqa: E402
     _HAS_HISTORY: bool = True
 except Exception:  # pragma: no cover
-        SubmissionHistory = None  # type: ignore
-        _HAS_HISTORY = False
+    SubmissionHistory = None  # type: ignore
+    _HAS_HISTORY = False
+
+# V2.4：静默降级路径（except: pass）统一走 logger.debug 留痕（详见 src/logging_setup.py）
+logger = logging.getLogger("wjx.gui.app")
 
 
 # ============================================================================
@@ -105,7 +115,7 @@ DEFAULT_WEIGHT_CONFIG_PATH = os.path.join(
 DEFAULT_HISTORY_DB_PATH = os.path.join(
     _PROJECT_ROOT, "data", "history.db"
 )
-APP_VERSION = "2.0.0"
+# V2.4：版本号单一真相来自 src.__version__（模块顶部 import 处已 as APP_VERSION）
 
 
 # ============================================================================
@@ -1286,6 +1296,11 @@ class SurveyGUI:
             # 启动浏览器
             driver = create_driver(state.browser, use_uc=state.use_uc)
 
+            # V2.4 修复：人工介入锁贯穿整轮批次（与 CLI 同款）。
+            # 此前 v2.3 重构后本循环漏传 lock → run_one_submission 抛 TypeError
+            # 被兜底 except 吞成"运行异常"日志（P0 级回归）。
+            lock = ManualHoldLock()
+
             # 循环：attempts_cap 为"还需跑多少份"（续传时 = planned - done）
             while state.current_attempt < state.attempts_cap:
                 if state.stop_flag:
@@ -1301,8 +1316,10 @@ class SurveyGUI:
                 self._log(f"[{displayed_idx}/{state.total_target}] 提交中...", "INFO")
 
                 try:
+                    # V2.4 修复：lock 必传（与 CLI 同一处回归）
                     outcome = run_one_submission(
                         driver, url,
+                        lock,
                         history_db=history_db,
                         run_id=state.run_id,
                         submission_index=displayed_idx,
@@ -1310,7 +1327,8 @@ class SurveyGUI:
                 except InvalidSessionIdException:
                     self._log("浏览器断开，正在重建...", "WARN")
                     try: driver.quit()
-                    except Exception: pass
+                    except Exception:
+                        logger.debug("重建前 driver.quit() 失败（忽略）", exc_info=True)
                     driver = create_driver(state.browser, use_uc=state.use_uc)
                     state.mark_failure()
                     self._sync_ui_mirrors_from_state()
@@ -1330,27 +1348,32 @@ class SurveyGUI:
                 self._sync_ui_mirrors_from_state()
                 self.root.after(0, self._update_progress)
 
-                try:
-                    driver.delete_all_cookies()
-                    driver.execute_script("window.localStorage.clear();")
-                    driver.execute_script("window.sessionStorage.clear();")
-                except Exception:
-                    pass
+                # V2.4 整改：浏览器状态清理收敛到 src.browser.cleanup_browser_state（CLI 共用）
+                cleanup_browser_state(driver)
 
                 if state.current_attempt % RESTART_BROWSER_EVERY == 0:
                     self._log("重启浏览器释放内存", "INFO")
                     try: driver.quit()
-                    except Exception: pass
+                    except Exception:
+                        logger.debug("重启前 driver.quit() 失败（忽略）", exc_info=True)
                     driver = create_driver(state.browser, use_uc=state.use_uc)
 
-                time.sleep(random.uniform(ROUND_INTERVAL_MIN, ROUND_INTERVAL_MAX))
+                # V2.4 整改：轮间停顿统一为高斯分布（与 CLI 一致）。
+                # 旧版 uniform(min, max) 均匀分布是可疑的机器人特征，
+                # 与 config.py "正态分布 + 区间截断" 的反检测原则矛盾。
+                human_pause(
+                    ROUND_WAIT_MU, ROUND_WAIT_SIGMA,
+                    ROUND_WAIT_LO, ROUND_WAIT_HI,
+                    long_pause_prob=ROUND_LONG_PAUSE_PROB,
+                    long_lo=ROUND_LONG_PAUSE_LO,
+                    long_hi=ROUND_LONG_PAUSE_HI,
+                )
 
         except Exception as e:
-            # 兜底：任何未捕获异常都不算 interrupted；status=failed, message=异常说明
-            try:
-                state.history_error_message  # 只是确认存在
-            except Exception:
-                pass
+            # V2.4 修复：未捕获异常 → 批次记 failed。旧版注释声称"status=failed"
+            # 但从未实现，崩溃批次被 history_status() 误标 finished 污染成功率，
+            # 且状态为 finished 后 find_resumable_run 也不会再恢复它。
+            state.mark_crashed(f"{type(e).__name__}: {e}")
             self._log(f"运行异常: {type(e).__name__}: {e}", "FAIL")
         finally:
             # ---- V2：写入结束状态（走 RunState.history_status / history_error_message） ----
@@ -1391,7 +1414,8 @@ class SurveyGUI:
                     )
             if driver:
                 try: driver.quit()
-                except Exception: pass
+                except Exception:
+                    logger.debug("收尾 driver.quit() 失败（忽略）", exc_info=True)
             self._sync_ui_mirrors_from_state()
             self.root.after(0, self._on_run_finished)
 
