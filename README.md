@@ -1,46 +1,27 @@
 # 问卷星自动填写工具
 
-> 基于 Selenium Stealth 浏览器的问卷星批量填写与提交工具，支持加权随机策略、人类行为模拟、智能验证码检测 —— 提供 CLI 与 GUI 两种使用方式。
+> 基于 Selenium Stealth 的问卷星批量填写与提交工具：加权随机作答、人类行为模拟、智能验证码检测，提供 CLI 与 GUI 两种使用方式。
 
 [![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
+[![CI](https://github.com/cloudy-one1/outcome-oriented-questionnaire/actions/workflows/ci.yml/badge.svg)](https://github.com/cloudy-one1/outcome-oriented-questionnaire/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.4.0-brightgreen.svg)](src/__init__.py)
+[![Version](https://img.shields.io/badge/Version-2.4.0-brightgreen.svg)](CHANGELOG.md)
+
+本工具仅供学习与研究 Selenium 浏览器自动化技术使用，请务必遵守问卷星平台使用条款与相关法律法规（详见[免责声明](#免责声明)）。
 
 ---
 
-## 特性
+## 功能特性
 
-- **🛡️ 反检测**：CDP 注入 Stealth JS 隐藏 `navigator.webdriver`，随机化浏览器指纹（UA / 屏幕分辨率 / 硬件配置）
-- **⚖️ 权重随机**：每道题可配置各选项的选中概率权重，单选加权采样，多选无放回加权抽样
-- **👤 人类行为模拟**：正态分布停顿 + 完整事件链（mouseover → mousedown → change → click），3% 概率触发长停顿
-- **🤖 智能验证码检测**：三信号并行检测（DOM / URL / iframe+Shadow DOM），弹窗提醒人工介入
-- **🖥️ 双入口**：CLI 适合脚本批量运行，GUI 适合可视化配置和实时监控
-- **🔄 容错机制**：指数退避重试、浏览器自动重启释放内存、线程安全的人工介入锁
-- **🆕 V2 · 6 类题型全覆盖**：单选 / 多选 / 下拉选择 / 量表打分 / 填空 / 矩阵单选（含字段自动识别 name/phone/email/age/address/company）
-- **🆕 V2 · 配置文件导入导出**：JSON 配置（schema_version=2.0）+ 启动自动加载默认权重，支持 GUI 一键导入导出
-- **🆕 V2 · 运行历史记录**：SQLite 持久化 runs + answers 双表，GUI 「历史记录」Tab 可查询、导出 CSV、清理过期数据
-- **🆕 V2 · CLI 增强**：`--config` / `--save-config` / `--history` / `--stats` 四个新参数
-- **🆕 V2.1 · 断点续填（单次提交内）**：`detect_answered_questions` 一次 JS 注入扫描 6 类题型已填状态，retry 重试时跳过已答的题（避免重复点击触发反检测）
-- **🆕 V2.1 · 断点续传（跨进程批次）**：runs 表新增 `interrupted` 状态 + `find_resumable_run` 接口，下次启动同 URL 时弹「是否从第 K+1 份继续」对话框
-- **🆕 V2.1 · 权重持久化**：`runs.weight_config_json` 列存本次批次权重快照，跨进程续传时自动反序列化注入 + 重建 GUI 表格显示，确保"最后完成的权重还是用户设置的"
-- **🆕 V2.2 · 提交三态（审查整改 P1-1）**：`find_and_click_submit` / `_wait_until_submit_effect` 返回 `success` / `failed` / `unknown` 三态；超时不再误判为成功，由上层保守计为失败并单独打印 `UNKNOWN` 便于事后复盘（避免污染 success_count / 成功率 / 历史数据）
-- **🆕 V2.2 · answers 幂等化（审查整改 P1-2）**：`(run_id, submission_index, question_number)` 唯一索引 + `INSERT OR REPLACE` + DELETE+INSERT 兜底，retry 重试同一份提交不会产生重复答案；老库自动 dedup 迁移保留 `max(id)`
-- **🆕 V2.2 · CLI 中断语义（审查整改 P1-3）**：Ctrl+C → `status='interrupted'`（而非 `running`/`finished`），保证下次 `find_resumable_run` 能正确恢复
-- **🆕 V2.2 · 配置校验增强（审查整改 P2-1）**：`validate_weight_config` 检测 NaN / Inf / 全 0 权重 / choices 长度不匹配 / count_options 与 count_weights 不一致 / scale 长度不匹配 / matrix row_weights 行长度不匹配 + 总和>0
-- **🆕 V2.2 · CLI 隐私 + 语义（审查整改 P2-2/P2-3）**：`--no-record-text` 不把填空答案写入 SQLite（避免明文保存姓名/手机/邮箱）；`--target-success` / `--max-attempts` 厘清"目标份数 vs 总尝试次数"语义
-- **🆕 V2.2 · 依赖锁定（审查整改 P2-4）**：`requirements.txt` 锁定 `selenium==4.39.0` / `numpy==2.2.4`，可选依赖也给出实测可用版本
-- **🆕 V2.3 · 数据模型（可读性建议第 3 章）**：[`src/models.py`](src/models.py) 引入 `QuestionType` 枚举 + `QuestionData` / `AnswerData` / `SubmitResult` / `WeightConfigEntry` dataclass，替代在模块间裸传的 `dict[str, Any]`；所有 dataclass 提供 `from_dict` / `as_dict` 双向兼容
-- **🆕 V2.3 · RunState 状态对象（可读性建议第 4 章）**：集中管理 `success_count` / `fail_count` / `unknown_count` / `is_interrupted` / `run_id` / `attempts_cap` / `current_attempt`，CLI `run_batch` **与 GUI `_run_loop` 共用**同款状态机；状态判定下沉到 `history_status()` / `history_error_message()`，避免分支间状态不同步
-- **🆕 V2.3 · 代码模块化（可读性建议第 1 章 / 第 6 章）**：
-  - `src/interactions/`：按题型拆分为 `choices.py / text.py / scale.py / dropdown.py / matrix.py / submit.py / _scripts.py`（JS 内嵌脚本集中管理 + 不变量测试 13 项），原 `interaction.py` 保留为转发层
-  - `src/pipeline_stages/`：拆出 `page_loader.py / question_stage.py / verification_stage.py` 具体阶段实现，`pipeline.py` 仅保留流程编排
-  - `gui/`：原 2611 行 `app.py` 按职责拆为 `theme.py`（颜色/渐变/主题）+ `widgets.py`（通用 UI 工厂）+ `history_panel.py`（runs/answers 双表面板）+ `weight_panel.py`（权重表卡片）+ `log_view.py`（日志终端）+ `controller.py`（_on_* 处理器），精简为编排层 1400 行
-- **🆕 V2.3 · 异常分层（批判式审查 P2-4 兜底）**：新增 `src/exceptions.py`，分类 `TRANSIENT_DOM_EXCEPTIONS` / `NON_RECOVERABLE_BASE_EXCEPTIONS`；`pipeline.py` 收窄 `except Exception` → 仅 `TRANSIENT_DOM_EXCEPTIONS / OSError / IntegrityError`，添加统一 `format_exc_log`
-- **🆕 V2.3 · 命名整改（可读性建议第 2 章）**：布尔变量统一 `is_` / `has_` / `should_` / `use_` 前缀（`is_interrupted` / `is_ok`）；README 加术语表统一 `run` / `submission` / `attempt` / `success_count` / `fail_count` / `target_count` / `question` 含义
-
-- **🆕 V2.4 · 集成修复（扫描整改批次）**：修复 v2.3 重构引入的三处 P0 集成回归——`run_one_submission` 必传的 `lock` 参数在 CLI/GUI 两个入口均漏传（CLI 首次提交即 TypeError）；`gui/controller.py` 从错误模块导入 `detect_questions` 等（"探测题目/扫码"静默失效）；`gui/history_panel.py` 引用不存在的列名且对 `sqlite3.Row` 误用 `.get()`（历史 Tab 必然刷不出）
-- **🆕 V2.4 · 语义修复**：`RunState.mark_crashed()` 崩溃语义——未捕获异常的批次在 history 记 `failed`（此前被误标 `finished` 污染成功率）；CLI `--resume` 断点续传落地（复用旧 runs 行、计数绝对累计、submission_index 接续）；GUI 轮间停顿统一为与 CLI 相同的高斯分布
-- **🆕 V2.4 · 工程质量**：题型别名收敛到 `models.QUESTION_TYPE_ALIASES` 单一真相；提交按钮选择器单一真相（`_scripts.SUBMIT_SELECTORS`）；浏览器状态清理 `browser.cleanup_browser_state` CLI/GUI 共用；Edge 工厂复用 `_apply_stealth_cdp`；新增 `src/logging_setup.py`（CLI `--log-file` 落盘 + GUI 静默降级路径留痕）；默认问卷 URL 置空（CLI `-u` 必填，不再内置真实线上问卷）；GUI 版本号取自 `src.__version__`；新增 `pytest.ini` / `conftest.py` / `ruff.toml` / GitHub Actions CI；新增 `tests/test_cli_batch.py`（批处理主链路冒烟）与 `tests/test_history_gui_contract.py`（GUI↔schema 契约）
+- **浏览器反检测** — CDP 注入 Stealth JS 隐藏 `navigator.webdriver`，随机化 UA / 屏幕分辨率 / 硬件指纹，可选 `undetected-chromedriver` 增强模式
+- **人类行为模拟** — 所有点击与停顿均为「正态分布 + 区间截断」采样，完整鼠标事件链，偶发长停顿，周期性重启浏览器释放内存
+- **六类题型全覆盖** — 单选 / 多选 / 下拉 / 量表 / 填空 / 矩阵单选，填空题自动识别姓名、手机、邮箱、年龄、地址、公司等字段并按类型生成
+- **加权随机作答** — 每道题可配置选项权重：单选加权采样，多选无放回加权抽样，多选还可控制「选中几个」的分布
+- **智能验证码检测** — DOM / URL 文本 / Shadow DOM 三信号并行检测；检出后弹窗提醒人工处理，人工介入锁保证等待期间不被误判为超时
+- **断点续填与续传** — 重试时自动跳过单次提交内已答的题；跨进程可从上次中断的批次继续（CLI `--resume` / GUI 恢复对话框），权重配置随批次快照持久化
+- **运行历史与统计** — SQLite 记录每次批次的元信息与逐题答案明细，GUI 可视化查询、CSV 导出、过期清理
+- **可靠的提交语义** — 提交结果三态（成功 / 失败 / 未知），答案明细幂等写入，指数退避重试，异常分层（瞬态 DOM 异常可重试、程序错误直接暴露）
+- **CLI / GUI 双入口** — CLI 适合脚本与定时批量运行，GUI（Tkinter）适合可视化配置与实时监控
 
 ---
 
@@ -49,7 +30,7 @@
 ### 环境要求
 
 - Python 3.9+
-- Microsoft Edge 或 Google Chrome 浏览器
+- Microsoft Edge 或 Google Chrome（WebDriver 由 Selenium Manager 自动管理）
 
 ### 安装
 
@@ -57,7 +38,7 @@
 git clone <your-repo-url>
 cd automation
 
-# 安装核心依赖
+# 核心依赖
 pip install -r requirements.txt
 
 # 可选：更强的 Chrome 反检测模式
@@ -67,51 +48,58 @@ pip install undetected-chromedriver
 pip install opencv-python
 ```
 
-### CLI 使用
+### CLI 快速上手
 
 ```bash
-# 默认参数运行（使用 config.py 中的默认 URL）
-python run_cli.py
+# 最简运行：指定问卷 URL，默认提交 17 份（Edge）
+python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx"
 
-# 自定义问卷 URL，提交 10 份
-python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 10
-
-# 使用 Chrome 浏览器
-python run_cli.py -b chrome
+# 自定义份数 + Chrome 浏览器
+python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 10 -b chrome
 
 # Chrome + undetected-chromedriver 模式（反检测更强）
-python run_cli.py -b chrome --uc
+python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -b chrome --uc
 
-# ── V2 新增 ──────────────────────────────────────────
-# 使用预设权重配置（JSON 格式，见下文）
+# 使用 JSON 权重配置 + 启用历史记录
 python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" \
-                  --config ./configs/default_weight_config.json
+                  --config ./configs/default_weight_config.json \
+                  --history ./data/history.db
 
-# 运行完把当前权重另存为 JSON 文件（方便分享/版本管理）
-python run_cli.py -n 1 --save-config ./configs/my_survey.json
-
-# 启用运行历史记录（写入 data/history.db，默认开启，可显式指定）
-python run_cli.py --history ./data/history.db
-
-# 仅查看历史汇总（不运行问卷）
-python run_cli.py --stats
-
-# ── V2.2 审查整改新增 ──────────────────────────────
-# 隐私保护：不把填空题答案写入 SQLite（避免明文保存姓名/手机/邮箱等敏感内容）
-python run_cli.py --history ./data/history.db --no-record-text
-
-# 语义厘清：把 -n 10 解释为「目标成功 10 份」而非「总尝试 10 次」
-# 循环会持续到成功数达标；--max-attempts 防止极端失败场景下死循环（默认 = -n * 2）
+# 目标成功 10 份（而非总尝试 10 次），最多尝试 30 次防死循环
 python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 10 \
                   --target-success --max-attempts 30
+
+# 从上次中断的批次继续（需与 --history 配合，详见「断点续传」）
+python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" \
+                  --history ./data/history.db --resume
+
+# 运行完导出当前权重为 JSON 模板（便于分享与版本管理）
+python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 1 --save-config ./configs/my_survey.json
 ```
 
-> **V2.2 提交三态语义**：每次提交输出 `OK` / `FAIL` / `UNKNOWN` 三种标签之一：
-> - `OK`：URL 变化或页面出现"提交成功 / 感谢您的参与"等关键词 → 已确认成功（计入 `success_count`）
-> - `FAIL`：按钮定位失败 / 验证码未通过 / iframe 失败 / 题目探测失败 → 已确认失败（计入 `fail_count`）
-> - `UNKNOWN`：按钮已点击但等待效果超时（可能是 AJAX 异步提交，也可能服务端拒绝/校验失败/网络异常）→ 保守计为失败并单独打印一行 `[统计] 其中 N 次提交结果未知…` 便于事后复盘。**关键修复（审查 P1-1）**：旧版超时被误判为成功，污染了 success_count / 成功率 / 历史数据。
->
-> **V2.1 续传行为**：CLI 启动时若发现同 URL 下 24 小时内有 `interrupted` 状态的 run，会自动加载上次的权重配置到 `WEIGHT_CONFIG`（但 CLI 当前不弹对话框，需要用户自行决定是否从第 K+1 份继续；GUI 才有交互式恢复对话框）。
+每次提交会输出 `OK` / `FAIL` / `UNKNOWN` 之一：
+
+- `OK` — 页面跳转或出现「提交成功 / 感谢您的参与」等关键词，确认成功
+- `FAIL` — 验证码未通过、题目探测失败、按钮定位失败等，确认失败
+- `UNKNOWN` — 按钮已点击但等待效果超时（可能是 AJAX 异步提交，也可能是服务端拒绝），保守计为失败并单独统计，便于事后复盘
+
+### CLI 参数一览
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `-u, --url URL` | （必填） | 问卷完整 URL，出于合规考虑不提供默认值 |
+| `-n, --count N` | `17` | 提交份数；配合 `--target-success` 时解释为「目标成功份数」 |
+| `-b, --browser` | `edge` | 浏览器类型：`edge` / `chrome` |
+| `--uc` | 关 | 仅 Chrome 生效：优先使用 undetected-chromedriver，失败自动回退原生 Selenium |
+| `-c, --config PATH` | 无 | 从 JSON 加载权重配置（schema 2.0）并热更新 |
+| `--save-config PATH` | 无 | 运行结束后把当前权重保存为 JSON 模板 |
+| `-H, --history PATH` | 关 | 启用 SQLite 历史记录（指定 DB 路径） |
+| `--stats` | 关 | 运行结束后打印全库统计（需配合 `--history`） |
+| `--no-record-text` | 关 | 隐私保护：填空题答案不写入 SQLite（DOM 仍需填入真实文本） |
+| `--target-success` | 关 | 把 `-n` 解释为「目标成功份数」，达成即提前结束 |
+| `--max-attempts N` | `2×n` | 仅 `--target-success` 时生效：最大尝试次数上限 |
+| `--resume` | 关 | 断点续传：从同 URL 最近一次未完成批次继续（需配合 `--history`） |
+| `--log-file PATH` | 关 | 启用 logging 并把运行日志写入指定文件 |
 
 ### GUI 使用
 
@@ -119,144 +107,77 @@ python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 10 \
 python run_gui.py
 ```
 
-GUI 界面操作流程：
-
-1. 输入问卷星 URL（或导入二维码图片自动解析）
-2. 设置提交份数和浏览器类型
-3. 点击 **🔍 探测题目** 自动识别问卷结构（单选 / 多选 / 下拉 / 量表 / 填空 / 矩阵）
-4. 切换到 **📋 配置** Tab，在权重表格中按题型格式填写：
-   - 单选 / 多选 / 下拉：`w1,w2,w3,...`（浮点权重）
-   - 量表：`1,1,1,1,5`（按 1..N 分值）或直接填 `5`（强制该分）
-   - 填空：`张三,李四,王五`（候选文本，留空走内置随机生成器）
-   - 矩阵：`1:1,2,3,4,5 | 2:5,4,3,2,1`（按行写权重）
-5. （可选）点 **⭐ 另存默认** 把当前表格存成 `configs/default_weight_config.json`，下次启动自动加载
-6. 点 **▶ 开始运行**；运行过程中可随时切到 **📜 历史记录** Tab 查看 runs 列表和答题明细
-
-> **V2.1 断点续传流程**：
-> - 运行中点 **⏹ 停止** → 当前 run 标记为 `interrupted`（区别于 `finished` / `failed`），已成功份数 K 不丢失
-> - 下次启动同 URL → GUI 自动检测 `find_resumable_run(url)` → 弹对话框"Run #N · 已成功 K/M 份 · 是否从第 K+1 份继续？"
-> - 同时自动从 `runs.weight_config_json` 反序列化上次权重 → 注入 `WEIGHT_CONFIG` + 刷回表格（用户可检查/修改后再启动）
-> - 点"是" → 进度条立刻显示 `K/M`，从第 K+1 份开始跑，闭合时 `interrupted → finished`
+1. 输入问卷 URL（或导入二维码图片自动解析）
+2. 设置提交份数与浏览器类型
+3. 点击 **🔍 探测题目** 自动识别问卷结构
+4. 在权重表格中按题型填写权重（格式见[权重配置](#权重配置)）
+5. 可选：点 **⭐ 另存默认** 存为 `configs/default_weight_config.json`，下次启动自动加载
+6. 点 **▶ 开始运行**；运行中可随时切到 **📜 历史记录** Tab 查看批次列表与答题明细，**⏹ 停止** 可随时优雅中断
 
 ---
 
-## 项目结构
+## 断点续传
 
-```
-automation/
-├── run_cli.py                  # CLI 启动入口（V2 支持 --config/--save-config/--history/--stats）
-├── run_gui.py                  # GUI 启动入口（赛博朋克极光主题 · V2 双 Tab）
-├── requirements.txt            # Python 依赖
-├── configs/                    # V2 新增：权重 JSON 配置目录（默认另存位置）
-│   └── default_weight_config.json
-├── data/                       # V2 新增：历史记录 SQLite 默认目录
-│   └── history.db
-├── src/
-│   ├── __init__.py             # 版本号（v2.4.0）+ 模块变更日志
-│   ├── config.py               # 全局配置：权重定义、运行时常量、反检测参数
-│   ├── pipeline.py             # V2.3 编排层：pipeline_stages/*.py 的调用顺序，单次问卷填写 + 提交（含三态返回、续填跳过、history 接入、no_record_text 透传）
-│   ├── pipeline_stages/        # V2.3 pipeline 具体阶段：page_loader / question_stage / verification_stage
-│   ├── detection.py            # 题目结构自动探测（JS 注入扫描 6 类题型 DOM + detect_answered_questions 续填扫描）
-│   ├── answering.py            # V1：单选/多选 答案生成策略（保留，完全兼容）
-│   ├── answering_v2.py         # V2：6 类题型统一 dict 格式答案生成器
-│   ├── interaction.py          # V2.3 转发层：所有 API 直接从 src/interactions/ 再导出
-│   ├── interactions/           # V2.3 按题型拆分 DOM 交互：choices / text / scale / dropdown / matrix / submit + _scripts.py（JS 集中管理）
-│   ├── models.py               # V2.3 数据模型：QuestionType 枚举 + QuestionData/AnswerData/SubmitResult/WeightConfigEntry/RunState dataclass
-│   ├── exceptions.py           # V2.3 异常分类：TRANSIENT_DOM_EXCEPTIONS / NON_RECOVERABLE_BASE_EXCEPTIONS + format_exc_log
-│   ├── verification.py         # 智能验证码检测与人工等待
-│   ├── utils.py                # 工具库：正态分布、指数退避、UA 池、人工介入锁
-│   ├── cli.py                  # 命令行入口：批量循环 + V2 参数 + V2.2 no_record_text/target_success/max_attempts + V2.3 RunState 集成 + interrupted 状态
-│   ├── config_io.py            # V2：JSON 权重配置读写 + JSON Schema 风格校验 + V2.2 NaN/Inf/长度匹配增强校验
-│   ├── history.py              # V2 SubmissionHistory（runs+answers SQLite）+ V2.1 续传/权重持久化 + V2.2 record_answer 幂等化 + dedup 迁移
-│   └── browser/
-│       ├── driver_factory.py           # Edge/Chrome 驱动 + CDP Stealth 配置
-│       └── driver_factory_stealth.py   # Stealth JS 反检测脚本构建器
-├── gui/
-│   ├── app.py                  # V2.3 GUI 编排层主窗口（双 Tab：配置 / 历史记录 · 共用 RunState · V2.2 三态结果统计；原 2611 → ~1430 行）
-│   ├── theme.py                # V2.3 提取：颜色常量、渐变绘制、ttk 主题样式
-│   ├── widgets.py              # V2.3 提取：卡片/icon 按钮/spin/toggle/stat_badge 通用 UI 工厂
-│   ├── history_panel.py        # V2.3 提取：历史记录 Tab（runs/answers 双表 + 工具栏）
-│   ├── weight_panel.py         # V2.3 提取：权重 Tab（权重表卡片 + 类型 badge + 悬停高亮）
-│   ├── log_view.py             # V2.3 提取：日志终端（扫描线、光标闪烁、Queue 轮询）
-│   ├── controller.py           # V2.3 提取：配置 IO / 二维码 / 探测题目线程骨架
-│   └── qr_utils.py             # 二维码 URL 解析
-└── tests/
-    ├── test_answering.py       # V1 答案生成逻辑测试
-    ├── test_answering_v2.py    # V2 6 类题型答案生成测试（15 项）
-    ├── test_cli.py             # CLI 参数解析（含 V2 --config 等 + V2.2 新参数 7 项，共 24 项）
-    ├── test_config_io.py       # 配置读写 / 校验测试（含 V2.2 增强校验 18 项，共 28 项）
-    ├── test_history.py         # SQLite 历史记录测试（含 V2.2 幂等化 + dedup 迁移 4 项，共 27 项）
-    ├── test_interaction_submit.py # V2.2 提交三态（success/failed/unknown）单元测试（7 项，fake driver）
-    ├── test_models.py          # V2.3 数据模型 + RunState 单元测试（36 项，含题型枚举/dataclass 互逆/状态机）
-    ├── test_exceptions.py      # V2.3 异常分类 + format_exc_log/raise_non_recoverable（15 项）
-    ├── test_js_scripts.py      # V2.3 JS 脚本集中管理不变量测试（13 项）
-    ├── test_detection_resume.py # V2.1 detect_answered_questions 容错测试（6 项）
-    ├── test_e2e_integration.py # headless E2E：检测 → 答题 → 交互 → history 全链路（依赖真实浏览器驱动）
-    ├── fixtures/
-    │   └── mock_wjx.html       # V2 测试夹具：含 10 题 6 类型的 mock 问卷
-    └── test_utils.py           # 工具函数测试
-```
+工具在两个层面处理中断，避免重复作答或从头重跑：
+
+**单次提交内（续填）** — 每次打开问卷后先扫描 DOM 已填状态，重试时跳过已答的题，避免重复点击触发反检测。
+
+**跨进程（续传）** — 每个批次在 SQLite 中有一条状态记录（`running / finished / failed / interrupted`）：
+
+- 用户主动停止（GUI 停止按钮 / CLI Ctrl+C）→ 状态记为 `interrupted`，已成功份数保留
+- 下次对同一 URL 启动时：
+  - **CLI**：加 `--resume` 自动查找 24 小时内最近的未完成批次，复用其批次号与计数、接续答案编号，从第 K+1 份继续
+  - **GUI**：自动弹出对话框「Run #N · 已成功 K/M 份 · 是否从第 K+1 份继续？」
+- 续传同时会从该批次的权重快照（`weight_config_json`）自动恢复上次使用的权重配置，确保「最后使用的权重就是用户设置的」
+
+异常崩溃的批次记为 `failed`（不可恢复）；只有主动中断的批次可续传。
 
 ---
 
 ## 工作原理
 
 ```
-用户配置 URL + 份数 + 权重（GUI/JSON/config.py）
+用户配置 URL + 份数 + 权重（CLI 参数 / JSON / GUI 表格）
         ↓
-启动 Stealth 浏览器（指纹随机化 + 反检测 JS）
+启动 Stealth 浏览器（指纹随机化 + 反检测 JS 注入）
         ↓
-打开问卷页面 → JS 注入探测 6 类题型
+打开问卷页面 → JS 注入探测 6 类题型结构
         ↓
-V2.1 检查 find_resumable_run(url)
-  ├── 有 interrupted 的旧 run + 用户点"是" → 复用 run_id + 反序列化上次权重
-  └── 无 → 全新 start_run（V2.1 同时持久化当前 WEIGHT_CONFIG 到 weight_config_json）
+（启用续传时）查找同 URL 未完成批次 → 复用批次号与权重快照
         ↓
-循环 N 次 submission（V2.1 续传时从 start_idx 起）：
-  ├── detection 返回 questions 列表
-  ├── detect_answered_questions 扫描 DOM 已答集合（retry 重试场景）
-  ├── for q in questions:
-  │     ├── if q.q in answered_set: continue   ← 跳过已答的题
-  │     ├── answering_v2.generate_answer(q) 按 WEIGHT_CONFIG 加权
-  │     ├── interaction.js_* JS 注入模拟人类操作
-  │     └── history.record_answer(...)
-  ├── 正态分布随机停顿
-  └── 遇验证码 → 弹窗等待人工介入
+循环提交：
+  ├── 扫描已填题集合，跳过已答题（续填）
+  ├── 逐题按权重随机生成答案（填空题按字段类型生成文本）
+  ├── JS 注入模拟人类操作（事件链 + 正态分布停顿）
+  ├── 每题答案幂等写入 SQLite
+  └── 定期检查验证码 → 弹窗等待人工介入
         ↓
-模拟点击提交（V2.2 三态 success/failed/unknown，超时计 unknown→fail）
-  → success_count / fail_count 统计
+模拟点击提交 → 三态判定（OK / FAIL / UNKNOWN）
         ↓
-用户主动停止 → mark_interrupted（V2.1 续传状态，下次可恢复）
-正常完成 → finish_run(status="finished")
-异常崩溃 → finish_run(status="failed")
-Ctrl+C → finish_run(status="interrupted")（V2.2 修复，下次可恢复）
+结束落盘：finished（完成）/ interrupted（可恢复中断）/ failed（崩溃）
 ```
 
 ---
 
-## 配置权重
+## 权重配置
 
-### 方式 1：V1 硬编码（适合脚本固定场景）
+### 方式一：编辑 `src/config.py`
 
-编辑 `src/config.py` 中的 `WEIGHT_CONFIG` 字典：
+适合脚本固定场景，直接修改 `WEIGHT_CONFIG` 字典：
 
 ```python
 WEIGHT_CONFIG = {
-    1: {"type": "single", "weights": [0.1, 0.3, 0.5, 0.1]},  # 第1题：单选题，选项2和3概率高
-    2: {"type": "multi",  "weights": [0.2, 0.2, 0.3, 0.3],     # 第2题：多选题
-        "count_options": [2, 3], "count_weights": [0.4, 0.6]}, # 选2个40%，选3个60%
-    # ...
+    1: {"type": "single", "weights": [0.1, 0.3, 0.5, 0.1]},  # 第1题：单选，选项3概率最高
+    2: {"type": "multi",  "weights": [0.2, 0.2, 0.3, 0.3],   # 第2题：多选
+        "count_options": [2, 3], "count_weights": [0.4, 0.6]},  # 选2个40%，选3个60%
 }
 ```
 
-- `type`: `"single"` 单选 / `"multi"` 多选
-- `weights`: 各选项被选中的概率权重（自动归一化）
-- `count_options` / `count_weights`: 多选题选中个数的分布
-- 未配置的题目自动降级为等权重随机
+未配置的题目自动降级为等权重随机。
 
-### 方式 2：V2 JSON 配置（推荐，支持 GUI 导入导出 · 6 类题型完整覆盖）
+### 方式二：JSON 配置文件（推荐）
 
-使用 GUI 的「💾 导出配置 / ⭐ 另存默认」或 CLI `--save-config` 生成标准 JSON：
+通过 GUI「💾 导出配置 / ⭐ 另存默认」或 CLI `--save-config` 生成，支持导入导出与版本管理：
 
 ```json
 {
@@ -265,20 +186,18 @@ WEIGHT_CONFIG = {
   "meta": {
     "name": "客户满意度预设",
     "description": "示例：4 题覆盖不同题型",
-    "author": "张三",
     "survey_url": "https://www.wjx.cn/vm/xxxxx.aspx"
   },
   "config": {
-    "1": { "type": "single",       "weights": [0.2, 0.5, 0.3] },
-    "2": { "type": "multi",        "weights": [0.1, 0.2, 0.3, 0.4],
+    "1": { "type": "single",   "weights": [0.2, 0.5, 0.3] },
+    "2": { "type": "multi",    "weights": [0.1, 0.2, 0.3, 0.4],
            "count_options": [2, 3], "count_weights": [0.4, 0.6] },
-    "3": { "type": "dropdown",     "weights": [0.1, 0.3, 0.6] },
-    "4": { "type": "scale",        "scale": 5,
+    "3": { "type": "dropdown", "weights": [0.1, 0.3, 0.6] },
+    "4": { "type": "scale",    "scale": 5,
            "weights": [0, 0, 0.1, 0.4, 0.5] },
-    "5": { "type": "text",         "field": "name",
+    "5": { "type": "text",     "field": "name",
            "options": ["张三", "李四", "王五"] },
-    "6": { "type": "text",         "field": "phone" },
-    "7": { "type": "matrix_single",
+    "6": { "type": "matrix_single",
            "rows": [1, 2, 3],
            "cols": [1, 2, 3, 4, 5],
            "row_weights": {
@@ -290,156 +209,105 @@ WEIGHT_CONFIG = {
 }
 ```
 
-各题型字段说明：
+各题型的关键字段：
 
-| 题型 (type) | 关键字段 | 说明 |
-| --- | --- | --- |
-| `single` / `radio` | `weights: List[float]` | 长度 = 选项数 |
-| `multi` / `checkbox` | `weights`, `count_options`, `count_weights` | 后两者控制"选中几个" |
+| 题型（type） | 关键字段 | 说明 |
+|---|---|---|
+| `single`（别名 `radio`） | `weights` | 长度 = 选项数 |
+| `multi`（别名 `checkbox`） | `weights`, `count_options`, `count_weights` | 后两者控制「选中几个」 |
 | `dropdown` | `weights` | 单选语义 |
-| `scale` / `rating` | `scale: int`, `weights` | weights 对齐分值 1..N |
-| `text` / `textarea` / `fillblank` | `field?`, `options?` | 留空 options 走内置随机句生成 |
-| `matrix_single` / `matrix` | `rows`, `cols`, `row_weights` | 每行独立权重 |
+| `scale`（别名 `rating`） | `scale`, `weights` | weights 对齐分值 1..N |
+| `text`（别名 `textarea` / `fillblank`） | `field?`, `options?` | 留空 options 走内置随机生成 |
+| `matrix_single`（别名 `matrix`） | `rows`, `cols`, `row_weights` | 每行独立权重 |
 
 ### GUI 中的编辑格式（权重表第 4 列）
 
-对应上面 6 类题型分别输入：
+- 单选 / 多选 / 下拉：`0.2, 0.5, 0.3`
+- 量表：`0,0,0.1,0.4,0.5`，或直接写 `5`（强制打 5 分）
+- 填空：`张三,李四,王五`，或留空（按字段类型自动生成）
+- 矩阵：`1:0,0,0.1,0.4,0.5 | 2:0.1,0.2,0.3,0.3,0.1 | 3:1,0,0,0,0`
 
-- single/multi/dropdown：`0.2, 0.5, 0.3`
-- scale：`0,0,0.1,0.4,0.5`，或直接写 `5`（强制打 5 分）
-- text：`张三,李四,王五`，或留空（按 field 自动生成 name/phone/email/age/address/company）
-- matrix：`1:0,0,0.1,0.4,0.5 | 2:0.1,0.2,0.3,0.3,0.1 | 3:1,0,0,0,0`
+配置加载时会自动校验：权重非负且总和大于 0、数组长度与选项数匹配、NaN / Inf 拒绝、多选「选中个数」分布一致等。
 
 ---
 
-## 运行历史（V2）
+## 运行历史
 
-每次运行会在 `data/history.db` 生成两张表：
+启用 `--history`（GUI 默认启用）后，每次运行写入 `data/history.db`：
 
-- **runs**：`id, started_at, finished_at, status, survey_url, total_submissions, ok_count, fail_count, note, weight_config_json (V2.1)`
-- **answers**：`run_id, submission_index, q_number, q_type, options_selected(JSON), text_answer, elapsed_ms, recorded_at`
+- **runs 表** — 批次元信息：`id, survey_url, total_submissions, browser, use_uc, status(running/finished/failed/interrupted), success_count, fail_count, total_elapsed_seconds, error_message, weight_config_json, started_at, finished_at`
+- **answers 表** — 逐题明细：`run_id, submission_index, question_number, question_type, options_selected(JSON), text_answer, elapsed_ms, created_at`，`(run_id, submission_index, question_number)` 唯一，重试不会产生重复行
 
 三种使用方式：
 
-1. **GUI**：切到「📜 历史记录」Tab → 顶部 runs 表 → 点击某一行 → 下方 answers 明细刷新
-2. **CLI**：`python run_cli.py --stats` 打印汇总，`--history PATH` 指定 DB 路径
-3. **数据科学家模式**：在 GUI 里用「📤 导出 CSV」导出 `history_runs.csv` + `history_runs_answers.csv`，Pandas 自由分析
+1. **GUI** — 「📜 历史记录」Tab：批次列表 → 点击查看答题明细 → 导出 CSV → 清理 7 天前数据
+2. **CLI** — `--stats` 在运行结束后打印累计成功率等汇总
+3. **导出分析** — GUI「📤 导出 CSV」生成 `history_runs.csv` + `history_runs_answers.csv`，可直接用 Pandas 分析
 
-默认保留策略：GUI 的「🗑 清理 7 天前」按钮调用 `SubmissionHistory.purge_old(days=7)`。
+老数据库文件会被自动迁移（补充新列、去重并建立唯一索引），多次打开幂等无损。
 
-### V2.1 新增：断点续传 + 权重持久化 API
+续传相关 API（`src/history.py`）：
 
 | API | 用途 |
 |---|---|
-| `find_resumable_run(survey_url, max_age_hours=24)` | 找同 URL 下最近一次 `interrupted`/`running` 的 run（断点续传入口） |
-| `mark_interrupted(run_id, success_count, fail_count, ...)` | 用户主动停止时调用，把 status 写为 `interrupted`（区别于 finished/failed） |
-| `count_done_submissions(run_id)` | 读 runs.success_count（用于决定从第几份继续） |
-| `start_run(..., weight_config=dict)` | 启动批次时把当前 WEIGHT_CONFIG 序列化为 JSON 存入 `weight_config_json` 列 |
-| `SubmissionHistory.deserialize_weight_config(row)` (静态) | 反序列化 row 里的 weight_config_json，键名 str → int，损坏 JSON 返回空 dict |
-
-老 DB 自动迁移：第一次打开时 `_apply_migrations()` 用 `PRAGMA table_info` 检测到缺 `weight_config_json` 列 → 自动 `ALTER TABLE ADD COLUMN`。幂等，多次打开不会报错。
+| `find_resumable_run(survey_url, max_age_hours=24)` | 找同 URL 最近一次 `interrupted` / `running` 的批次 |
+| `mark_interrupted(run_id, ...)` | 主动停止时把状态写为 `interrupted` |
+| `count_done_submissions(run_id)` | 读取已完成份数，决定从第几份继续 |
+| `start_run(..., weight_config=...)` | 启动批次时持久化权重快照 |
+| `SubmissionHistory.deserialize_weight_config(row)` | 反序列化权重快照（str 键 → int，损坏 JSON 返回空 dict） |
 
 ---
 
-## 术语表（V2.3 命名整改）
+## 术语表
 
-为避免代码与文档中 `count` / `total` / `total_submissions` / `total_rounds` 等同一概念多名混用（对照「代码可读性改进建议」第二章），统一以下术语：
-
-| 术语 | 含义 | 在代码中的体现 |
-|---|---|---|
-| **run**（批次） | 一次「从启动到退出」的批量提交任务，对应 SQLite `runs` 表一行 | `run_id`、`start_run` / `finish_run`、`runs.total_submissions` |
-| **submission**（提交） | 一次完整的「打开问卷 → 答题 → 点提交按钮」流程，是 run 内的子单元 | `submission_index`（run 内第几份，从 1 开始）、`answers.submission_index` |
-| **attempt**（尝试） | target_success 模式下「为达成目标成功数所做的一次尝试」。一次 attempt = 一次 submission，但失败/未知不计数 | `--max-attempts`、`attempts_cap`、CLI 进度行 `[尝试{idx}/{attempts_cap}]` |
-| **success_count**（成功数） | run 内已确认提交成功的份数（`outcome == "success"`） | `runs.success_count`、`run_batch(success=...)` |
-| **fail_count**（失败数） | run 内已确认失败的份数（`outcome == "failed"`） + 未知（`outcome == "unknown"`，保守计入） | `runs.fail_count`、`run_batch(fail=...)`、`unknown_count` 单独分项 |
-| **target_count**（目标数） | 用户期望的成功份数。target_success 模式下 = `-n`；非 target_success 模式下 = 总尝试数 | CLI `-n` / `--count`、`run_batch(total_submissions=...)` |
-| **question**（题） | 问卷中的一道题目，对应 `detection.detect_questions` 返回的列表中一项 | `q["q"]` / `QuestionData.q`、`answers.question_number` |
-
-**布尔变量前缀约定**：新增代码必须使用 `is_` / `has_` / `should_` / `use_` 前缀（如 `is_interrupted`、`has_questions`、`should_retry`、`use_uc`）。CLI argparse 的 dest（如 `--no-record-text`）和 SQLite 列名（如 `interrupted`）保留原惯例不动。
-
-**题型字符串字面量**：V2.3 起，代码内部传递优先用 `QuestionType` 枚举（[src/models.py](src/models.py)），与字符串字面量 `"single"`/`"multi"`/`"text"` 等双向兼容（`QuestionType.SINGLE == "single"`）。
+| 术语 | 含义 |
+|---|---|
+| **run**（批次） | 一次「从启动到退出」的批量提交任务，对应 `runs` 表一行 |
+| **submission**（提交） | 一次完整的「打开问卷 → 答题 → 提交」流程，批次内的子单元 |
+| **attempt**（尝试） | 目标成功模式下的一次尝试；失败的尝试不占用成功数 |
+| **success_count** | 批次内确认成功的份数 |
+| **fail_count** | 批次内确认失败的份数（含保守计入的未知） |
+| **target_count** | 用户期望的成功份数或总尝试份数（取决于运行模式） |
+| **question** | 问卷中的一道题目 |
 
 ---
 
-## V2.2 审查整改清单
-
-针对批判式审查报告的全部问题已逐项整改，对应代码位置见下表：
-
-| 审查编号 | 问题摘要 | 整改方案 | 涉及文件 |
-|---|---|---|---|
-| **P1-1** | `_wait_until_submit_effect` 超时被误判为成功（`return True`），污染 `success_count` / 成功率 / 历史数据 | 提交结果改三态 `SubmitOutcome = Literal["success","failed","unknown"]`；超时返回 `"unknown"`，由上层保守计为失败并单独打印 `UNKNOWN` | [interaction.py](src/interaction.py#L35-L38) · [pipeline.py](src/pipeline.py) · [cli.py](src/cli.py) · [gui/app.py](gui/app.py) |
-| **P1-2** | pipeline 重试同一份提交时 `record_answer` 产生重复 answers 行（无唯一约束） | 双层幂等：`(run_id, submission_index, question_number)` 唯一索引 + `INSERT OR REPLACE`，老库 dedup 迁移保留 `max(id)`；DELETE+INSERT 兜底应对索引创建失败的极端场景 | [history.py](src/history.py#L88-L102) · [history.py record_answer](src/history.py#L315-L363) |
-| **P1-3** | CLI `KeyboardInterrupt` 后状态只设为 `running`/`finished` 而非 `interrupted`，导致 `find_resumable_run` 无法识别可恢复的 run | 显式 `interrupted` 标记，`finally` 块根据该标志写 `status='interrupted'` + `error_message='Ctrl+C 用户中断'` | [cli.py run_batch](src/cli.py#L352-L384) |
-| **P2-1** | `validate_weight_config` 校验不足（缺 NaN/Inf、全 0、长度匹配检查） | 重写为四个子校验函数：`_is_finite_number` / `_validate_weights_array` / `_validate_count_options` / `_validate_scale_length` / `_validate_matrix_row_weights`，全面覆盖 NaN/Inf/非负/总和>0/长度匹配 | [config_io.py](src/config_io.py) |
-| **P2-2** | 目标份数 / 尝试份数 / 成功数语义不清 | 新增 `--target-success` / `--max-attempts`，`run_batch` 循环改为 `while idx < attempts_cap`，target_success 模式下达成目标数提前跳出 | [cli.py](src/cli.py#L143-L160) |
-| **P2-3** | 历史数据明文保存姓名 / 手机 / 邮箱等敏感内容 | 新增 `--no-record-text`，pipeline 在 `no_record_text=True` 时给 `record_answer` 传 `text_answer=None`，SQLite `text_answer` 列写 NULL；DOM 仍填入实际文本（流程需要） | [cli.py](src/cli.py#L135-L142) · [pipeline.py](src/pipeline.py) |
-| **P2-4** | `requirements.txt` 依赖版本过宽（`selenium>=4.0`、`numpy<2.0`） | 锁定 `selenium==4.39.0` + `numpy==2.2.4`（升到 2.x，旧版与 Python 3.13 不兼容），可选依赖也注明实测可用版本 | [requirements.txt](requirements.txt) |
-| **文档** | README 声称 93/93 但实际 91 passed 2 skipped（E2E 被跳过） | 修正为 130/130 实际通过，新增「E2E 依赖真实浏览器驱动」说明 + `--ignore` 跳过参数 | [README.md](README.md)（见上文「运行测试」段） |
-
-### 隐私保护说明（P2-3）
-
-`--no-record-text` 仅控制 SQLite `answers.text_answer` 列的写入；DOM 仍需填入真实文本（否则问卷提交会失败）。默认 `False`（旧行为，写入文本便于事后复盘）。如担心本地 SQLite 被他人访问，建议：
-
-1. 长期开启 `--no-record-text` —— 仅记录选项索引与题型，不落盘任何文本
-2. 搭配 GUI 「🗑 清理 7 天前」或 `purge_old(days=7)` 定期清理老 run
-3. 敏感问卷（含姓名/手机/身份证）跑完后立即删除 `data/history.db`
-4. 如需完全可复现构建，参考 `requirements.txt` 顶部注释用 `pip freeze > requirements.lock` 生成完整锁定文件
-
-### answers 幂等化迁移说明（P1-2）
-
-老 DB 第一次被 V2.2 代码打开时，`_apply_migrations` 会按以下顺序执行：
-
-1. V2.1：检测 `runs` 表缺 `weight_config_json` 列 → `ALTER TABLE ADD COLUMN`（幂等）
-2. V2.2：执行 `_DEDUP_ANSWERS_SQL` —— 删除重复行只保留 `MAX(id)` 那条（避免建唯一索引失败）
-3. V2.2：`CREATE UNIQUE INDEX IF NOT EXISTS idx_answers_unique ON answers(run_id, submission_index, question_number)`
-
-> **设计要点**：唯一索引不放在 `_SCHEMA_SQL` 里（`executescript` 无条件执行，老库若有重复行会直接失败），而是放在 `_apply_migrations` 中先 dedup 再创建，保证幂等。即使极端情况下 dedup 没清干净导致索引创建失败，应用层 `INSERT OR REPLACE` + `_record_answer_fallback`（DELETE+INSERT）的兜底逻辑依然保证幂等。
-
----
-
-## 运行测试
+## 开发与测试
 
 ```bash
-# V1 + V2 + V2.1 + V2.2 全量单元 + 集成 + E2E（headless，不需要 GUI）
+# 全量测试（含依赖真实浏览器驱动的 E2E）
 python -m pytest tests/ -v
 
-# 跳过依赖真实浏览器驱动的 E2E（CI 友好，无浏览器环境也能跑）
+# 离线套件（无浏览器环境 / CI，207 项）
 python -m pytest tests/ --ignore=tests/test_e2e_integration.py -q
-
-# 仅跑 V2 新增（answering_v2 + config_io + history + e2e）
-python -m pytest tests/test_answering_v2.py tests/test_config_io.py \
-                 tests/test_history.py tests/test_e2e_integration.py -v
-
-# 仅跑 V2.1 断点续传相关（detection 续填容错 + history 续传/权重持久化）
-python -m pytest tests/test_detection_resume.py tests/test_history.py -v
-
-# 仅跑 V2.3 数据模型 + 状态对象（题型枚举 + dataclass 互逆 + RunState 状态机）
-python -m pytest tests/test_models.py -v
-
-# 仅跑 V2.2 审查整改相关（三态提交 + 幂等化 + 增强校验 + CLI 新参数）
-python -m pytest tests/test_interaction_submit.py tests/test_history.py \
-                 tests/test_config_io.py tests/test_cli.py -v
 ```
 
-当前测试全部通过：**196/196**（非 E2E 独立套件 194 项 + 含浏览器 E2E 共 196 项）——
-- V1 `test_answering` (6) + `test_utils` (15) = 21
-- V2 `test_answering_v2` (15) + `test_config_io` (28) + `test_history` (27) + `test_e2e_integration` (2) = 72
-- V2.1 `test_detection_resume` (6)
-- V2.2 `test_interaction_submit` (7) + `test_history` 幂等化 (4) + `test_config_io` 增强校验 (18) + `test_cli` 新参数 (7) = 36（含跨文件）
-- V2.3 `test_models` (36) · `test_exceptions` (15) · `test_js_scripts` (13) = 64
+当前测试全部通过：**209 项**（离线 207 + E2E 2）。E2E 使用 `tests/fixtures/mock_wjx.html` 作为离线 mock 问卷，但仍需本机 Edge / Chrome + WebDriver 才能跑通全链路。
 
-> **E2E 测试依赖真实浏览器驱动**：`tests/test_e2e_integration.py`（2 项）使用 `tests/fixtures/mock_wjx.html` 作为离线 mock 问卷，但仍需要本机装好 Edge / Chrome + 对应 WebDriver 才能跑通 Selenium 全链路（检测 → 答题 → 交互 → history）。无浏览器环境或 CI 上建议加 `--ignore=tests/test_e2e_integration.py --ignore=tests/test_e2e_pipeline.py --ignore=tests/test_cli_history_e2e.py` 跳过 E2E，其余 194 项可在纯 Python 环境下完整通过。
->
-> 审查报告原先提到「README 声称 93/93 但实际 91 passed 2 skipped」的问题已在 V2.2 整改中修正；V2.3 模块化与 RunState 共用改造后测试数同步更新，README 测试数与 `pytest -q tests/ --ignore=tests/test_e2e_*.py` 实际通过数一致。
+代码质量：
+
+```bash
+python -m ruff check .        # 静态检查（配置见 ruff.toml）
+```
+
+推送会触发 GitHub Actions（`.github/workflows/ci.yml`）：ruff + 离线测试。命名约定：布尔变量使用 `is_` / `has_` / `should_` / `use_` 前缀；题型字符串优先经 `models.normalize_question_type` 归一化。
+
+---
+
+## 隐私保护建议
+
+`--no-record-text` 仅控制 SQLite `answers.text_answer` 列的写入；DOM 仍需填入真实文本（否则提交会失败）。如担心本地历史库包含敏感内容：
+
+1. 长期开启 `--no-record-text`，仅记录选项索引与题型
+2. 定期使用 GUI「🗑 清理 7 天前」或 `purge_old(days_older_than=7)` 清理
+3. 敏感问卷跑完后直接删除 `data/history.db`
 
 ---
 
 ## 免责声明
 
-本工具仅供学习和研究 Selenium 自动化技术使用。请遵守问卷星平台的使用条款和相关法律法规，不得用于任何违规或违法用途。使用者需自行承担所有责任。
-
----
+本工具仅供学习和研究 Selenium 自动化技术使用。请遵守问卷星平台的使用条款和相关法律法规，不得用于刷票、刷量等任何违规或违法用途。使用者需自行承担所有责任。
 
 ## License
 
-MIT License — 详见 [LICENSE](LICENSE) 文件。
+[MIT](LICENSE)
