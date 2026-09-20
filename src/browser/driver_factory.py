@@ -49,22 +49,48 @@ from ..config import (
     SCREEN_PRESETS,
     TIMEZONE_OFFSET_MIN,
 )
+from ..exceptions import raise_non_recoverable
 from .driver_factory_stealth import build_stealth_js  # 见下一个模块
 
 from ..utils import pick_user_agent
 
 
-def _cdp_extra_headers(*, browser: str = "edge") -> dict[str, str]:
+# UA 里读不出版本号时的兜底大版本（保持与历史行为一致）
+_FALLBACK_CHROME_MAJOR = "131"
+
+
+def _ua_major_version(ua: str | None, *, browser: str = "edge") -> str | None:
+    """从 User-Agent 字符串里取浏览器大版本号，取不到返回 None。
+
+    Edge 的标记是 ``Edg/``、Chrome 是 ``Chrome/``；Edge 的 UA 里同时含
+    ``Chrome/``，所以必须先试 ``Edg/``。
+    """
+    if not ua:
+        return None
+    b = (browser or "edge").lower()
+    if b == "edge" and "Edg/" in ua:
+        return ua.split("Edg/")[1].split(".")[0]
+    if "Chrome/" in ua:
+        return ua.split("Chrome/")[1].split(".")[0]
+    return None
+
+
+def _cdp_extra_headers(*, browser: str = "edge", ua: str | None = None) -> dict[str, str]:
     """通过 CDP 给所有请求追加的 HTTP 头（模拟真实浏览器的客户端提示）。
 
     参数：
       browser : "edge" | "chrome" — 决定 Sec-CH-UA 品牌字段的内容
+      ua      : 本次实例实际使用的 User-Agent。给出时 Sec-CH-UA 的版本号**跟着它走** ——
+                此前这里硬编码 v="131"，而同一实例的 Network.setUserAgentOverride
+                按真实 UA 推导版本，UA 池里 3/4 是 129/130，于是请求头与
+                userAgentMetadata 自相矛盾，正是本模块要防的 client-hints 特征。
     """
     b = (browser or "edge").lower()
-    if b == "chrome":
-        sec_ch_ua = '"Chromium";v="131", "Google Chrome";v="131", "Not_A Brand";v="24"'
-    else:
-        sec_ch_ua = '"Chromium";v="131", "Microsoft Edge";v="131", "Not_A Brand";v="24"'
+    brand = "Google Chrome" if b == "chrome" else "Microsoft Edge"
+    major = _ua_major_version(ua, browser=b) or _FALLBACK_CHROME_MAJOR
+    sec_ch_ua = (
+        f'"Chromium";v="{major}", "{brand}";v="{major}", "Not_A Brand";v="24"'
+    )
     return {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,"
                   "image/avif,image/webp,image/apng,*/*;q=0.8,"
@@ -195,11 +221,7 @@ def _apply_user_agent_override(driver: Any, ua: str, *, browser: str) -> None:
     """
     b = (browser or "edge").lower()
     # 从 UA 中猜测浏览器大版本号：Chrome/<ver> / Edg/<ver>
-    version_chunk: str | None = None
-    if b == "edge" and "Edg/" in ua:
-        version_chunk = ua.split("Edg/")[1].split(".")[0]
-    elif "Chrome/" in ua:
-        version_chunk = ua.split("Chrome/")[1].split(".")[0]
+    version_chunk: str | None = _ua_major_version(ua, browser=b)
 
     if version_chunk:
         if b == "chrome":
@@ -215,7 +237,7 @@ def _apply_user_agent_override(driver: Any, ua: str, *, browser: str) -> None:
                 f'"Not_A Brand";v="24"'
             )
     else:
-        brand_full = _cdp_extra_headers(browser=b)["Sec-CH-UA"]
+        brand_full = _cdp_extra_headers(browser=b, ua=ua)["Sec-CH-UA"]
 
     driver.execute_cdp_cmd(
         "Network.setUserAgentOverride",
@@ -257,11 +279,12 @@ def _apply_stealth_cdp(
     hw_concurrency: int,
 ) -> None:
     """浏览器创建后统一应用 Stealth CDP 配置（Edge/Chrome 通用）。"""
-    # (a) HTTP 额外头
+    # (a) HTTP 额外头 —— ua 一起传进去，让 Sec-CH-UA 的版本与 (c) 的
+    #     setUserAgentOverride 保持同一个来源
     try:
         driver.execute_cdp_cmd(
             "Network.setExtraHTTPHeaders",
-            {"headers": _cdp_extra_headers(browser=browser)},
+            {"headers": _cdp_extra_headers(browser=browser, ua=ua)},
         )
     except Exception:
         pass
@@ -376,12 +399,15 @@ def create_chrome_driver(
                 hw_concurrency=hw_concurrency,
             )
             return d
-        except Exception:
+        except BaseException as _uc_e:
             # UC 不可用（未安装 / driver 下载失败 / 权限问题） → 回退原生 Selenium。
             # v2.6：此前这里直接 pass 掉，**已经启动的 uc.Chrome 再没人 quit**，
             # 于是每回退一次就泄漏一个真实浏览器窗口。
+            # v2.7：捕获面改为 BaseException，与 Edge / 原生 Chrome 两条守护对齐 ——
+            # 旧的 except Exception 接不住 Ctrl+C，中断落在 uc.Chrome() 之后时
+            # 浏览器照样孤儿化。不可恢复的终止信号在回收后原样上抛。
             _discard(uc_driver)
-            pass
+            raise_non_recoverable(_uc_e)
 
     # ============================================================
     #  Step 3. 回退路径：Selenium 原生 Chrome + Stealth CDP
@@ -420,21 +446,26 @@ def create_chrome_driver(
 
     # 创建驱动 + 全局 CDP 配置
     d = webdriver.Chrome(options=opts)
-    d.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
-
     try:
-        d.set_window_position(0, 0)
-    except Exception:
-        pass
+        d.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
 
-    _apply_stealth_cdp(
-        d,
-        ua=ua,
-        browser=browser,
-        screen_w=screen_w,
-        screen_h=screen_h,
-        avail_top=avail_top,
-        device_memory=device_memory,
-        hw_concurrency=hw_concurrency,
-    )
+        try:
+            d.set_window_position(0, 0)
+        except Exception:
+            pass
+
+        _apply_stealth_cdp(
+            d,
+            ua=ua,
+            browser=browser,
+            screen_w=screen_w,
+            screen_h=screen_h,
+            avail_top=avail_top,
+            device_memory=device_memory,
+            hw_concurrency=hw_concurrency,
+        )
+    except BaseException:
+        # 与 Edge 路径同款窗口期：调用方还没拿到 d，不就地 quit 就是白漏一个 Chrome
+        _discard(d)
+        raise
     return d

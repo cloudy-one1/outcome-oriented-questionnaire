@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![CI](https://github.com/cloudy-one1/outcome-oriented-questionnaire/actions/workflows/ci.yml/badge.svg)](https://github.com/cloudy-one1/outcome-oriented-questionnaire/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.6.0-brightgreen.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-2.7.0-brightgreen.svg)](CHANGELOG.md)
 
 本工具仅供学习与研究 Selenium 浏览器自动化技术使用，请务必遵守问卷星平台使用条款与相关法律法规（详见[免责声明](#免责声明)）。
 
@@ -290,14 +290,14 @@ pip install -r requirements-dev.txt
 # 全量测试（含依赖真实浏览器驱动的 E2E）
 python -m pytest tests/ -v
 
-# 离线套件（无浏览器环境 / CI，285 项）
+# 离线套件（无浏览器环境 / CI，493 项）
 python -m pytest tests/ -m "not integration" -q
 
 # 仅浏览器 E2E（需本机 Edge / Chrome + WebDriver，5 项）
 python -m pytest tests/ -m integration -q
 ```
 
-当前测试全部通过：**290 项**（离线 285 + E2E 5）。
+当前测试全部通过：**498 项**（离线 493 + E2E 5）。
 
 ### 代码质量门禁
 
@@ -305,18 +305,25 @@ python -m pytest tests/ -m integration -q
 |---|---|---|
 | 静态检查 | `python -m ruff check .` | 通过 |
 | 类型检查 | `npx pyright` | `src/` **0 error 0 warning**（不设 baseline） |
-| 覆盖率 | `pytest --cov=src --cov=gui --cov-fail-under=43` | 实测 **44%**，地板 43% 只许上调 |
+| 覆盖率 | `pytest --cov=src --cov=gui --cov-fail-under=70` | 实测 **72%**（`src/` 84%、`gui/` 58%），地板 70% 只许上调 |
 
 - **`ruff.toml`** 启用 `E9/F63/F7/F82` + `F401/F841/F541`。后三条是刻意加的零误报
   「接线断链」防线：v2.4 的 `--resume` 静默失效（`main()` 算出 `resume_fail`
   却没传给 `run_batch`）正是 `F841` 一条规则就能在 CI 拦住的真实缺陷。
-- **`pyrightconfig.json`** 目前只纳入 `src/` 与入口脚本。`gui/` 还有 33 条诊断
-  （绝大多数是同一类 Tkinter 写法：往 Frame 子类上赋值、向 `dict[str, str]`
-  塞 list），属纯风格改造，见下方「已知缺口」。
+- **`pyrightconfig.json`** 目前只纳入 `src/` 与入口脚本。`gui/` 还有 45 条诊断
+  （30 error + 15 warning，`npx pyright --project pyrightconfig.json gui` 实测）：
+  最大一组是 11 条已无对象的 `# type: ignore`，其余是同一类 Tkinter 写法
+  （往 Frame 子类上赋值、向 `dict[str, str]` 塞 list），属纯风格改造，
+  见下方「已知缺口」。
 - **JS 生成器有真语法校验**：`tests/test_js_scripts.py` 会用 `node --check`
   实际解析每个脚本生成器的输出（本机无 node 时降级为退化片段检测）。
   但它只能保证**语法**合法 —— `input[name='q' + q + '']` 这类
   "语法合法、语义非法"的错选择器只有真浏览器 E2E 抓得住，v2.6 就抓到过一次。
+- **浏览器与 Tkinter 都有专用基座**：`tests/test_driver_factory_offline.py` 用
+  autouse 夹具把 `webdriver.Edge/Chrome` 换成会 `AssertionError` 的兜底替身，
+  所以离线套件绝无可能开出真实浏览器窗口；`tests/test_gui_panels.py` 全程只建
+  **一个** `withdraw()` 的 `tk.Tk()`（同进程反复建/销解释器会在 Windows 间歇性
+  抛 TclError），根窗口建不出来就整模块 skip，无显示的 runner 上保持绿。
 
 ### E2E 覆盖范围
 
@@ -328,13 +335,28 @@ E2E 因此覆盖到 `run_one_submission` 的完整链路、提交只点一次的
 
 ### 已知缺口（诚实记录）
 
-| 模块 | 离线覆盖率 | 说明 |
+上一版列的五条缺口已在 v2.7 全部补齐：
+
+| 模块 | 补齐前 | 现在 |
 |---|---|---|
-| `src/logging_setup.py` | 0% | 仅 `--log-file` 路径，无单测 |
-| `src/browser/driver_factory.py` | 9% | 需真实浏览器；E2E 走的是裸 selenium 而非本模块 |
-| `src/pipeline.py` | 26% | 编排层，E2E 已覆盖主干 |
-| `src/verification.py` | 34% | 人工介入路径难以自动化 |
-| `gui/` | 13%~35% | 主题/动画/面板基本无测；`_run_loop` 已有契约测试 |
+| `src/logging_setup.py` | 0% | **100%** |
+| `src/browser/driver_factory.py` | 9% | **100%** |
+| `src/pipeline.py` | 26% | **100%** |
+| `src/verification.py` | 34% | **97%**（剩 3 行非 Windows 降级桩，本机不可达） |
+| `gui/`（8 个文件合计） | 15% | **58%**（`theme`/`log_view` 100%、`history_panel` 96%、`weight_panel` 92%） |
+
+仍然没有防线的地方：
+
+| 模块 | 离线覆盖率 | 为什么还留着 |
+|---|---|---|
+| `gui/controller.py` | 14% | 探测题目 / 二维码解码 / 配置导入都要真实 driver 或模态对话框 |
+| `gui/app.py` | 22% | `SurveyGUI.__init__` 一建就打开真实 `data/history.db` 并启动动画 `after` 循环，测试里无法安全实例化；`_run_loop` 已有契约测试 |
+| `src/pipeline_stages/question_stage.py` | 29% | 逐题 DOM 交互主干，离线只覆盖等待与分发逻辑，真实点击仍靠 E2E |
+| `src/cli.py` | 68% | `run_batch` 主干已测，剩余是 `--save-config` / 统计打印一类输出分支 |
+
+> **覆盖率不等于验证过。** 上面的 100% / 97% 是拿替身对象跑出来的 —— 它证明
+> 「指纹参数拼装、异常回收、锁必然释放」这些**逻辑**成立；但真实浏览器能否启动、
+> 注入的 JS 在真 DOM 里是否成立，仍然只有那个非阻塞的 E2E job 说了算。
 
 推送会触发 GitHub Actions（`.github/workflows/ci.yml`）：ruff + pyright +
 带覆盖率地板的离线测试，外加一个非阻塞的真实浏览器 E2E job。

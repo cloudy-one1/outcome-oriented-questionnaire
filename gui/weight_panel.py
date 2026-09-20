@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+import math
 
 import tkinter as tk
 from tkinter import ttk
@@ -46,6 +47,22 @@ _FIELD_LABEL_MAP: dict[str, str] = {
 
 # V2.4：静默降级路径（except: pass）统一走 logger.debug 留痕
 logger = logging.getLogger("wjx.gui.weight_panel")
+
+
+def _weights_reject_reason(weights: list[float]) -> str | None:
+    """这组权重该不该在输入阶段就被拒；返回理由，合法则 None。
+
+    此前只校验格式与个数，于是负数与非有限值（nan / inf）能一路通过输入框，
+    到运行期才被 ``src.utils.weights_are_usable`` 静默降级成等权重 —— 用户以为
+    自己设了权重，实际拿到的分布是均匀的，且全程没有任何提示。
+    在表面层就拒掉并把理由走 log_fn 回报，才是"所见即所得"。
+    """
+    for w in weights:
+        if not math.isfinite(w):
+            return "含 NaN/Inf"
+        if w < 0:
+            return "含负数"
+    return None
 
 
 class WeightPanel:
@@ -410,6 +427,10 @@ class WeightPanel:
                         "WARN",
                     )
                     continue
+                reason = _weights_reject_reason(weights)
+                if reason:
+                    self.log(f"Q{qi} 权重{reason}，已跳过：{raw}", "WARN")
+                    continue
                 config[qi] = {"type": qtype, "weights": weights}
                 continue
 
@@ -440,6 +461,13 @@ class WeightPanel:
                                 weights += [0.0] * (scale_max - len(weights))
                             else:
                                 weights = weights[:scale_max]
+                if weights is not None:
+                    reason = _weights_reject_reason(weights)
+                    if reason:
+                        # 只丢掉这组权重，保留 scale / scale_min 这些结构信息 ——
+                        # 整条 continue 掉会让量表退化成"连级数都不知道"
+                        self.log(f"Q{qi} 量表权重{reason}，已忽略权重：{raw}", "WARN")
+                        weights = None
                 cfg = {"type": qtype, "scale": scale_max}
                 if weights is not None:
                     cfg["weights"] = weights
@@ -492,10 +520,13 @@ class WeightPanel:
                         if not rk:
                             ok_rows = False
                             break
+                        if _weights_reject_reason(wlst):
+                            ok_rows = False
+                            break
                         row_weights[rk] = wlst
                     if not ok_rows:
                         self.log(
-                            f"Q{qi} 矩阵行权重格式错误，跳过使用。"
+                            f"Q{qi} 矩阵行权重格式错误或含非法值（负数 / NaN），跳过使用。"
                             "正确格式: 1:w1,w2,w3 | 2:w1,w2,w3",
                             "WARN",
                         )

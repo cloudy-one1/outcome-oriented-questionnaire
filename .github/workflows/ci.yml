@@ -41,13 +41,14 @@ jobs:
           project: ./pyrightconfig.json
 
       - name: Run offline test suite + coverage ratchet
-        # 覆盖率地板：只允许往上走。当前实测 44%（见 README「开发与测试」），
-        # 阈值定在 43 留一点余量；抬高数字后请同步改这里与 README。
+        # 覆盖率地板：只允许往上走。v2.7 补齐 README「已知缺口」那五条后
+        # 实测 71%（见 README「开发与测试」），阈值定在 70 留一点余量；
+        # 抬高数字后请同步改这里与 README。
         # 用 marker 而不是 --ignore 排除 E2E：该模块本来就会在缺浏览器时自 skip。
         run: >
           pytest tests/ -m "not integration"
           --cov=src --cov=gui --cov-report=term-missing
-          --cov-fail-under=43
+          --cov-fail-under=70
 
   # E2E 用真实浏览器跑 mock 问卷，是唯一能验证"生成的 JS 在真 DOM 里成立"的环节
   # —— selector 被误拼进 JS 字符串字面量这类**语法合法、语义非法**的错误，

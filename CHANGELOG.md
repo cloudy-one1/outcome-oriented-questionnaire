@@ -2,6 +2,113 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [2.7.0] - 2026-09-20
+
+补齐 README「已知缺口（诚实记录）」表里列出的五条覆盖率缺口，并修掉补测过程中
+暴露的 6 个真实缺陷。这一轮的顺序是刻意的：**先给模块装上测试，再改它** ——
+每条修复都配一条断言正确行为的用例，而不是改完再补一张网。
+
+### 新增（测试）
+
+离线套件从 **285 → 493 项**（全量 498 = 离线 493 + E2E 5）：
+
+| 新文件 | 覆盖对象 | 项数 | 覆盖率 |
+|---|---|---|---|
+| `tests/test_logging_setup.py` | `src/logging_setup.py` | 12 | 0% → **100%** |
+| `tests/test_driver_factory_offline.py` | `src/browser/driver_factory.py` | 54 | 9% → **100%** |
+| `tests/test_pipeline_core.py` | `src/pipeline.py` | 32 | 26% → **100%** |
+| `tests/test_verification_flow.py` | `src/verification.py` | 32 | 34% → **97%** |
+| `tests/test_gui_panels.py` | `gui/` 六个面板/组件文件 | 78 | 15% → **58%** |
+
+- **"人工介入路径难以自动化"这句注释是不成立的**：`verification` 与 `driver_factory`
+  全靠替身对象驱动，两个文件合计 86 项、不到 3 秒跑完。前者用假 `driver` 的
+  `execute_script` 脚本化三信号，后者整体替换 `df.webdriver` 并遮蔽
+  `sys.modules["undetected_chromedriver"]`。
+- **离线套件不可能开出真实浏览器**：`test_driver_factory_offline.py` 的 autouse 夹具
+  先把 `webdriver.Edge/Chrome` 换成会抛 `AssertionError` 的兜底替身，忘了打桩的用例
+  只会拿到断言失败。实测把 `subprocess.Popen.__init__` 插桩后整轮**零次**进程创建。
+  同理 `force_focus` 走的是假 `ctypes`，跑测试期间不会有任何 Win32 弹窗。
+- **Tkinter 基座只建一个根窗口**：`test_gui_panels.py` 用 module 作用域 fixture 建一个
+  `withdraw()` 的 `tk.Tk()`，finalizer 里 `after_cancel` 掉所有排队任务再销毁；
+  根窗口建不出来（无显示的 runner）整模块 skip。刻意**不构造 `SurveyGUI`** ——
+  它的 `__init__` 会打开真实 `data/history.db`、启动动画 `after` 循环并自动载入
+  `configs/default_weight_config.json`。
+- **`_CONFIGURED` 与 `wjx` logger 都是进程级状态**：`test_logging_setup.py` 的 autouse
+  夹具逐用例快照/还原全局标志、handlers、level、propagate，并关掉自己造的
+  FileHandler（Windows 上句柄不释放会让 `tmp_path` 删不掉）。
+- 钉住的都是**已修复但零防线**的行为：v2.6 的 `_discard` 进程回收窗口、
+  v2.5 的"成功之后清理不得上抛"（重复提交）、v2.6 的 `_csv_safe` CSV 公式注入前缀、
+  v2.6 的 `get_db()` 单实例缓存。
+
+### 修复（补测过程中暴露的 6 个真实缺陷 + 1 处回收窗口对齐）
+
+1. **验证码探测不再把"探测本身抛异常"当成"验证码已消失"**（`src/verification.py`）：
+   `is_smart_verification_showing` 的 `except Exception: pass` 让一次
+   `JavascriptException` 返回 False，而等待循环把 False 读成"用户已经做完验证了" ——
+   打印"验证已通过"、**释放 `ManualHoldLock`**、继续撞进一个仍被滑块挡住的页面，
+   人工拉到一半就被判过。现在探测拆出三态的 `_probe_verification_state`
+   （True / False / None = 未知），`is_smart_verification_showing` 保持原 bool 契约不变，
+   等待循环只在**确认 False** 时放行，未知则继续等（上限仍是 `timeout_seconds`，
+   不会变成死等）。
+   > `src/pipeline_stages/verification_stage.py` 的入口判断刻意**没有**跟着改：
+   > 那里误报成"有验证码"会让整批原地空等，代价比"这一轮失败重试一次"更高。
+2. **渐变线的 tag 真正落到 canvas 上**（`gui/theme.py`）：两个渐变 helper 此前算出
+   `kwargs["tags"] = tag` 却在 `create_line(...)` 时不带它，于是
+   `paint_card_border` 的 `canvas.delete("card_border")` 只删得掉两条描边矩形，
+   四角渐变的每段线段全部留下 —— 用户每拖动一次窗口就累积一批删不掉的 canvas item
+   （`make_stat_badge` 的 `delete("glow")` 同理）。现在每段都带 tag，重绘严格幂等。
+3. **`Sec-CH-UA` 的大版本改为跟着本次真实 UA 走**（`src/browser/driver_factory.py`）：
+   `_cdp_extra_headers` 此前硬编码 `v="131"`，而同一实例的
+   `Network.setUserAgentOverride` 按 UA 推导版本 —— 两个 UA 池各 4 条里有 2 条是
+   129/130，即**一半**的实例会出现"请求头说 131、`userAgentMetadata` 说 129"的
+   自相矛盾，正是本模块要防的 client-hints 特征。版本解析收进 `_ua_major_version`
+   供两层注入共用；不传 `ua` 时仍是 131，默认指纹不变。
+4. **UC 回退的异常回收面与另两条路径对齐**：`create_chrome_driver` 的 UC 分支此前捕
+   `Exception`，而 `KeyboardInterrupt` 不是它的子类 —— Ctrl+C 落在 `uc.Chrome()` 之后时，
+   v2.6 那句 `_discard` 根本不会执行，浏览器照样孤儿化。现在捕 `BaseException`
+   → 先回收 → `raise_non_recoverable` 原样上抛，且**不会**再继续去开一个原生 Chrome。
+5. **`create_chrome_driver` 的原生回退路径补上回收窗口**：v2.6 给 Edge 和 UC 两条路径
+   补了"驱动已建好、初始化步骤随后失败"的 `_discard`，Step 3 的原生 Chrome 分支漏了 ——
+   `webdriver.Chrome()` 成功后 `set_page_load_timeout` 或 `_apply_stealth_cdp` 抛异常
+   仍会白漏一个进程。由 `test_chrome_native_leak_guard_*` 三条钉住。
+6. **`setup_logging` 不再重复挂同一个文件**（`src/logging_setup.py`）：追加前按
+   `baseFilename` 判重，已存在则只调级别 —— 此前两次 `setup_logging(p)` 会在同一文件上
+   挂两个 handler，每条日志写两遍，事后复盘时行号与计数全部失真。同时 `level` 改为
+   **每次调用都生效**：此前第二次传 `level=DEBUG` 得到的是 DEBUG 的 handler 配 INFO 的
+   logger，落盘出来是一个空文件。全项目原本只有 `src/cli.py` 一个调用点，属潜在缺陷。
+7. **权重面板在输入阶段就拒绝非法值**（`gui/weight_panel.py`）：此前只校验格式与个数，
+   `-1,2,2` 静默通过，到运行期才被 `utils.weights_are_usable` 按"正权重之和 > 0"当合法值
+   用（等于把 -1 当极低权重，与直觉相反），用户全程看不到提示。现在负数与 NaN/Inf
+   在面板层就 WARN 并弃用；`0` 仍是合法权重（"基本不选"）。量表分支只丢权重、保留
+   `scale` / `scale_min` 结构信息，矩阵行权重则整组弃用。
+   > 这条其实是补一处**入口不一致**：`config_io.validate_weight_config` 一直会拒掉
+   > 负数与 NaN/Inf（CLI `--config` 加载即校验、不通过就退出码 2），只有 GUI 表格是漏的
+   > —— 同一个 `-1` 写在 JSON 里会被拒绝，敲进权重格却会被接受。
+
+### 已知缺口（本轮暴露、刻意留到下轮）
+
+- **逐题停顿打不断**（`src/pipeline.py::_do_one_submission_core`）：v2.6 给轮间
+  `human_pause` 接了 `abort_check`，但每题之间的"思考时间"没有，核心流程也不接受停止
+  谓词 —— 点了停止仍要等完整份问卷（约 4.5s/题）。修它要把谓词穿过
+  pipeline / question_stage / cli / gui 四处接缝，与 v2.6 收敛 `_run_loop` 是同一类工程，
+  单独一轮做。
+
+### 变更（门禁）
+
+- **覆盖率地板 43% → 70%**（实测 72%：`src/` 84%、`gui/` 58%）。
+- README「已知缺口」表重写为"已补齐"与"仍无防线"两段，并加上一条限定：
+  **覆盖率不等于验证过** —— 100% 是拿替身跑出来的，真实浏览器能否启动、
+  注入的 JS 在真 DOM 里是否成立，仍然只有非阻塞的 E2E job 说了算。
+
+### 勘误
+
+- 2.6.0 条目「已知缺口」所称"`gui/` 的 33 条 pyright 诊断（Tkinter 子类赋值风格为主）"
+  不准：按 `npx pyright --project pyrightconfig.json gui` 实测是 **45 条
+  （30 error + 15 warning）**，其中最大一组是 11 条已无对象的 `# type: ignore`，
+  其余才是往 `Frame` 子类上赋值、向 `dict[str, str]` 塞 list 一类 Tkinter 写法。
+  本版本改了 `gui/theme.py` 与 `gui/weight_panel.py` 之后重测，仍是 **45 条**
+  （30 error + 15 warning）—— 这两处改动没有引入新的诊断。
+
 ## [2.6.0] - 2026-09-20
 
 评估报告的后续迭代批次：把 2.5 里判定"留给下轮"的 15 项逐一做完。
