@@ -36,6 +36,12 @@
 - **`_CONFIGURED` 与 `wjx` logger 都是进程级状态**：`test_logging_setup.py` 的 autouse
   夹具逐用例快照/还原全局标志、handlers、level、propagate，并关掉自己造的
   FileHandler（Windows 上句柄不释放会让 `tmp_path` 删不掉）。
+- **CI 的 3.10 那条腿当场抓到一个测试基座缺陷**：`test_gui_panels.py` 的 finalizer 用了
+  `Tk.after_info()`，而那是 **Python 3.11 才进 tkinter** 的 API —— 3.10 上取它会
+  `AttributeError`，让 fixture 拆台时炸掉（3.13 全绿、3.10 独红）。改为存在性判断后再取消：
+  本模块从不跑 mainloop，3.10 枚举不出待兑现任务也不影响销毁。
+  > 这恰好是 README「Python 3.10 是真实下限」那句话**唯一被自动验证**的地方 —— 只有一个
+  > 3.13 的 job 时，`slots=True` 之外的高低版本差异全是纸面承诺。
 - 钉住的都是**已修复但零防线**的行为：v2.6 的 `_discard` 进程回收窗口、
   v2.5 的"成功之后清理不得上抛"（重复提交）、v2.6 的 `_csv_safe` CSV 公式注入前缀、
   v2.6 的 `get_db()` 单实例缓存。

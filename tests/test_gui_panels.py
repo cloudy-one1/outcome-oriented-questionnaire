@@ -74,8 +74,13 @@ def tk_root():
         pytest.skip(f"无法创建 Tk 根窗口: {type(exc).__name__}: {exc}")
     root.withdraw()
     yield root
-    for job in root.after_info():
-        root.after_cancel(job)
+    # `Tk.after_info()` 是 Python 3.11 才进 tkinter 的，3.10 上取它会 AttributeError
+    # （CI 的 3.10 那条腿就是这么红的）。3.10 枚举不出待兑现任务也无妨：本模块从不跑
+    # mainloop，root.destroy() 之后解释器自己会把它们连带丢掉，不存在回调打空的问题。
+    after_info = getattr(root, "after_info", None)
+    if after_info is not None:
+        for job in after_info():
+            root.after_cancel(job)
     root.destroy()
 
 
