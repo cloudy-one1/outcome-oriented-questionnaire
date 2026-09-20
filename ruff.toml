@@ -1,8 +1,10 @@
 # V2.4 新增：ruff 配置（配合 .github/workflows/ci.yml 使用）
-# 策略：只启用"确定性正确"的检查（语法错误 / 未定义名 / 无效转义），
-# 不引入风格类规则，避免对既有 7000+ 行代码产生噪音。
+# 策略：只启用"确定性正确"的检查（语法错误 / 未定义名 / 无效转义 / 未使用名），
+# 不引入格式风格类规则（E1-E5 缩进换行、W 系列、命名），避免对既有代码产生噪音。
 line-length = 100
-target-version = "py39"
+# 真实下限是 3.10：src/models.py 用了 @dataclass(slots=True)。
+# 此前写 py39 与 README 的"3.9+"一起是失实的（见 README 环境要求）。
+target-version = "py310"
 
 [lint]
 select = [
@@ -10,4 +12,16 @@ select = [
     "F63",  # 无效的比较/赋值（如 if x = 1）
     "F7",   # 注解里的语法错误
     "F82",  # 未定义名称（防"调用方未同步"类回归，如 V2.3 漏传 lock 的近亲问题）
+    # V2.5 加入：F82 的近亲三兄弟。之所以值得开——它们是**零误报**的
+    # "参数算了却没传"类 bug 的唯一自动化防线：
+    # CLI --resume 静默失效（cli.py 算出 resume_fail 却不传 run_batch）
+    # 就是 F841 一条规则就能在 CI 拦住的真实缺陷。
+    "F401",  # 未使用的 import（防止"看着在用其实没接"）
+    "F841",  # 赋值后从未使用的局部变量（--resume 类接线断裂的信号）
+    "F541",  # 无占位符的 f-string（print 文案里的假 f-string）
 ]
+
+[lint.per-file-ignores]
+# E2E 用例要先塞 sys.path 再 import selenium，模块级导入必然不在顶部
+"tests/test_e2e_integration.py" = ["E402"]
+

@@ -1,0 +1,21 @@
+{
+  // V2.6 引入：类型门禁。
+  //
+  // 为什么现在能开：src/ 在 basic 模式下是 **0 error**（本轮把暴露出来的 10 条
+  // 全部当真问题修掉了：sqlite3.Cursor.lastrowid 可能为 None 却直接 int()、
+  // random 模块被当 random.Random 实例传递、可选 numpy 绑定的联合类型等）。
+  // 一条都不用豁免的门禁才有意义 —— 需要 baseline 的检查只会退化成装饰。
+  //
+  // 为什么 gui/ 暂不纳入：gui/ 还有 33 条，绝大多数是同一类 Tkinter 写法
+  // （在 Frame 子类上赋值 _card_canvas / 往 dict[str, str] 里塞 list），
+  // 修它们是一次纯风格改造，与本次评估发现的缺陷无关。
+  // 已记入迭代计划，见 CHANGELOG 的 "Known gaps"。
+  "include": ["src", "run_cli.py", "run_gui.py", "conftest.py"],
+  "exclude": ["**/__pycache__", ".pytest_cache", ".ruff_cache"],
+  "typeCheckingMode": "basic",
+  "pythonVersion": "3.10",
+  "reportMissingImports": "warning",
+  "reportMissingModuleSource": "none",
+  // 无用的 type: ignore 会随时间积累并掩盖真问题，直接判错
+  "reportUnnecessaryTypeIgnoreComment": "warning"
+}

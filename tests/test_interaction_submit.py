@@ -196,5 +196,68 @@ class TestSubmitTriState(unittest.TestCase):
         self.assertEqual(result, SUBMIT_SUCCESS)
 
 
+class TestNoDoubleClickOnWaitFailure(unittest.TestCase):
+    """V2.5 回归：点击后的确认阶段绝不能导致「重新点一次提交」。
+
+    原实现把整个 find_and_click_submit 包在 @js_execute_retry(max_attempts=3)
+    里，而点击之后的 _wait_until_submit_effect 会读 driver.current_url ——
+    问卷星提交瞬间跳转新页时这个读取会抛 WebDriverException，
+    于是装饰器把**含点击的整个函数**重跑一遍 → 同一份问卷被重复提交。
+    """
+
+    class _ClickCountingElement:
+        def __init__(self, log: list) -> None:
+            self._log = log
+
+        def click(self) -> None:
+            self._log.append("click")
+
+    class _FlakyUrlDriver:
+        """current_url 在最初 N 次读取时抛异常（模拟提交导致的页面跳转）。"""
+
+        def __init__(self, clicks: list, fail_first_reads: int) -> None:
+            self._clicks = clicks
+            self._remaining_failures = fail_first_reads
+            self.url_reads = 0
+
+        @property
+        def current_url(self) -> str:
+            self.url_reads += 1
+            if self._remaining_failures > 0:
+                self._remaining_failures -= 1
+                from selenium.common.exceptions import WebDriverException
+                raise WebDriverException("nav in progress")
+            return "https://wjx.cn/done"
+
+        def find_element(self, by, selector):
+            return TestNoDoubleClickOnWaitFailure._ClickCountingElement(self._clicks)
+
+        def execute_script(self, script, *args):
+            return None
+
+    def test_click_happens_exactly_once_when_wait_raises(self) -> None:
+        clicks: list = []
+        driver = self._FlakyUrlDriver(clicks, fail_first_reads=3)
+        # 让 _wait_until_submit_effect 快速返回：用极短超时
+        result = find_and_click_submit(driver, wait_url_change_timeout=0.4)
+
+        self.assertEqual(
+            clicks, ["click"],
+            f"提交按钮必须只点一次，实际点击 {len(clicks)} 次（重复提交风险）",
+        )
+        self.assertIn(result, (SUBMIT_SUCCESS, SUBMIT_UNKNOWN))
+
+    def test_wait_recovers_baseline_after_initial_url_failure(self) -> None:
+        """基线 URL 读不到时不能立刻判成功（否则任何跳转都会污染成功率统计）。"""
+        clicks: list = []
+        # 只有第一次读（取基线）失败，之后 URL 恒为同一值且无成功文案
+        driver = self._FlakyUrlDriver(clicks, fail_first_reads=1)
+        result = find_and_click_submit(driver, wait_url_change_timeout=0.4)
+        self.assertEqual(
+            result, SUBMIT_UNKNOWN,
+            "补建基线后 URL 未再变化且无成功文案 → 应为 unknown，不能白记一次成功",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

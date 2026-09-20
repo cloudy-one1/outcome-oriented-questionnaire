@@ -22,14 +22,18 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pytest
+
 from src.interaction import SUBMIT_FAILED, SUBMIT_SUCCESS, SUBMIT_UNKNOWN
 from src.models import (
+    QUESTION_TYPE_ALIASES,
     AnswerData,
     QuestionData,
     QuestionType,
     RunState,
     SubmitResult,
     WeightConfigEntry,
+    normalize_question_type,
 )
 
 
@@ -393,3 +397,39 @@ class TestRunState(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+# ============================================================================
+#  v2.6：题型命名表单一真相
+# ============================================================================
+def test_from_str_and_alias_table_share_one_source_of_truth() -> None:
+    """QuestionType.from_str 与 QUESTION_TYPE_ALIASES 不可能再各自漂移。
+
+    此前两张表手写、平行维护：v2.4 把别名收进 QUESTION_TYPE_ALIASES 时，
+    from_str 里那份 alias dict 仍独立存在。矩阵题的
+    "matrix_single（枚举 value）vs matrix（落库短名）"正是漂移高发点。
+    """
+    for qtype in QuestionType:
+        # 枚举 value 与每个别名都要能被 from_str 认出来
+        assert QuestionType.from_str(qtype.value) is qtype
+        for alias in qtype.aliases:
+            assert QuestionType.from_str(alias) is qtype, alias
+            assert QUESTION_TYPE_ALIASES[alias] == qtype.storage_name
+        # 以及：每张表对这个题型的说法必须一致
+        assert QUESTION_TYPE_ALIASES[qtype.value] == qtype.storage_name
+        assert normalize_question_type(qtype.value) == qtype.storage_name
+        assert normalize_question_type(qtype.storage_name) == qtype.storage_name
+
+
+def test_from_str_still_raises_value_error_for_unknown() -> None:
+    """契约：未知题型抛 ValueError（调用方靠它兜底成 SINGLE），不能是 KeyError。"""
+    with pytest.raises(ValueError):
+        QuestionType.from_str("definitely_not_a_type")
+    with pytest.raises(ValueError):
+        QuestionType.from_str(None)
+
+
+def test_storage_name_differs_from_value_only_for_matrix() -> None:
+    """落库短名与枚举 value 的唯一差异点必须仍只有矩阵题。"""
+    drifted = [q for q in QuestionType if q.storage_name != q.value]
+    assert [q.name for q in drifted] == ["MATRIX_SINGLE"]

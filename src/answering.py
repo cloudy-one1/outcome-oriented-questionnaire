@@ -14,45 +14,27 @@
 
 from __future__ import annotations
 
-import math
 import random
 
-# numpy 可选：环境装了就用，没装时 import 模块不崩
-try:
-    import numpy as np  # type: ignore
-    _HAS_NUMPY: bool = True
-except Exception:  # pragma: no cover
-    np = None  # type: ignore
-    _HAS_NUMPY = False
-
 from .config import WEIGHT_CONFIG
+from .utils import (
+    equal_sample_no_replace,
+    sanitize_weights,
+    weighted_sample_no_replace,
+)
 
 
 def _weighted_choice_no_replace(pool: list, weights: list[float], k: int) -> list:
-    """无放回加权抽样：numpy 优先 → 否则纯 Python A-Res 算法。"""
-    n = len(pool)
-    k = max(1, min(k, n))
-    if _HAS_NUMPY:
-        total = sum(weights)
-        probs = [w / total for w in weights]
-        return np.random.choice(pool, size=k, replace=False, p=probs).tolist()
-    # 纯 Python：A-Res key = log(u) / w
-    keys: list = []
-    for w, item in zip(weights, pool):
-        w_pos = max(w if w > 0 else 1e-12, 1e-12)
-        u = random.random()
-        keys.append((math.log(u) / w_pos, item))
-    keys.sort(reverse=True)
-    return [x for _, x in keys[:k]]
+    """无放回加权抽样。实现已上收到 ``utils.weighted_sample_no_replace``（v2.6）。
+
+    保留这个名字是因为 tests/test_answering.py 直接测它；新代码请用 utils 版。
+    """
+    return weighted_sample_no_replace(pool, weights, k)
 
 
 def _equal_choice_no_replace(pool: list, k: int) -> list:
-    """无放回等概率抽样。"""
-    n = len(pool)
-    k = max(1, min(k, n))
-    if _HAS_NUMPY:
-        return np.random.choice(pool, size=k, replace=False).tolist()
-    return sorted(random.sample(pool, k=k))
+    """无放回等概率抽样。实现已上收到 ``utils.equal_sample_no_replace``。"""
+    return equal_sample_no_replace(pool, k)
 
 
 def build_answer_strategy(question: dict) -> list[int]:
@@ -81,10 +63,8 @@ def build_answer_strategy(question: dict) -> list[int]:
         weights = cfg["weights"]  # 用户指定的各选项权重
         n = len(question["choices"])  # 页面实际选项数
 
-        # 安全检查：权重长度必须与选项数一致
-        if len(weights) != n:
-            print(f"  WARNING: Q{qi} 权重长度 {len(weights)} != 选项数 {n}，使用等权重")
-            weights = [1] * n  # 降级为等权重
+        # 安全检查：长度一致 + 无 NaN/Inf + 总和 > 0，否则降级等权重
+        weights = sanitize_weights(weights, n, question=qi) or [1.0] * n
 
         if question["type"] == "single":
             # 单选题：加权有放回采样 1 个选项（k=1）
@@ -94,6 +74,9 @@ def build_answer_strategy(question: dict) -> list[int]:
             # 默认：从 1 到 n 中均匀随机选择 k
             count_opts = cfg.get("count_options", list(range(1, n + 1)))
             count_wts = cfg.get("count_weights", [1] * len(count_opts))
+            count_wts = sanitize_weights(
+                count_wts, len(count_opts), question=qi, label="选中个数权重"
+            ) or [1.0] * len(count_opts)
 
             # 加权采样出"选几个"
             k = random.choices(count_opts, weights=count_wts, k=1)[0]

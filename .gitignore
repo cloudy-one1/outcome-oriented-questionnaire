@@ -50,3 +50,15 @@ htmlcov/
 
 # Local-only docs
 docs/
+
+# ---------- 运行产物：含 PII，绝不该进版本库 ----------
+# data/history.db 的 answers.text_answer 存填空题原文（姓名/手机/邮箱），
+# configs/*.json 存用户在权重表里写的候选文本池，导出 CSV 同理。
+# 这些路径由工具自身创建（README「运行历史」「GUI 使用」章节），
+# 不加进来会让一次 git add -A 直接把敏感数据提交上去。
+data/
+configs/
+*.db
+*.sqlite
+*.sqlite3
+*.csv

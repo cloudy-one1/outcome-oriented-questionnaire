@@ -152,7 +152,7 @@ def load_weight_config(path: str) -> tuple[dict[int, dict], dict]:
                     try:
                         rk_int = int(rk)
                     except (TypeError, ValueError):
-                        rk_int = rk  # type: ignore[assignment]
+                        rk_int = rk
                     fixed_rw[rk_int] = rv
                 fixed_cfg["row_weights"] = fixed_rw
 
@@ -161,13 +161,17 @@ def load_weight_config(path: str) -> tuple[dict[int, dict], dict]:
     return cfg, meta
 
 
-def apply_weight_config(cfg: dict[int, dict]) -> None:
-    """热更新：把 ``cfg`` 里的每一项写入 ``src.config.WEIGHT_CONFIG``。
+def apply_weight_config(cfg: dict[int, dict], *, replace: bool = False) -> None:
+    """热更新：把 ``cfg`` 应用到 ``src.config.WEIGHT_CONFIG``。
 
-    - 已有的题号 → 覆盖
-    - 没有的题号 → 新增
-    - 原来存在但 cfg 中没有的 → 保留不删（避免误删 GUI 里没动过的）
+    :param replace: False（默认）合并 —— 已有题号覆盖、新题号新增、
+                    ``cfg`` 里没有的题号**保留不删**。
+                    True 整体替换 —— 先清空再写入，``cfg`` 就是最终配置。
+                    CLI ``--config`` 与续传快照恢复用 True：配置文件/快照是
+                    唯一真相，残留的旧题号会让上一份问卷的权重静默生效。
     """
+    if replace:
+        _config_module.WEIGHT_CONFIG.clear()
     for qnum, qcfg in cfg.items():
         qnum_int = int(qnum)
         _config_module.WEIGHT_CONFIG[qnum_int] = dict(qcfg)

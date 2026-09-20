@@ -37,7 +37,7 @@
 
 from __future__ import annotations
 
-import json
+import logging
 import random
 from typing import Any
 
@@ -82,6 +82,22 @@ def _cdp_extra_headers(*, browser: str = "edge") -> dict[str, str]:
         "Sec-Fetch-User": "?1",
         "Upgrade-Insecure-Requests": "1",
     }
+
+
+def _discard(driver: Any) -> None:
+    """尽力关掉一个**尚未交付给调用方**的 driver，绝不抛。
+
+    用于"驱动已经建好、但后续初始化步骤失败"的窗口期：此时调用方还没拿到
+    引用，不就地 quit 就等于泄漏一个真实浏览器进程。
+    """
+    if driver is None:
+        return
+    try:
+        driver.quit()
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "初始化失败后回收 driver 失败（浏览器进程可能残留）", exc_info=True
+        )
 
 
 def create_edge_driver(
@@ -141,27 +157,31 @@ def create_edge_driver(
     #  Step 3. 创建驱动实例 + CDP 全局配置
     # ==================================================================
     d = webdriver.Edge(options=opts)
-    d.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
-
-    # 移动窗口到屏幕 (0, 0)，保证窗口位置与 availTop 指纹匹配
     try:
-        d.set_window_position(0, 0)
-    except Exception:
-        pass
+        d.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
 
-    # --- CDP 全局配置（V2.4 整改：复用 Edge/Chrome 通用的 _apply_stealth_cdp，
-    #     消除原先内联复制的三步 CDP 注入） ---
-    _apply_stealth_cdp(
-        d,
-        ua=ua,
-        browser="edge",
-        screen_w=screen_w,
-        screen_h=screen_h,
-        avail_top=avail_top,
-        device_memory=device_memory,
-        hw_concurrency=hw_concurrency,
-    )
+        # 移动窗口到屏幕 (0, 0)，保证窗口位置与 availTop 指纹匹配
+        try:
+            d.set_window_position(0, 0)
+        except Exception:
+            pass
 
+        # --- CDP 全局配置（V2.4 整改：复用 Edge/Chrome 通用的 _apply_stealth_cdp，
+        #     消除原先内联复制的三步 CDP 注入） ---
+        _apply_stealth_cdp(
+            d,
+            ua=ua,
+            browser="edge",
+            screen_w=screen_w,
+            screen_h=screen_h,
+            avail_top=avail_top,
+            device_memory=device_memory,
+            hw_concurrency=hw_concurrency,
+        )
+    except BaseException:
+        # 此刻调用方还没拿到 d：不就地 quit 就是白漏一个 Edge 进程
+        _discard(d)
+        raise
     return d
 
 
@@ -297,8 +317,9 @@ def create_chrome_driver(
     #  Step 2. 优先尝试 undetected-chromedriver（use_uc=True 时）
     # ============================================================
     if use_uc:
+        uc_driver: Any = None      # 已启动但尚未交付的 UC 浏览器，异常路径要回收
         try:
-            import undetected_chromedriver as uc  # type: ignore
+            import undetected_chromedriver as uc
 
             uc_opts = uc.ChromeOptions()
             # UC 的参数风格：headless / user-data-dir 等
@@ -336,6 +357,7 @@ def create_chrome_driver(
                 d = uc.Chrome(options=uc_opts, version_main=version_main)
             else:
                 d = uc.Chrome(options=uc_opts)
+            uc_driver = d
 
             d.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
             try:
@@ -355,7 +377,10 @@ def create_chrome_driver(
             )
             return d
         except Exception:
-            # UC 不可用（未安装 / driver 下载失败 / 权限问题） → 回退原生 Selenium
+            # UC 不可用（未安装 / driver 下载失败 / 权限问题） → 回退原生 Selenium。
+            # v2.6：此前这里直接 pass 掉，**已经启动的 uc.Chrome 再没人 quit**，
+            # 于是每回退一次就泄漏一个真实浏览器窗口。
+            _discard(uc_driver)
             pass
 
     # ============================================================

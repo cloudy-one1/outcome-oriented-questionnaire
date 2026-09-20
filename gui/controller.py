@@ -49,6 +49,7 @@ except Exception:  # pragma: no cover - 导入失败在方法内部会告警
     wait_for_manual_verification = None  # type: ignore[assignment]
     decode_qr_from_image = None  # type: ignore[assignment]
 
+from src.config_io import apply_weight_config  # noqa: E402  纯 Python，无 selenium 依赖
 from src.models import normalize_question_type  # noqa: E402
 
 # 探测用"页面题目控件计数"JS（原先在 _worker 内重复 3 份，V2.4 收敛为一份）
@@ -74,7 +75,7 @@ _TYPE_LABELS: dict[str, str] = {
 
 
 if TYPE_CHECKING:
-    import tkinter as tk
+    pass
 
 # V2.4：静默降级路径统一走 logger.debug 留痕（详见 src/logging_setup.py）
 logger = logging.getLogger("wjx.gui.controller")
@@ -225,10 +226,10 @@ class GuiController:
                 self._log(f"[校验警告] {w}", "WARN")
             self._log(f"配置载入 · 校验警告 {len(warnings)} 条", "INFO")
 
-        # 1. 合并到全局 WEIGHT_CONFIG
-        cfg_module = getattr(self.host, "_cfg_module", None)
-        if cfg_module is not None:
-            cfg_module.WEIGHT_CONFIG.update(cfg)
+        # 1. 整体替换全局 WEIGHT_CONFIG（与 CLI --config 同一份实现、同一语义）。
+        #    此前这里是裸 .update()（合并）：上一份配置里存在、本份没有的题号会
+        #    **静默残留**，于是"载入配置"得到的分布取决于你之前载入过什么。
+        apply_weight_config(cfg, replace=True)
 
         # 2. 同步 GUI 表格（仅刷新当前已探测到的题号对应的 entry_var）
         applied_cnt = 0
@@ -295,7 +296,6 @@ class GuiController:
         if create_driver is None or detect_questions is None:
             self._log("探测模块未加载，请检查 src 导入", "FAIL")
             return
-        import time  # localize
         url = self.host.url_var.get().strip()
         if not url:
             messagebox.showwarning("提示", "请先填写问卷 URL")

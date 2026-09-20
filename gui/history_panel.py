@@ -33,6 +33,21 @@ if TYPE_CHECKING:  # pragma: no cover - 仅用于类型注解，避免循环 imp
     from src.history import SubmissionHistory  # type: ignore
 
 
+def _csv_safe(value: Any) -> str:
+    """给可能被 Excel 当公式解析的单元格加前缀单引号（CSV injection）。
+
+    导出的 text_answer / options_selected / survey_url / error_message 里
+    含有**由问卷页面控制**的文本（下拉选项 label、driver 回传的报错信息），
+    以 ``=`` ``+`` ``-`` ``@`` ``TAB`` ``CR`` 开头的值会在 Excel/WPS 里被当作
+    公式求值，可外带数据（如 =CMD|' /C calc'!A0）。csv 模块只管引号转义，
+    不管这个 —— 必须在写入前拦截。
+    """
+    s = "" if value is None else str(value)
+    if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + s
+    return s
+
+
 class HistoryPanel:
     """「历史记录」卡片面板：runs 表 + answers 表 + 工具栏。"""
 
@@ -62,25 +77,51 @@ class HistoryPanel:
         self._make_card = make_card_fn or _default_make_card
         self._make_btn = make_icon_btn_fn or _default_make_icon_btn
         self._fonts = dict(fonts) if fonts is not None else dict(FONT_PRESETS)
+        # 进程内唯一的 SubmissionHistory（见 get_db 的缓存理由）
+        self._db_cached: "SubmissionHistory | None" = None
 
     # ==================================================================
     #  历史数据库懒加载（原 _history_get_db）
     # ==================================================================
 
     def get_db(self) -> "SubmissionHistory | None":
-        """懒构造 SubmissionHistory。避免没选 SQLite 驱动时崩溃。"""
+        """返回进程内**唯一**的 SubmissionHistory（懒构造 + 缓存）。
+
+        此前每次调用都 new 一个：
+          1. 每个实例构造时都会跑一遍 ``_apply_migrations``，其中含全表
+             ``DELETE ... WHERE id NOT IN (SELECT MAX(id) ... GROUP BY ...)``
+             去重扫描 —— 点一次「历史」Tab 就在 Tk 主线程上扫一遍全表；
+          2. 句柄从不关闭，来回切 Tab 会持续泄漏连接；
+          3. 写走连接 A、读走连接 B，SubmissionHistory 内部那把
+             「串行化所有 DB 操作」的 threading.Lock 跨不了连接，
+             等于完全没有串行化效果。
+        缓存成单实例后三个问题一起消失。
+        """
+        if self._db_cached is not None:
+            return self._db_cached
         if not self._has_history or self._sh_cls is None:
             return None
         try:
             dirname = os.path.dirname(self._db_path)
             if dirname and not os.path.exists(dirname):
                 os.makedirs(dirname, exist_ok=True)
-            return self._sh_cls(self._db_path)
+            self._db_cached = self._sh_cls(self._db_path)
+            return self._db_cached
         except Exception as e:
             self.log(
                 f"历史记录数据库打开失败: {type(e).__name__}: {e}", "WARN"
             )
             return None
+
+    def close_db(self) -> None:
+        """关闭缓存的连接（窗口销毁前调用，避免连接与文件句柄泄漏）。"""
+        db, self._db_cached = self._db_cached, None
+        if db is None:
+            return
+        try:
+            db.close()
+        except Exception as e:
+            self.log(f"关闭历史库失败: {type(e).__name__}: {e}", "WARN")
 
     # ==================================================================
     #  构建 UI（原 _build_history_card）
@@ -327,10 +368,10 @@ class HistoryPanel:
                 for r in runs:
                     w.writerow([r.get("id"), r.get("started_at"),
                                 r.get("finished_at"), r.get("status"),
-                                r.get("survey_url"),
+                                _csv_safe(r.get("survey_url")),
                                 r.get("total_submissions"),
                                 r.get("success_count"), r.get("fail_count"),
-                                r.get("error_message")])
+                                _csv_safe(r.get("error_message"))])
             with open(ans_path, "w", encoding="utf-8-sig", newline="") as f:
                 w = csv.writer(f)
                 w.writerow(["run_id", "submission_index",
@@ -346,7 +387,7 @@ class HistoryPanel:
                     w.writerow([a.get("run_id"),
                                 a.get("submission_index"),
                                 a.get("question_number"), a.get("question_type"),
-                                sel_s, a.get("text_answer") or "",
+                                _csv_safe(sel_s), _csv_safe(a.get("text_answer")),
                                 a.get("elapsed_ms"),
                                 a.get("created_at")])
             self.log(f"✓ 已导出 runs → {os.path.basename(runs_path)}", "OK")

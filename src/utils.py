@@ -11,10 +11,22 @@
 from __future__ import annotations
 
 import functools
+import math
 import random
 import threading
 import time
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Optional, TypeVar
+
+# numpy 可选：装了就用其高效的无放回加权抽样，没装走纯 Python A-Res 算法
+# numpy 是可选依赖。显式把 np 声明成 Any，避免 pyright 把它推成
+# "Module | None" 后，对 np.random.choice 报 reportOptionalMemberAccess。
+np: Any
+try:
+    import numpy as np
+    _HAS_NUMPY: bool = True
+except Exception:  # pragma: no cover - 环境缺 numpy 时走纯 Python 路径
+    np = None
+    _HAS_NUMPY = False
 
 
 _Fn = TypeVar("_Fn", bound=Callable[..., Any])
@@ -86,7 +98,7 @@ def pick_user_agent(
 # ============================================================================
 
 def gaussian_seconds(mu: float, sigma: float, lo: float, hi: float,
-                    *, _rng: random.Random | None = None) -> float:
+                    *, _rng: Any | None = None) -> float:
     """返回一个落在 [lo, hi] 区间内、近似 N(mu, sigma^2) 的随机秒数（float）。
 
     采样策略：用 Box-Muller 高斯采样；若超出范围就重新采样，最多 50 次；
@@ -106,7 +118,8 @@ def human_pause(mu: float, sigma: float, lo: float, hi: float,
                 *,
                 long_pause_prob: float = 0.0,
                 long_lo: float = 2.0, long_hi: float = 5.0,
-                _rng: random.Random | None = None,
+                abort_check: Callable[[], bool] | None = None,
+                _rng: Any | None = None,
                 _sleep_fn: Callable[[float], Any] | None = None) -> float:
     """模拟人类行为的「停顿」，真实 sleep 一段时间后返回实际 sleep 的秒数。
 
@@ -116,15 +129,36 @@ def human_pause(mu: float, sigma: float, lo: float, hi: float,
       2. 否则走标准正态分布截断采样
       3. 调用 _sleep_fn 或 time.sleep 睡眠
       4. 返回实际 sleep 秒数（供日志/统计）
+
+    :param abort_check: 每 ~0.2s 询问一次；返回 True 就**提前结束停顿**并立即返回
+        已 sleep 的秒数。给 GUI「停止」按钮用：轮间停顿最长可达 20s，
+        此前一次性 sleep 打不断，用户点停止要等整段停顿跑完才见效。
+        CLI 不传，行为与旧版完全一致。
     """
     rng = _rng or random
     if long_pause_prob > 0 and rng.random() < long_pause_prob:
         seconds = rng.uniform(long_lo, long_hi)
     else:
         seconds = gaussian_seconds(mu, sigma, lo, hi, _rng=rng)
+
+    if abort_check is None:
+        sleep_fn = _sleep_fn or time.sleep
+        sleep_fn(seconds)
+        return seconds
+
+    # 分片睡眠：把一整段停顿切成 <=0.2s 的小片，每片之间问一次要不要停
     sleep_fn = _sleep_fn or time.sleep
-    sleep_fn(seconds)
-    return seconds
+    _ABORT_POLL_INTERVAL = 0.2
+    remaining = seconds
+    elapsed = 0.0
+    while remaining > 0:
+        if abort_check():
+            break
+        chunk = min(_ABORT_POLL_INTERVAL, remaining)
+        sleep_fn(chunk)
+        elapsed += chunk
+        remaining -= chunk
+    return elapsed
 
 
 # ============================================================================
@@ -245,3 +279,121 @@ class ManualHoldLock:
     def __exit__(self, exc_type, exc, tb) -> bool:
         self.release()
         return False  # 不吞异常
+
+
+# ============================================================================
+#  权重合法性清洗 —— v1(answering) 与 v2(answering_v2) 共用同一份判定
+# ============================================================================
+
+def weights_are_usable(weights: Any, n: int) -> bool:
+    """判断一组权重能否安全喂给 ``random.choices`` / ``numpy`` 归一化。
+
+    不合法的情形（任一命中即 False）：
+      - 长度与选项数不符
+      - 含 NaN / Inf（``random.choices`` 会抛 ValueError）
+      - 含非数值项
+      - 正权重总和为 0（全 0 或全负，同样抛 ValueError / 除零）
+    """
+    if not isinstance(weights, (list, tuple)) or len(weights) != n:
+        return False
+    positive_total = 0.0
+    for w in weights:
+        if isinstance(w, bool) or not isinstance(w, (int, float)):
+            return False
+        if math.isnan(w) or math.isinf(w):
+            return False
+        if w > 0:
+            positive_total += w
+    return positive_total > 0
+
+
+def sanitize_weights(
+    weights: Any,
+    n: int,
+    *,
+    question: int | None = None,
+    label: str = "权重",
+    warn: Callable[[str], None] | None = None,
+) -> Optional[list[float]]:
+    """返回可直接用于加权采样的权重列表；不合法时返回 ``None`` 让调用方降级。
+
+    Why：权重非法抛出的 ``ValueError`` 不在 ``TRANSIENT_DOM_EXCEPTIONS`` 内，
+    会让**整批任务**在第一道题就终止 —— 代价与「这一题按等权重随机」完全不成
+    比例。CLI 已在加载期硬校验，本函数是 GUI（校验仅告警）与手写 WEIGHT_CONFIG
+    的运行时兜底。
+    """
+    if weights_are_usable(weights, n):
+        return [float(w) for w in weights]
+    msg = f"  WARNING: Q{question} {label}非法（长度/NaN/总和为 0），已按等权重处理" \
+        if question is not None \
+        else f"  WARNING: {label}非法（长度/NaN/总和为 0），已按等权重处理"
+    (warn or print)(msg)
+    return None
+
+
+# ============================================================================
+#  加权无放回抽样 —— v1(answering) 与 v2(answering_v2) 共用这一份实现
+# ============================================================================
+
+def weighted_sample_no_replace(
+    pool: list,
+    weights: Any,
+    k: int,
+) -> list:
+    """从 ``pool`` 里按 ``weights`` 无放回抽 k 个，返回**升序**结果。
+
+    单一实现的原因：这段逻辑此前在 answering.py 与 answering_v2.py 各有一份
+    （都是 A-Res / numpy 概率法），而两副本的行为并不相同 ——
+    answering.py 的 numpy 分支缺非法权重守卫，全 0 权重直接 ZeroDivisionError，
+    answering_v2 那份早就修好了。副本只要存在，就会出现"修了一边忘了另一边"。
+
+    非法权重（长度不符 / NaN / 总和为 0）一律降级为等概率抽样，
+    判定与 :func:`weights_are_usable` 共用同一把尺子。
+    """
+    n = len(pool)
+    if n == 0:
+        return []
+    k = max(1, min(int(k), n))
+
+    usable = weights_are_usable(weights, n)
+    # numpy 的 p= 抽样要求"非零概率的条目数 >= k"，否则抛
+    # ValueError: Fewer non-zero entries in p than size。
+    # 权重形如 [0, 0, 1] 而 k=2 时就会撞上（多选题里很自然：用户只想让一个选项出现，
+    # 但仍要求填满足少选个数）。此时走 A-Res —— 它给零权重一个 1e-12 的兜底。
+    positive_cnt = (
+        sum(1 for w in weights if w > 0) if usable else 0
+    )
+
+    if _HAS_NUMPY and (not usable or positive_cnt >= k):
+        if usable:
+            total = sum(weights)
+            probs = [w / total for w in weights]
+            picked = np.random.choice(n, size=k, replace=False, p=probs)
+        else:
+            picked = np.random.choice(n, size=k, replace=False)
+        return sorted(pool[int(i)] for i in picked)
+
+    # A-Res（Efraimidis & Spirakis）：key = log(u)/w，取 top-k。
+    # 零/负权重不能直接除，给一个 1e-12 的下限 —— 于是它"几乎不会被选中"，
+    # 但在 k 大于正权重个数时仍能凑够 k 个不同选项（v1 原本就是这个行为）。
+    _W_FLOOR = 1e-12
+    pairs: list[tuple[float, Any]] = []
+    for i in range(n):
+        if usable:
+            w = float(weights[i])
+        else:
+            w = 1.0
+        pairs.append((math.log(random.random()) / max(w, _W_FLOOR), pool[i]))
+    pairs.sort(reverse=True)
+    return sorted(item for _, item in pairs[:k])
+
+
+def equal_sample_no_replace(pool: list, k: int) -> list:
+    """无放回等概率抽样，返回升序结果。"""
+    n = len(pool)
+    if n == 0:
+        return []
+    k = max(1, min(int(k), n))
+    if _HAS_NUMPY:
+        return sorted(pool[int(i)] for i in np.random.choice(n, size=k, replace=False))
+    return sorted(random.sample(pool, k=k))

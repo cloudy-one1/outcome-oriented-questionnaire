@@ -2,10 +2,10 @@
 
 > 基于 Selenium Stealth 的问卷星批量填写与提交工具：加权随机作答、人类行为模拟、智能验证码检测，提供 CLI 与 GUI 两种使用方式。
 
-[![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![CI](https://github.com/cloudy-one1/outcome-oriented-questionnaire/actions/workflows/ci.yml/badge.svg)](https://github.com/cloudy-one1/outcome-oriented-questionnaire/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.4.0-brightgreen.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-2.6.0-brightgreen.svg)](CHANGELOG.md)
 
 本工具仅供学习与研究 Selenium 浏览器自动化技术使用，请务必遵守问卷星平台使用条款与相关法律法规（详见[免责声明](#免责声明)）。
 
@@ -29,7 +29,7 @@
 
 ### 环境要求
 
-- Python 3.9+
+- Python 3.10+（`src/models.py` 使用 `@dataclass(slots=True)`，3.10 是真实下限）
 - Microsoft Edge 或 Google Chrome（WebDriver 由 Selenium Manager 自动管理）
 
 ### 安装
@@ -91,14 +91,14 @@ python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 1 --save-config ./con
 | `-n, --count N` | `17` | 提交份数；配合 `--target-success` 时解释为「目标成功份数」 |
 | `-b, --browser` | `edge` | 浏览器类型：`edge` / `chrome` |
 | `--uc` | 关 | 仅 Chrome 生效：优先使用 undetected-chromedriver，失败自动回退原生 Selenium |
-| `-c, --config PATH` | 无 | 从 JSON 加载权重配置（schema 2.0）并热更新 |
+| `-c, --config PATH` | 无 | 从 JSON 加载权重配置（schema 2.0），**整体替换**当前配置；校验不通过则拒绝运行并以退出码 2 结束 |
 | `--save-config PATH` | 无 | 运行结束后把当前权重保存为 JSON 模板 |
 | `-H, --history PATH` | 关 | 启用 SQLite 历史记录（指定 DB 路径） |
 | `--stats` | 关 | 运行结束后打印全库统计（需配合 `--history`） |
 | `--no-record-text` | 关 | 隐私保护：填空题答案不写入 SQLite（DOM 仍需填入真实文本） |
 | `--target-success` | 关 | 把 `-n` 解释为「目标成功份数」，达成即提前结束 |
 | `--max-attempts N` | `2×n` | 仅 `--target-success` 时生效：最大尝试次数上限 |
-| `--resume` | 关 | 断点续传：从同 URL 最近一次未完成批次继续（需配合 `--history`） |
+| `--resume` | 关 | 断点续传：复用同 URL 最近一次未完成批次的 run_id、计数与权重快照，并沿用其计划总份数（需配合 `--history`） |
 | `--log-file PATH` | 关 | 启用 logging 并把运行日志写入指定文件 |
 
 ### GUI 使用
@@ -112,7 +112,11 @@ python run_gui.py
 3. 点击 **🔍 探测题目** 自动识别问卷结构
 4. 在权重表格中按题型填写权重（格式见[权重配置](#权重配置)）
 5. 可选：点 **⭐ 另存默认** 存为 `configs/default_weight_config.json`，下次启动自动加载
-6. 点 **▶ 开始运行**；运行中可随时切到 **📜 历史记录** Tab 查看批次列表与答题明细，**⏹ 停止** 可随时优雅中断
+6. 可选：取消 **🔒 不记录填空文本** 才会把填空题原文写入历史库（默认勾选，即默认不写）
+7. 点 **▶ 开始运行**；运行中可随时切到 **📜 历史记录** Tab 查看批次列表与答题明细，**⏹ 停止** 可随时优雅中断
+
+> 关闭窗口会先请求停止并等待当前轮次收尾（上限 30s），再关闭浏览器并闭合历史记录 ——
+> 直接强杀进程会让 `runs` 表停在中途状态并残留浏览器进程。
 
 ---
 
@@ -129,6 +133,8 @@ python run_gui.py
   - **CLI**：加 `--resume` 自动查找 24 小时内最近的未完成批次，复用其批次号与计数、接续答案编号，从第 K+1 份继续
   - **GUI**：自动弹出对话框「Run #N · 已成功 K/M 份 · 是否从第 K+1 份继续？」
 - 续传同时会从该批次的权重快照（`weight_config_json`）自动恢复上次使用的权重配置，确保「最后使用的权重就是用户设置的」
+- 续传默认**沿用上次的计划总份数**（不是 `-n` 的默认 17）；显式给 `-n` 时以你输入的为准
+- 显式给了 `--config` 时以文件为准，不再从快照恢复权重
 
 异常崩溃的批次记为 `failed`（不可恢复）；只有主动中断的批次可续传。
 
@@ -274,33 +280,83 @@ WEIGHT_CONFIG = {
 
 ## 开发与测试
 
+安装开发工具（钉版本，避免上游发版悄悄改变门禁口径）：
+
+```bash
+pip install -r requirements-dev.txt
+```
+
 ```bash
 # 全量测试（含依赖真实浏览器驱动的 E2E）
 python -m pytest tests/ -v
 
-# 离线套件（无浏览器环境 / CI，207 项）
-python -m pytest tests/ --ignore=tests/test_e2e_integration.py -q
+# 离线套件（无浏览器环境 / CI，285 项）
+python -m pytest tests/ -m "not integration" -q
+
+# 仅浏览器 E2E（需本机 Edge / Chrome + WebDriver，5 项）
+python -m pytest tests/ -m integration -q
 ```
 
-当前测试全部通过：**209 项**（离线 207 + E2E 2）。E2E 使用 `tests/fixtures/mock_wjx.html` 作为离线 mock 问卷，但仍需本机 Edge / Chrome + WebDriver 才能跑通全链路。
+当前测试全部通过：**290 项**（离线 285 + E2E 5）。
 
-代码质量：
+### 代码质量门禁
 
-```bash
-python -m ruff check .        # 静态检查（配置见 ruff.toml）
-```
+| 门禁 | 命令 | 当前状态 |
+|---|---|---|
+| 静态检查 | `python -m ruff check .` | 通过 |
+| 类型检查 | `npx pyright` | `src/` **0 error 0 warning**（不设 baseline） |
+| 覆盖率 | `pytest --cov=src --cov=gui --cov-fail-under=43` | 实测 **44%**，地板 43% 只许上调 |
 
-推送会触发 GitHub Actions（`.github/workflows/ci.yml`）：ruff + 离线测试。命名约定：布尔变量使用 `is_` / `has_` / `should_` / `use_` 前缀；题型字符串优先经 `models.normalize_question_type` 归一化。
+- **`ruff.toml`** 启用 `E9/F63/F7/F82` + `F401/F841/F541`。后三条是刻意加的零误报
+  「接线断链」防线：v2.4 的 `--resume` 静默失效（`main()` 算出 `resume_fail`
+  却没传给 `run_batch`）正是 `F841` 一条规则就能在 CI 拦住的真实缺陷。
+- **`pyrightconfig.json`** 目前只纳入 `src/` 与入口脚本。`gui/` 还有 33 条诊断
+  （绝大多数是同一类 Tkinter 写法：往 Frame 子类上赋值、向 `dict[str, str]`
+  塞 list），属纯风格改造，见下方「已知缺口」。
+- **JS 生成器有真语法校验**：`tests/test_js_scripts.py` 会用 `node --check`
+  实际解析每个脚本生成器的输出（本机无 node 时降级为退化片段检测）。
+  但它只能保证**语法**合法 —— `input[name='q' + q + '']` 这类
+  "语法合法、语义非法"的错选择器只有真浏览器 E2E 抓得住，v2.6 就抓到过一次。
+
+### E2E 覆盖范围
+
+`tests/fixtures/mock_wjx.html` 是一份 11 题的离线 mock 问卷（6 类题型 +
+一道 2~10 分的非 1 起量表），页面内用 JS 模拟问卷星的 AJAX 提交
+（URL 不变、延迟渲染「提交成功」文案，并记录提交按钮被点的次数）。
+E2E 因此覆盖到 `run_one_submission` 的完整链路、提交只点一次的保证，
+以及量表边界识别。
+
+### 已知缺口（诚实记录）
+
+| 模块 | 离线覆盖率 | 说明 |
+|---|---|---|
+| `src/logging_setup.py` | 0% | 仅 `--log-file` 路径，无单测 |
+| `src/browser/driver_factory.py` | 9% | 需真实浏览器；E2E 走的是裸 selenium 而非本模块 |
+| `src/pipeline.py` | 26% | 编排层，E2E 已覆盖主干 |
+| `src/verification.py` | 34% | 人工介入路径难以自动化 |
+| `gui/` | 13%~35% | 主题/动画/面板基本无测；`_run_loop` 已有契约测试 |
+
+推送会触发 GitHub Actions（`.github/workflows/ci.yml`）：ruff + pyright +
+带覆盖率地板的离线测试，外加一个非阻塞的真实浏览器 E2E job。
+命名约定：布尔变量使用 `is_` / `has_` / `should_` / `use_` 前缀；
+题型字符串优先经 `models.normalize_question_type` 归一化。
 
 ---
 
 ## 隐私保护建议
 
-`--no-record-text` 仅控制 SQLite `answers.text_answer` 列的写入；DOM 仍需填入真实文本（否则提交会失败）。如担心本地历史库包含敏感内容：
+`--no-record-text`（CLI）/「🔒 不记录填空文本」（GUI）仅控制 SQLite `answers.text_answer` 列的写入；DOM 仍需填入真实文本（否则提交会失败）。
 
-1. 长期开启 `--no-record-text`，仅记录选项索引与题型
+**默认值不同**：CLI 默认 `关`（会记录），GUI 默认 `开`（不记录）——因为 GUI 会无条件把历史库写到 `data/history.db`，默认不落地原文是更安全的取舍。想保留填空原文供分析的话，在 GUI 里取消勾选即可。
+
+如担心本地历史库包含敏感内容：
+
+1. 长期开启 `--no-record-text` / GUI 勾选锁，仅记录选项索引与题型
 2. 定期使用 GUI「🗑 清理 7 天前」或 `purge_old(days_older_than=7)` 清理
 3. 敏感问卷跑完后直接删除 `data/history.db`
+4. `data/`、`configs/`、`*.db`、`*.csv` 已列入 `.gitignore` —— 历史库和权重预设里都有可识别文本，别靠手动留意来防一次 `git add -A`
+
+> 导出的 CSV 中，以 `=` `+` `-` `@` 开头的单元格会被自动加前缀 `'`，避免问卷页面回传的文本在 Excel/WPS 里被当作公式执行。
 
 ---
 

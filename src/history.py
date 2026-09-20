@@ -8,12 +8,18 @@
 
 设计原则：
     - 零外部依赖，仅用 Python 内置 sqlite3 + json + threading.Lock
-    - 线程安全：所有 DB 操作串行化（适合 GUI + 后台线程并发写场景）
+    - 进程内线程安全：所有 DB 操作经一把 Lock 串行化。
+      前提只有一个连接实例 —— GUI 侧务必复用 SubmissionHistory 单例
+      （各开各的连接的话，这把锁跨不了连接，串行化就是空话）。
+      跨进程（GUI 开着时再跑 CLI）靠 WAL + busy_timeout 兜。
     - 连接不泄漏：__init__ 开连接，close() 关连接，支持 with 语法
+    - schema 版本化：迁移按 PRAGMA user_version 只跑一次，
+      含全表扫描的升级脚本绝不放在每次打开库的路径上
 
 使用示例::
 
     with SubmissionHistory("history.db") as db:
+        db.reap_stale_runs()                       # 收尾上次被强杀的批次
         rid = db.start_run(url, 100, "edge", False)
         ... (record_answer 每次记录) ...
         db.finish_run(rid, 98, 2, 1234.56)
@@ -22,11 +28,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import threading
 from contextlib import contextmanager
-from typing import Any, Iterable, Iterator, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
@@ -93,6 +102,8 @@ _MIGRATION_ANSWERS_UNIQUE_INDEX: str = (
 
 # 老库可能已存在重复数据（旧版 record_answer 无幂等保证时 retry 产生）：
 # 删除重复行只保留 max(id) 的那条，否则建唯一索引会失败。
+# 注意：这是**全表扫描 + 删除**，只允许在版本升级时跑一次（见 _MIGRATIONS），
+# 不能放在每次打开库的路径上 —— 此前它每次 GUI 打开历史 Tab 都会执行一遍。
 _DEDUP_ANSWERS_SQL: str = """
 DELETE FROM answers
 WHERE id NOT IN (
@@ -101,6 +112,52 @@ WHERE id NOT IN (
 );
 """
 
+# 目标 schema 版本（写入 SQLite 的 ``PRAGMA user_version``）
+_SCHEMA_VERSION: int = 2
+
+
+def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
+    """v1 → v2：补 weight_config_json 列 + answers 幂等化（去重 + 唯一索引）。"""
+    # SQLite 没有 ALTER TABLE ADD COLUMN IF NOT EXISTS，先看列存不存在
+    cur = conn.execute("PRAGMA table_info(runs)")
+    cols = {row[1] for row in cur.fetchall()}
+    if "weight_config_json" not in cols:
+        conn.execute(_MIGRATION_ADD_WEIGHT_COLUMN)
+
+    # 建唯一索引失败的唯一原因就是有重复数据，所以先 dedup
+    try:
+        conn.execute(_DEDUP_ANSWERS_SQL)
+    except sqlite3.Error:
+        pass
+    try:
+        conn.execute(_MIGRATION_ANSWERS_UNIQUE_INDEX)
+    except sqlite3.Error:
+        # dedup 没清干净（极端并发）时跳过建索引：
+        # record_answer 里 DELETE+INSERT 的应用层幂等仍然兜得住
+        logger.warning(
+            "answers 唯一索引创建失败，重复答案防护降级为应用层幂等",
+            exc_info=True,
+        )
+
+
+# 迁移脚本表：key = 升级**到**的版本号。只跑一次，跑完写进 user_version。
+_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
+    2: _migrate_v1_to_v2,
+}
+
+
+def _require_lastrowid(cur: sqlite3.Cursor, what: str) -> int:
+    """取 INSERT 的自增主键；lastrowid 为 None 时给出可定位的报错。
+
+    sqlite3 的类型桩把 lastrowid 标成 int | None。直接 int(...) 在 None 上
+    抛的是 "TypeError: int() argument must be a string..."，
+    调用方看不出是哪条 INSERT 出的问题。
+    """
+    rid = cur.lastrowid
+    if rid is None:
+        raise sqlite3.Error(f"{what}: INSERT 未返回 lastrowid")
+    return int(rid)
+
 
 class SubmissionHistory:
     """SQLite 历史记录持久化。线程安全。"""
@@ -108,10 +165,11 @@ class SubmissionHistory:
     # ------------------------------------------------------------------
     # 生命周期
     # ------------------------------------------------------------------
-    def __init__(self, db_path: str) -> None:
-        """打开（或创建）SQLite 数据库并执行建表。
+    def __init__(self, db_path: str, busy_timeout_ms: int = 5000) -> None:
+        """打开（或创建）SQLite 数据库并执行建表 + 版本化迁移。
 
         :param db_path: SQLite 文件路径；允许 ':memory:' 做内存库（测试用）。
+        :param busy_timeout_ms: 库被其他连接写锁住时的等待上限。
         """
         self.db_path: str = db_path
         # 同一个库文件，第一次建表时目录必须存在
@@ -123,50 +181,46 @@ class SubmissionHistory:
             db_path,
             check_same_thread=False,     # 允许跨线程访问（我们自己用 Lock 保护）
             isolation_level=None,        # autocommit 模式：每条 DML 立即落盘，GUI 实时可查
+            timeout=busy_timeout_ms / 1000.0,
         )
         self._conn.row_factory = sqlite3.Row   # 查询返回 dict-like Row
         self._lock: threading.Lock = threading.Lock()
 
         # 开启外键级联（purge_old 需要删 runs 的同时删 answers）
         self._conn.execute("PRAGMA foreign_keys = ON;")
+        # 显式忙等超时：默认 5s 太短且报错被上层静默吞掉，导致 runs 行永停 running。
+        # 这里同时把它调大，并在下方开 WAL 让"GUI 读 + CLI 写"不再互相阻塞。
+        self._conn.execute(f"PRAGMA busy_timeout = {int(busy_timeout_ms)};")
+        # WAL：:memory: 不支持（会原样返回 'memory'），故不检查结果、也不报错。
+        # 有了 WAL，历史 Tab 的读查询不会再和批量提交的写事务抢同一把 RESERVED 锁。
+        try:
+            self._conn.execute("PRAGMA journal_mode = WAL;")
+        except sqlite3.Error:
+            pass
         # 建表
         with self._locked():
             self._conn.executescript(_SCHEMA_SQL)
-        # 老库迁移：补列（幂等）
+        # 版本化迁移：只跑尚未应用的版本（幂等）
         self._apply_migrations()
 
     def _apply_migrations(self) -> None:
-        """V2.1 / V2.2 迁移，幂等：
+        """按 ``PRAGMA user_version`` 逐版升级，跑完立刻落版本号。
 
-        - V2.1：把老 runs 表加上 ``weight_config_json`` 列
-        - V2.2：清理 answers 重复数据 + 创建 (run_id, submission_index,
-          question_number) 唯一索引，从结构上根除 retry 重试产生的重复记录。
-
-        SQLite 没有 ``ALTER TABLE ADD COLUMN IF NOT EXISTS`` 语法，
-        所以用 ``PRAGMA table_info`` 查列名集合后再决定是否 ADD。
+        为什么要有版本号：v2.2 的"去重 + 建唯一索引"里含一次**全表**
+        ``DELETE ... WHERE id NOT IN (SELECT MAX(id) ... GROUP BY ...)``。
+        此前它写在构造路径上，于是每次打开库（GUI 每点一次历史 Tab）都要重扫一遍，
+        而且是在 Tk 主线程上。有了版本号之后它只在真正需要升级的老库上跑一次。
         """
         with self._locked():
-            # --- V2.1: runs.weight_config_json 列 ---
-            cur = self._conn.execute("PRAGMA table_info(runs)")
-            cols = {row["name"] for row in cur.fetchall()}
-            if "weight_config_json" not in cols:
-                self._conn.execute(_MIGRATION_ADD_WEIGHT_COLUMN)
-
-            # --- V2.2: answers 幂等性 ---
-            # 1) 先清理老库里 retry 产生的重复行（保留 max(id)）
-            #    CREATE UNIQUE INDEX 失败的唯一原因就是有重复数据，所以先 dedup
-            try:
-                self._conn.execute(_DEDUP_ANSWERS_SQL)
-            except Exception:
-                # 极端情况（表不存在等）：忽略，主流程已 executescript 建表
-                pass
-            # 2) 创建唯一索引（IF NOT EXISTS 保证幂等）
-            try:
-                self._conn.execute(_MIGRATION_ANSWERS_UNIQUE_INDEX)
-            except Exception:
-                # 如果 dedup 没清干净（极端并发场景），跳过索引创建，
-                # 至少 INSERT OR REPLACE 的应用层幂等逻辑依然生效
-                pass
+            row = self._conn.execute("PRAGMA user_version").fetchone()
+            current = int(row[0]) if row else 0
+            for version in sorted(_MIGRATIONS):
+                if version <= current:
+                    continue
+                _MIGRATIONS[version](self._conn)
+                # user_version 不接受参数绑定，只能拼字符串；version 来自
+                # _MIGRATIONS 的整型键，不是外部输入。
+                self._conn.execute(f"PRAGMA user_version = {int(version)};")
 
     def close(self) -> None:
         """关闭数据库连接（幂等）。"""
@@ -253,7 +307,7 @@ class SubmissionHistory:
                     wc_json,
                 ),
             )
-            return int(cur.lastrowid)
+            return _require_lastrowid(cur, "start_run")
 
     @staticmethod
     def deserialize_weight_config(row: sqlite3.Row) -> dict[int, dict]:
@@ -353,7 +407,7 @@ class SubmissionHistory:
                         int(elapsed_ms),
                     ),
                 )
-                return int(cur.lastrowid)
+                return _require_lastrowid(cur, "record_answer")
             except sqlite3.IntegrityError:
                 # 可读性建议 5.1：收窄到唯一能触发兜底的异常——违反唯一索引
                 # （老库 dedup 失败或极端并发产生重复）。
@@ -399,7 +453,7 @@ class SubmissionHistory:
                 int(elapsed_ms),
             ),
         )
-        return int(cur.lastrowid)
+        return _require_lastrowid(cur, "_record_answer_fallback")
 
     # ------------------------------------------------------------------
     # 查询 API
@@ -409,11 +463,18 @@ class SubmissionHistory:
         limit: int = 50,
         status: Optional[str] = None,
     ) -> list[sqlite3.Row]:
-        """查询 runs，按 started_at 倒序（最新在前）。"""
+        """查询 runs，按 started_at 倒序（最新在前）。
+
+        必须带 ``id DESC`` 兜底：``started_at`` 用 ``datetime('now')`` 写入，
+        **精度只有 1 秒**，同一秒内建的多个批次排序不确定。
+        """
         if status:
-            sql = "SELECT * FROM runs WHERE status=? ORDER BY started_at DESC LIMIT ?"
+            sql = (
+                "SELECT * FROM runs WHERE status=?"
+                " ORDER BY started_at DESC, id DESC LIMIT ?"
+            )
             return self._query(sql, (status, int(limit)))
-        sql = "SELECT * FROM runs ORDER BY started_at DESC LIMIT ?"
+        sql = "SELECT * FROM runs ORDER BY started_at DESC, id DESC LIMIT ?"
         return self._query(sql, (int(limit),))
 
     def find_resumable_run(
@@ -436,7 +497,9 @@ class SubmissionHistory:
             "WHERE survey_url = ? "
             "  AND status IN ('interrupted', 'running') "
             "  AND started_at >= datetime('now', ?) "
-            "ORDER BY started_at DESC LIMIT 1"
+            # id DESC 兜底：started_at 只有秒级精度，同秒内建的两个批次若不加兜底，
+            # LIMIT 1 命中哪一条是不确定的 —— 续传挑错批次会直接导致重复提交。
+            "ORDER BY started_at DESC, id DESC LIMIT 1"
         )
         return self._query_one(sql, (survey_url, f"-{int(max_age_hours)} hours"))
 
@@ -449,6 +512,36 @@ class SubmissionHistory:
         sql = "SELECT success_count FROM runs WHERE id = ?"
         row = self._query_one(sql, (int(run_id),))
         return int(row["success_count"]) if row else 0
+
+    def reap_stale_runs(self, stale_after_minutes: int = 60) -> int:
+        """把卡在 ``running`` 的孤儿批次改判为 ``failed``，返回处理条数。
+
+        为什么需要：``status='running'`` 只有一处能写（start_run），也只有在
+        正常收尾时才会被 finish_run 覆写。进程被强杀 / 断电 / 任务管理器结束
+        进程时，收尾代码根本没跑，那一行就永远停在 ``running``。
+        而 ``find_resumable_run`` 把 ``running`` 也算可恢复，于是下次启动会
+        提示"从这份继续"—— 一个早已死掉的进程留下的批次，页面与浏览器状态
+        完全未知，续传它等于赌博（最坏是重复提交）。
+
+        崩溃批次应有的语义是 ``failed``（RunState.mark_crashed 就是这么定的），
+        本方法就是把漏掉的那步在下次启动时补上。
+
+        :param stale_after_minutes: 只处理开始时间早于此阈值的行，避免把
+                                    **另一个进程正在跑**的批次误判掉
+                                    （GUI 开着同时跑 CLI 是正常用法）。
+        """
+        sql = (
+            "UPDATE runs "
+            "SET status = 'failed', "
+            "    error_message = COALESCE(error_message, '') "
+            "        || ' · 未正常收尾，判为崩溃批次', "
+            "    finished_at = COALESCE(finished_at, started_at) "
+            "WHERE status = 'running' "
+            "  AND started_at < datetime('now', ?) "
+        )
+        with self._locked():
+            cur = self._conn.execute(sql, (f"-{int(stale_after_minutes)} minutes",))
+            return int(cur.rowcount or 0)
 
     def mark_interrupted(
         self,

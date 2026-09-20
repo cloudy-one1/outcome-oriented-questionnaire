@@ -23,10 +23,24 @@ import json
 # ============================================================================
 
 def click_option_script(q: int, choice: int) -> str:
-    """js_click_option 的 JS：人类行为增强的"某题某个选项"点击。"""
+    """js_click_option 的 JS：人类行为增强的"某题某个选项"点击。
+
+    ``q`` / ``choice`` 经 ``json.dumps`` 落成 **JS 字面量**赋给局部变量，
+    之后的 selector 由 JS 运行时拼接 —— 不再把值直接插进 JS 源码。
+    原因：此前 ``choice`` 被裸插值进 ``value='{choice}'`` 这类字符串字面量里。
+    今天它拿到的永远是 ``parseInt`` 后的整数（detection 保证），所以不可利用；
+    但"某个 DOM 文本会不会带引号"是**页面说了算**的属性 —— 问卷结构一变，
+    这行就成了在问卷页面上下文里执行任意 JS 的通道。json.dumps 之后
+    值再也不可能被解析成代码，这条边界不再依赖上游数据的形状。
+    本模块其余站点（fill_text / dropdown / matrix）本来就是这么做的。
+    """
+    q_json = json.dumps(q)
+    choice_json = json.dumps(choice)
     return f"""
-        var input = document.querySelector('#q{q}_{choice}') ||
-                    document.querySelector("input[name='q{q}'][value='{choice}']");
+        var q = {q_json};
+        var choice = {choice_json};
+        var input = document.querySelector('#q' + q + '_' + choice) ||
+                    document.querySelector('input[name="q' + q + '"][value="' + choice + '"]');
         if (!input) return false;
 
         // ---- 点击前：把选项滚动到可视位置 ----
@@ -73,7 +87,7 @@ def click_option_script(q: int, choice: int) -> str:
 
         // ---- 单选：清掉同题其他选项 ----
         if (input.type === 'radio') {{
-            document.querySelectorAll("input[name='q{q}']").forEach(function(sib) {{
+            document.querySelectorAll('input[name="q' + q + '"]').forEach(function(sib) {{
                 if (sib !== input) {{
                     sib.checked = false;
                     sib.dispatchEvent(new Event('change', {{bubbles: true}}));
@@ -206,14 +220,26 @@ def fill_text_script(q: int, text: str) -> str:
 #  scale 模块：量表打分
 # ============================================================================
 
-def set_scale_script(q: int, value: int, scale_max: int | None) -> str:
-    """js_set_scale 的 JS：优先 radio 命中；否则 area 第 value 个子项点击。"""
+def set_scale_script(
+    q: int, value: int, scale_max: int | None, scale_min: int | None = None
+) -> str:
+    """js_set_scale 的 JS：优先 radio 命中；否则 area 第 value 个子项点击。
+
+    :param scale_min: 量表起始分值，默认 1。策略 B 把分值换算成子项下标，
+        必须知道起点：2~10 分的量表里 value=10 是第 **9** 个子项（下标 8），
+        写死 ``val - 1`` 会点错一格、越界时静默落到最后一格。
+    """
     v_int = int(value)
-    sm = "" if scale_max is None else str(int(scale_max))
+    # None 必须落成 JS 字面量 null：此前落成空串会产出 "var scaleMax = ;"，
+    # 是语法错误 → JavascriptException → 重试 3 次 → 该题记为失败。
+    # 下方 JS 已有 `if (!scaleMax) scaleMax = items.length;` 的兜底，null 正是它期望的输入。
+    sm = "null" if scale_max is None else str(int(scale_max))
+    smin = 1 if scale_min is None else int(scale_min)
     return rf"""
         var q = {q};
         var val = {v_int};
         var scaleMax = {sm};
+        var scaleMin = {smin};
 
         // ---- 策略 A：找到带 name="qN" 的隐藏 radio（最常见） ----
         var radios = document.querySelectorAll('input[type="radio"][name="q' + q + '"]');
@@ -252,8 +278,9 @@ def set_scale_script(q: int, value: int, scale_max: int | None) -> str:
                 if (/item|star|level|score|point|right|ok|full/.test(cls)) items.push(k);
                 else if (/^\d+$/.test((k.textContent || '').trim())) items.push(k);
             }});
-            if (!scaleMax) {{ scaleMax = items.length; }}
-            var idx = val - 1;
+            if (!scaleMax) {{ scaleMax = scaleMin + items.length - 1; }}
+            // 分值 → 子项下标：量表不一定从 1 起（如 2~10 分），必须减 scaleMin 而不是 1
+            var idx = val - scaleMin;
             if (idx < 0) idx = 0;
             if (idx >= items.length) idx = items.length - 1;
             var tgt = items[idx];

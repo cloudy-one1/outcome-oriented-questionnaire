@@ -14,8 +14,7 @@
 
 from __future__ import annotations
 
-import time
-from typing import Any, Optional
+from typing import Any
 
 from selenium.common.exceptions import WebDriverException
 
@@ -68,10 +67,10 @@ from .exceptions import (
 # V2.4 整改：收窄到 ImportError——history 是纯 Python 无 Selenium 依赖，
 # 旧版捕获 TRANSIENT_DOM_EXCEPTIONS 的分支永不可达，只会误导维护者。
 try:
-    from .history import SubmissionHistory  # type: ignore
+    from .history import SubmissionHistory
     _HAS_HISTORY: bool = True
 except ImportError:  # pragma: no cover
-    SubmissionHistory = None  # type: ignore
+    SubmissionHistory = None
     _HAS_HISTORY = False
 
 
@@ -121,7 +120,7 @@ def _do_one_submission_core(
         return SUBMIT_FAILED
 
     # Step 4 等题目元素
-    if not _wait_for_questions(driver, QUESTION_DETECT_TIMEOUT):
+    if not _wait_for_questions(driver, QUESTION_DETECT_TIMEOUT, hold_lock=lock):
         driver.switch_to.default_content()
         return SUBMIT_FAILED
 
@@ -207,7 +206,16 @@ def _do_one_submission_core(
         raise_non_recoverable(_e)
         pass
 
-    driver.switch_to.default_content()
+    # 成功已成事实：此处清理绝不能向上抛。
+    # 此前它裸在 try 外，提交跳转导致 NoSuchWindowException 时会冒泡到
+    # run_one_submission 的 @retry_with_backoff(retry_on=WebDriverException)，
+    # 把**已经成功提交**的问卷整份重填重交一遍（重复提交）。
+    try:
+        driver.switch_to.default_content()
+    except TRANSIENT_DOM_EXCEPTIONS:
+        pass
+    except Exception as _e:
+        raise_non_recoverable(_e)
     return SUBMIT_SUCCESS
 
 

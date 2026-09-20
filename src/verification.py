@@ -15,31 +15,67 @@
 
 from __future__ import annotations
 
+import logging
+import threading
 import time
 from typing import Any
 
 from .config import VERIFICATION_TIMEOUT
 from .utils import ManualHoldLock
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
-#  Windows 弹窗强制切前台 — 当检测到验证码时，弹出一个 MessageBox
-#  将脚本窗口强制拉到最前面，提醒用户手动处理验证
+#  Windows 弹窗提示 — 当检测到验证码时提醒用户手动处理
+#
+#  关键约束：**绝不能阻塞调用线程**。MessageBoxW 是同步模态框，返回前不释放
+#  控制权；本函数过去直接在批量提交的工作线程上调用，于是「没人点确定」就等于
+#  整批任务永久挂起 —— 且 Win32 模态框吃不到 Ctrl+C，GUI 的停止按钮也只是给
+#  state 置位，谁都打不断它。现在改为守护线程弹窗 + 计时器自动关闭。
+#  真正的等待上限由 wait_for_manual_verification 自己的 timeout_seconds 负责。
 # ---------------------------------------------------------------------------
+_FOCUS_TITLE = "问卷脚本 — 需要人工处理"
+_FOCUS_TEXT = (
+    "智能验证已触发，请在浏览器中手动完成验证！\n\n完成后脚本自动继续。"
+)
+_WM_CLOSE = 0x0010
+
 try:
     import ctypes  # Windows API 调用库
+    from ctypes import wintypes
 
-    def force_focus() -> None:
-        """弹出 Windows 系统级消息框，强制将用户注意力拉到脚本。"""
-        ctypes.windll.user32.MessageBoxW(
-            0,  # 父窗口句柄，0 表示无父窗口
-            "智能验证已触发，请在浏览器中手动完成验证！\n\n完成后脚本自动继续。",
-            "问卷脚本 — 需要人工处理",
-            0x30,  # MB_ICONWARNING | MB_OK
-        )
+    def force_focus(auto_close_seconds: float = 25.0) -> None:
+        """非阻塞地弹一次提示框；无人响应则 auto_close_seconds 秒后自动关闭。"""
+        def _show() -> None:
+            try:
+                # MB_ICONWARNING(0x30) | MB_SETFOREGROUND | MB_TOPMOST
+                ctypes.windll.user32.MessageBoxW(
+                    0, _FOCUS_TEXT, _FOCUS_TITLE,
+                    0x30 | 0x00010000 | 0x00040000,
+                )
+            except Exception:
+                logger.debug("验证码提示弹窗失败（忽略，不影响等待）", exc_info=True)
+
+        def _dismiss() -> None:
+            try:
+                hwnd = ctypes.windll.user32.FindWindowW(None, _FOCUS_TITLE)
+                if hwnd:
+                    ctypes.windll.user32.PostMessageW(
+                        wintypes.HWND(hwnd), _WM_CLOSE,
+                        wintypes.WPARAM(0), wintypes.LPARAM(0),
+                    )
+            except Exception:
+                logger.debug("自动关闭验证码提示框失败（忽略）", exc_info=True)
+
+        threading.Thread(target=_show, daemon=True).start()
+        if auto_close_seconds > 0:
+            timer = threading.Timer(auto_close_seconds, _dismiss)
+            timer.daemon = True
+            timer.start()
 
 except ImportError:
     # 非 Windows 系统（Linux/Mac）降级
-    def force_focus() -> None:
+    def force_focus(auto_close_seconds: float = 25.0) -> None:
         pass
 
 
@@ -211,7 +247,7 @@ def wait_for_manual_verification(
                 print(f"    [{waited}s / {timeout_seconds}s] 仍在等待验证...")
 
         # 超时处理
-        print(f"    验证等待超时，正在刷新页面...")
+        print("    验证等待超时，正在刷新页面...")
         try:
             driver.execute_script("""
                 var c = document.querySelector('.layui-layer-close, .layui-layer-btn0,'

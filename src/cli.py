@@ -21,7 +21,8 @@ from __future__ import annotations
 import argparse
 import sys
 from argparse import Namespace
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
 from .config import (
     BROWSER_OPTIONS,
@@ -35,7 +36,9 @@ from .exceptions import (
     format_exc_log,
     raise_non_recoverable,
 )
-from .models import RunState
+from .models import RunState, SubmitOutcome
+
+from . import __version__
 
 
 def _positive_int(value: str) -> int:
@@ -77,7 +80,7 @@ def parse_args(argv: list[str] | None = None) -> Namespace:
         stats    : bool（结束时打印统计）
     """
     parser = argparse.ArgumentParser(
-        description="问卷星自动填写工具（命令行模式 · v2.0）",
+        description=f"问卷星自动填写工具（命令行模式 · v{__version__}）",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -184,6 +187,49 @@ def parse_args(argv: list[str] | None = None) -> Namespace:
     return parser.parse_args(argv)
 
 
+def _quit_quietly(driver) -> None:
+    """关闭浏览器；失败时强杀驱动进程，绝不向上抛。
+
+    调用点全部在清理路径（重建 driver / 周期性重启 / finally 收尾），
+    这里抛出会把一次已成功的提交变成批次崩溃。
+
+    v2.6：此前各处手写 ``try: driver.quit() except: pass``。quit() 失败时
+    旧 driver 被解绑、再无人引用，浏览器 + 驱动进程就此孤儿化且**无任何痕迹** ——
+    而 RESTART_BROWSER_EVERY=30 的长批次里，恰恰是内存堆积严重时 quit() 最容易失败，
+    600 份能泄漏 20 个浏览器。现在至少把驱动进程按掉并留一行日志。
+    """
+    from .exceptions import format_exc_log
+
+    exc: BaseException | None = None
+    try:
+        driver.quit()
+    except TRANSIENT_DOM_EXCEPTIONS as e:
+        exc = e
+    except Exception as e:  # noqa: BLE001 - 清理路径，只排除不可恢复的终止信号
+        raise_non_recoverable(e)
+        exc = e
+    if exc is None:
+        return                       # 正常关闭，什么都不做
+
+    # quit() 失败 → 直接终止 WebDriver 服务进程（浏览器会随之退出）
+    killed = False
+    try:
+        proc = getattr(getattr(driver, "service", None), "process", None)
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+            killed = True
+    except Exception:
+        killed = False
+
+    print("  " + format_exc_log(
+        exc,
+        action="driver.quit",
+        recovery="已强杀驱动进程" if killed
+        else "无法终止驱动进程，浏览器可能残留，需手工清理",
+    ))
+
+
 def _cleanup_browser_state(driver) -> None:
     """清理浏览器状态（Cookie / LocalStorage / SessionStorage）。
 
@@ -192,6 +238,60 @@ def _cleanup_browser_state(driver) -> None:
     """
     from .browser import cleanup_browser_state
     cleanup_browser_state(driver)
+
+
+@dataclass
+class RoundOutcome:
+    """一份提交的收尾结果，供 ``run_batch(on_round=...)`` 回调消费。
+
+    存在意义：GUI 需要在每轮结束后刷日志 + 进度条，此前它的做法是把整个
+    run_batch 循环复刻一份。有了这个回调载荷，GUI 只剩"读字段、更新界面"。
+    """
+
+    index: int                 # 绝对第几份（续传时从 resume_start_idx 起算）
+    outcome: SubmitOutcome | str
+    """三态之一，或引擎内部标记：'error'（本轮抛异常）、'browser_dead'（浏览器重建）"""
+    message: str = ""          # 一行人类可读摘要（GUI 直接显示）
+    state: "RunState | None" = None   # 实时状态引用（计数器已更新）
+
+    @property
+    def is_success(self) -> bool:
+        return self.outcome == "success"
+
+
+def _start_run_quietly(
+    history_db: Any,
+    survey_url: str,
+    total_submissions: int,
+    browser: str,
+    use_uc: bool,
+    weight_config: dict | None,
+    log: "Callable[[str], None]",
+) -> int | None:
+    """写 runs 起点；IO 类失败降级为"本次不记录历史"，代码 bug 照旧上抛。
+
+    建议 5.1 / 5.3 的分层：OSError（磁盘/权限/DB 损坏）允许降级继续跑，
+    ValueError/KeyError 等数据契约错误必须暴露。
+    """
+    try:
+        return int(history_db.start_run(
+            survey_url=survey_url,
+            total_submissions=int(total_submissions),
+            browser=browser,
+            use_uc=bool(use_uc),
+            weight_config=weight_config,
+        ))
+    except OSError as _e:
+        log("  " + format_exc_log(
+            _e, action="history.start_run", recovery="降级为本次不记录历史，继续运行",
+        ))
+        return None
+    except Exception as _e:  # noqa: BLE001 - 先排除不可恢复的终止信号
+        raise_non_recoverable(_e)
+        log("  " + format_exc_log(
+            _e, action="history.start_run", recovery="降级为本次不记录历史，继续运行",
+        ))
+        return None
 
 
 def run_batch(
@@ -208,20 +308,42 @@ def run_batch(
     resume_run_id: int | None = None,
     resume_done: int = 0,
     resume_fail: int = 0,
+    state: RunState | None = None,
+    on_round: "Callable[[RoundOutcome], None] | None" = None,
+    log: "Callable[[str], None] | None" = None,
+    stop_check: "Callable[[], bool] | None" = None,
+    error_suffix: str = "",
 ) -> tuple[int, int]:
-    """批量执行指定份数的问卷提交（v2.0：支持 history 逐题记录）。
+    """批量执行指定份数的问卷提交 —— **CLI 与 GUI 共用的唯一批次引擎**。
 
     说明：selenium / 浏览器驱动等重型依赖在函数内部延迟导入，
          保证 parse_args() 的单测无需装 selenium 也能通过。
+
+    V2.6：GUI 的 ``gui/app.py::_run_loop`` 原本把本函数的 11 步逐字复刻了一份
+    （170 行）。重复的代价已经用两个真实 bug 付过账：v2.4 的 ``lock`` 漏传要在
+    两处各修一次，v2.5 的 ``no_record_text`` / 单轮异常韧性 / 崩溃优先级又是三处
+    双份修改。下面三个回调就是让 GUI 得以删掉那份副本的接缝。
+
+    V2.6 参数（GUI 接缝，CLI 全部不传即保持原行为）：
+        state      : 外部预先构造好的 RunState（GUI 已把 browser / 续传 /
+                     no_record_text / attempts_cap 填进去）。传入时本函数**直接用它**，
+                     且不再从 resume_* 推导计数 —— 续传状态由调用方负责。
+                   为 None 时按 resume_* 新建（CLI 路径）。
+        on_round   : 每完成一份回调一次 ``RoundOutcome``，供 UI 刷日志与进度条。
+        log        : 文本输出目的地，默认 ``print``。GUI 传自己的日志面板方法。
+        stop_check : 每轮开始前询问一次是否应优雅停止（GUI 的停止按钮）。
+                     返回 True → mark_interrupted 并结束批次。
+                     同时透传给 human_pause 的 abort_check，使轮间停顿可被打断。
+        error_suffix : 追加到 runs.error_message 尾部的备注（GUI 用它标注
+                     "GUI · browser=edge uc=False"）。CLI 不传，保持原样。
 
     V2 参数：
         history_db : SubmissionHistory 实例或 None；非 None 时会
                      start_run → 逐题 record_answer → finish_run 完整落盘。
     V2.1 参数：
         weight_config : 启用 history 时把当前 WEIGHT_CONFIG 一并持久化到
-                        runs.weight_config_json，下次 CLI 调用可用 --resume 恢复
-                        （V2.4 起 --resume 已实现，见下）。
-    V2.4 参数（断点续传 --resume）：
+                        runs.weight_config_json，下次 CLI 调用可用 --resume 恢复。
+    V2.4 参数（断点续传 --resume，仅当未传 ``state`` 时生效）：
         resume_run_id : 非 None 时复用该 runs 行（不新建），计数在其上累计。
         resume_done   : 上次已完成的成功份数（success_count 绝对起点；
                         submission_index 从 resume_done+1 接续编号）。
@@ -246,7 +368,11 @@ def run_batch(
         run_one_submission 返回 "success" / "failed" / "unknown" 三态字符串。
     """
     # ----- 延迟导入（运行时强依赖） -----
-    from selenium.common.exceptions import InvalidSessionIdException  # type: ignore
+    from selenium.common.exceptions import (  # noqa: F401 - 供下方 except 分支使用
+        InvalidSessionIdException,
+        NoSuchWindowException,
+        WebDriverException,
+    )
 
     from .browser import BROWSER_TYPES, create_driver  # noqa: F401
     from .config import (
@@ -262,6 +388,9 @@ def run_batch(
     from .interaction import SUBMIT_SUCCESS  # noqa: F401  - 明确"成功"判定
     from .pipeline import run_one_submission
     from .utils import ManualHoldLock, human_pause
+
+    def _log(msg: str) -> None:
+        (log or print)(msg)
 
     # 首次创建浏览器实例
     driver = create_driver(browser, use_uc=use_uc)
@@ -280,72 +409,93 @@ def run_batch(
     if target_success:
         base_cap = int(max_attempts) if max_attempts else (int(total_submissions) * 2)
         attempts_cap = max(1, base_cap - int(resume_done))
-        print(
+        _log(
             f"[模式] 目标成功数 = {total_submissions}，最大尝试次数 = {attempts_cap}"
-            + (f"（不记录填空文本）" if no_record_text else "")
+            + ("（不记录填空文本）" if no_record_text else "")
         )
     else:
         attempts_cap = max(0, int(total_submissions) - int(resume_done))
 
     # V2.3 命名整改（建议第四章）：用 RunState 集中管理批次状态,
     # 替代散落的 success/fail/unknown_count/is_interrupted/run_id 等局部变量
-    state = RunState(attempts_cap=attempts_cap)
+    # V2.6：GUI 传入自己的 state 时直接沿用 —— 它的 attempts_cap / run_id /
+    # success_count 已由 GUI 的续传对话框算好，不能被这里覆盖。
+    caller_owned_state = state is not None
+    if state is None:
+        state = RunState(attempts_cap=attempts_cap)
+    elif not state.attempts_cap:
+        state.attempts_cap = attempts_cap
 
     # ---- V2：start_run（V2.4 续传时改为复用旧 run，不新建） ----
-    if history_db is not None and resume_run_id is not None:
+    if caller_owned_state:
+        # GUI 路径：run_id / 计数 / resume_start_idx 都已在 state 里，
+        # 仅在还没有 run_id 时补一个起点。
+        if history_db is not None and state.run_id is None:
+            state.run_id = _start_run_quietly(
+                history_db, survey_url, int(total_submissions),
+                browser, use_uc, weight_config, _log,
+            )
+        import time as _t3
+        state.total_elapsed_start = _t3.perf_counter()
+        if history_db is not None and state.run_id is not None:
+            if state.resume_start_idx > 1:
+                _log(f"[历史] 续传 Run #{state.run_id}（计数沿用上次，不重置）")
+            else:
+                _log(f"[历史] Run #{state.run_id} 已记录起点")
+    elif history_db is not None and resume_run_id is not None:
         state.run_id = int(resume_run_id)
         state.success_count = int(resume_done)          # 绝对计数，finish_run 覆写为累计值
         state.fail_count = int(resume_fail)
         state.resume_start_idx = int(resume_done) + 1   # 进度显示 / submission_index 接续
         import time as _t0
         state.total_elapsed_start = _t0.perf_counter()
-        print(f"[resume] 续传 Run #{state.run_id}：已完成 {resume_done} 份，"
-              f"本次继续提交 {attempts_cap} 份")
+        _log(f"[resume] 续传 Run #{state.run_id}：已完成 {resume_done} 份，"
+             f"本次继续提交 {attempts_cap} 份")
     elif history_db is not None:
-        try:
-            state.run_id = history_db.start_run(
-                survey_url=survey_url,
-                total_submissions=int(total_submissions),
-                browser=browser,
-                use_uc=bool(use_uc),
-                weight_config=weight_config,
-            )
-            # 跨版本兼容：实际使用 time.perf_counter 统计
-            import time as _t
-            state.total_elapsed_start = _t.perf_counter()
-        except OSError as _e:
-            # 建议 5.1：把 IO/SQLite 异常和代码 bug 分开——只有磁盘/权限/DB 损坏允许降级
-            # （ValueError/KeyError 等数据契约错误应该上抛暴露问题）
-            print("  " + format_exc_log(
-                _e, action="history.start_run", recovery="降级为本次不记录历史，继续运行",
-            ))
-            state.run_id = None
-        except Exception as _e:
-            # 建议 5.3：Ctrl+C/SystemExit 必须上抛
-            raise_non_recoverable(_e)
-            # 其他异常：仍用降级策略，但统一格式日志
-            print("  " + format_exc_log(
-                _e, action="history.start_run", recovery="降级为本次不记录历史，继续运行",
-            ))
-            state.run_id = None
+        import time as _t
+        state.run_id = _start_run_quietly(
+            history_db, survey_url, int(total_submissions),
+            browser, use_uc, weight_config, _log,
+        )
+        state.total_elapsed_start = _t.perf_counter()
+
+    def _emit(res: RoundOutcome) -> None:
+        """回调 on_round（若给了）—— 计数器已在 state 上更新完毕。"""
+        if on_round is not None:
+            try:
+                on_round(res)
+            except Exception as _cb_e:
+                # UI 回调失败绝不能拖垮正在跑的批次
+                raise_non_recoverable(_cb_e)
+                _log("  " + format_exc_log(
+                    _cb_e, action="on_round 回调", recovery="忽略，继续批次",
+                    submission_index=res.index,
+                ))
 
     try:
         # 审查 P2-2：循环上限改为 attempts_cap
         # target_success 模式下 success_count == total_submissions 时也跳出
         while state.current_attempt < state.attempts_cap:
+            # V2.6：GUI 的"停止"按钮通过 stop_check 轮询生效
+            # （CLI 不传该回调，行为不变；Ctrl+C 仍走 KeyboardInterrupt 分支）
+            if stop_check is not None and stop_check():
+                state.mark_interrupted()
+                _log("已停止运行（已成功份数可下次恢复）")
+                break
+
             # target_success 模式：达成目标成功数即可提前结束
             if target_success and state.success_count >= int(total_submissions):
-                print(f"[达成] 成功数 {state.success_count} 已达目标 {int(total_submissions)}，停止")
+                _log(f"[达成] 成功数 {state.success_count} 已达目标 "
+                     f"{int(total_submissions)}，停止")
                 break
             state.advance_attempt()
-            # 打印进度（不换行，后续打印 OK/FAIL/UNKNOWN）
             # V2.4 续传：displayed_round = resume_start_idx + current_attempt - 1（绝对第几份）
             displayed_idx = state.displayed_round
             if target_success:
-                print(f"[尝试{displayed_idx} · 成功{state.success_count}/{total_submissions}]",
-                      end=" ", flush=True)
+                prefix = (f"[尝试{displayed_idx} · "
+                          f"成功{state.success_count}/{total_submissions}]")
             else:
-                print(f"[{displayed_idx}/{total_submissions}]", end=" ", flush=True)
+                prefix = f"[{displayed_idx}/{total_submissions}]"
 
             try:
                 # V2：把 history_db + run_id + submission_index 通过关键字传进 pipeline
@@ -362,32 +512,55 @@ def run_batch(
                     no_record_text=no_record_text,
                 )
 
-            except InvalidSessionIdException:
-                # 浏览器窗口被用户手动关闭，或进程崩溃
-                print("BROWSER_DEAD", end=" ", flush=True)
-                try:
-                    driver.quit()
-                except TRANSIENT_DOM_EXCEPTIONS:
-                    pass  # 清理失败不影响后续流程
-                except Exception as _e:
-                    # 建议 5.3：Ctrl+C/SystemExit 必须上抛
-                    raise_non_recoverable(_e)
-                    pass
+            except (InvalidSessionIdException, NoSuchWindowException):
+                # 浏览器窗口被用户手动关闭，或进程崩溃 —— 重建 driver 后继续
+                _log(f"{prefix} BROWSER_DEAD")
+                _quit_quietly(driver)
                 driver = create_driver(browser, use_uc=use_uc)  # 重新创建浏览器
                 state.mark_failure()
+                _emit(RoundOutcome(
+                    index=displayed_idx, outcome="browser_dead",
+                    message="浏览器断开，已重建后继续", state=state,
+                ))
+                continue
+
+            except WebDriverException as e:
+                # V2.5：单轮 WebDriver 异常（TimeoutException 等）降级为该份失败，
+                # 不再冒泡终止整批。此前第 3/17 轮遇到一次网络慢就会让整个批次
+                # 走 mark_crashed → history_status()='failed' → find_resumable_run
+                # 拒绝续传，前面已成功的份数被静默丢弃。
+                _log(f"{prefix} FAIL")
+                _log("  " + format_exc_log(
+                    e, action="单次提交", recovery="计该份失败，继续下一份",
+                    submission_index=displayed_idx,
+                ))
+                state.mark_failure()
+                _emit(RoundOutcome(
+                    index=displayed_idx, outcome="error",
+                    message=f"本轮异常: {type(e).__name__}", state=state,
+                ))
+                _cleanup_browser_state(driver)
                 continue
 
             # --- 统计本轮结果（审查 P1-1：三态判定；V2.3 用 RunState 集中更新） ---
             if outcome == "success":
                 state.mark_success()
-                print("OK")
+                _log(f"{prefix} OK")
+                _emit(RoundOutcome(index=displayed_idx, outcome="success",
+                                   message="提交成功", state=state))
             elif outcome == "unknown":
                 # 按钮已点击但效果超时 → 保守计为失败，但单独打 UNKNOWN 便于复盘
                 state.mark_unknown()
-                print("UNKNOWN")
+                _log(f"{prefix} UNKNOWN")
+                _emit(RoundOutcome(
+                    index=displayed_idx, outcome="unknown",
+                    message="提交状态未知（按钮已点击但效果超时）", state=state,
+                ))
             else:
                 state.mark_failure()
-                print("FAIL")
+                _log(f"{prefix} FAIL")
+                _emit(RoundOutcome(index=displayed_idx, outcome="failed",
+                                   message="提交失败", state=state))
 
             # --- 清理浏览器状态（为下一轮做准备） ---
             _cleanup_browser_state(driver)
@@ -395,34 +568,30 @@ def run_batch(
             # --- 每 N 轮主动重启浏览器 ---
             # 原因：长时间运行会导致浏览器内存堆积，最终崩溃。
             if state.current_attempt % RESTART_BROWSER_EVERY == 0:
-                print("RESTART", end=" ", flush=True)
-                try:
-                    driver.quit()
-                except TRANSIENT_DOM_EXCEPTIONS:
-                    pass  # 清理失败不影响后续流程
-                except Exception as _e:
-                    # 建议 5.3：Ctrl+C/SystemExit 必须上抛
-                    raise_non_recoverable(_e)
-                    pass
+                _log(f"{prefix} RESTART")
+                _quit_quietly(driver)
                 driver = create_driver(browser, use_uc=use_uc)
 
             # --- 轮次间隔：正态分布 + 5% 概率真的去"看手机/喝水" ---
+            # V2.6：传入 stop_check，用户点停止时不必等满整段高斯停顿
             human_pause(
                 ROUND_WAIT_MU, ROUND_WAIT_SIGMA,
                 ROUND_WAIT_LO, ROUND_WAIT_HI,
                 long_pause_prob=ROUND_LONG_PAUSE_PROB,
                 long_lo=ROUND_LONG_PAUSE_LO,
                 long_hi=ROUND_LONG_PAUSE_HI,
+                abort_check=stop_check,
             )
 
     except KeyboardInterrupt:
         # 用户按下 Ctrl+C → 优雅退出（审查 P1-3：标记 interrupted 而非 finished）
         state.mark_interrupted()
-        print("\n用户中断")
+        _log("\n用户中断")
 
     except Exception as e:
         # V2.4：未捕获异常 → 批次记 failed（此前会被误标 finished 污染成功率）。
-        # 标记后原样上抛，保持"CLI 崩溃带 traceback"的既有行为。
+        # CLI 保持"崩溃带 traceback"的既有行为（原样上抛）；
+        # GUI 走 on_round 之外的 finally 收尾，标记后不再上抛（由调用方决定）。
         state.mark_crashed(f"{type(e).__name__}: {e}")
         raise
 
@@ -441,37 +610,32 @@ def run_batch(
                     fail_count=state.fail_count,
                     total_elapsed_seconds=max(0.0, total_elapsed),
                     status=state.history_status(),
-                    error_message=state.history_error_message(),
+                    error_message=state.history_error_message(suffix=error_suffix),
                 )
             except OSError as _e2:
                 # 建议 5.1：IO/磁盘异常允许降级；ValueError/KeyError 往上抛
-                print("  " + format_exc_log(
-                    _e2, action="history.finish_run", recovery="忽略，统计结果仍已打印到 stdout",
+                _log("  " + format_exc_log(
+                    _e2, action="history.finish_run",
+                    recovery="忽略，统计结果仍已输出",
                     run_id=state.run_id,
                 ))
             except Exception as _e2:
                 # 建议 5.3：Ctrl+C/SystemExit 必须上抛
                 raise_non_recoverable(_e2)
                 # 其他异常：统一格式日志
-                print("  " + format_exc_log(
-                    _e2, action="history.finish_run", recovery="忽略，统计结果仍已打印到 stdout",
+                _log("  " + format_exc_log(
+                    _e2, action="history.finish_run",
+                    recovery="忽略，统计结果仍已输出",
                     run_id=state.run_id,
                 ))
 
         # UNKNOWN 分项统计日志（便于事后复盘服务端是否真未收到提交）
         if state.unknown_count > 0:
-            print(f"[统计] 其中 {state.unknown_count} 次提交结果未知（按钮已点击但未观察到成功信号），"
-                  f"已保守计入失败数。")
+            _log(f"[统计] 其中 {state.unknown_count} 次提交结果未知"
+                 f"（按钮已点击但未观察到成功信号），已保守计入失败数。")
 
         # 无论如何都要关闭浏览器，避免进程残留
-        try:
-            driver.quit()
-        except TRANSIENT_DOM_EXCEPTIONS:
-            pass  # 清理失败不影响后续流程
-        except Exception as _e:
-            # 建议 5.3：Ctrl+C/SystemExit 必须上抛
-            raise_non_recoverable(_e)
-            pass
+        _quit_quietly(driver)
 
     return state.success_count, state.fail_count
 
@@ -497,13 +661,26 @@ def main(argv: list[str] | None = None) -> None:
     BROWSER = args.browser
     USE_UC = args.use_uc
 
+    # 权重配置的加载/校验在 --config 与 --resume 两条路径上都要用
+    from .config_io import (
+        apply_weight_config,
+        load_weight_config,
+        validate_weight_config,
+    )
+
     # ---------- V2：--config 加载并热更新权重 ----------
     cfg_meta = None
     if args.config:
         try:
-            from .config_io import load_weight_config, apply_weight_config
             cfg_dict, cfg_meta = load_weight_config(args.config)
-            apply_weight_config(cfg_dict)
+            problems = validate_weight_config(cfg_dict)
+            if problems:
+                # CLI 是批量入口，一旦跑错代价是真实提交数 —— 硬失败而非警告
+                print(f"[config] 校验未通过（{len(problems)} 项），已拒绝运行：")
+                for p in problems[:10]:
+                    print(f"  - {p}")
+                sys.exit(2)
+            apply_weight_config(cfg_dict, replace=True)
             n_q = len(cfg_dict)
             print(f"[config] 已加载权重配置：{args.config}（{n_q} 道题）")
             if cfg_meta.get("name"):
@@ -553,6 +730,27 @@ def main(argv: list[str] | None = None) -> None:
     resume_run_id: int | None = None
     resume_done = 0
     resume_fail = 0
+    # V2.6：先收尾"进程被强杀"留下的孤儿 running 行。
+    # running 被 find_resumable_run 当作可恢复状态，续传一个早已死掉的批次
+    # 等于在页面状态未知的前提下重复提交。
+    if history_db is not None:
+        try:
+            reaped = history_db.reap_stale_runs()
+            if reaped:
+                print(f"[history] 已把 {reaped} 个未正常收尾的批次改判为 failed")
+        except OSError as e:
+            print("  " + format_exc_log(
+                e, action="history.reap_stale_runs", recovery="忽略，继续运行",
+            ))
+        except Exception as e:  # noqa: BLE001
+            raise_non_recoverable(e)
+            print("  " + format_exc_log(
+                e, action="history.reap_stale_runs", recovery="忽略，继续运行",
+            ))
+    # 续传时沿用上次批次的计划份数（用户显式 -n 时以用户为准）；
+    # run_batch 把 total_submissions 当作「绝对目标份数」，attempts_cap = 目标 - 已完成，
+    # 若这里仍传 args.count 的默认值，续传会按默认 17 份重新计划。
+    count_explicit = args.count != DEFAULT_TOTAL_SUBMISSIONS
     if args.resume:
         if history_db is None:
             print("[resume] --resume 需要配合 -H/--history 指定 DB 路径")
@@ -571,6 +769,16 @@ def main(argv: list[str] | None = None) -> None:
                     f"[resume] 恢复 Run #{resume_run_id}（状态 {prev['status']}）："
                     f"已完成 {resume_done}/{prev_planned} 份，从第 {resume_done + 1} 份继续"
                 )
+                if not count_explicit:
+                    TOTAL_SUBMISSIONS = prev_planned
+                    print(f"[resume] 沿用上次计划份数 {prev_planned}（显式 -n 可覆盖）")
+                # 权重快照随批次持久化，续传时恢复，保证「最后使用的权重就是用户设置的」
+                # --config 显式给出时以文件为准
+                if not args.config:
+                    snap = history_db.deserialize_weight_config(prev)
+                    if snap:
+                        apply_weight_config(snap, replace=True)
+                        print(f"[resume] 已从批次快照恢复权重配置（{len(snap)} 道题）")
             else:
                 print("[resume] 上次批次已完成或无有效进度，按全新批次开始")
 
@@ -611,6 +819,9 @@ def main(argv: list[str] | None = None) -> None:
         no_record_text=args.no_record_text,
         target_success=args.target_success,
         max_attempts=args.max_attempts,
+        resume_run_id=resume_run_id,
+        resume_done=resume_done,
+        resume_fail=resume_fail,
     )
     print(f"运行结束 — 成功 {success}, 失败 {fail}")
 
