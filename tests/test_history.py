@@ -397,6 +397,10 @@ class TestSubmissionHistory(unittest.TestCase):
             ("https://wjx.example/old", 5, "edge", 0),
         )
         conn.commit()
+        # v2.6：DROP + 重建表并不会把 user_version 带回去，而迁移现在按版本号
+        # 判断是否需要执行 —— 不退回版本号，这个"老库"用例会被正确跳过。
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
         conn.close()
 
         # 用 SubmissionHistory 重新打开 → 应自动 ALTER TABLE 加列
@@ -490,6 +494,9 @@ class TestSubmissionHistory(unittest.TestCase):
                 " VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (rid, 1, 5, "single", _json.dumps(opts), None, 100),
             )
+        # v2.6：迁移按 PRAGMA user_version 判断是否需要跑，
+        # 所以"模拟老库"必须把版本号也退回去，否则迁移会被正确地跳过。
+        conn.execute("PRAGMA user_version = 1")
         conn.commit()
         conn.close()
 
@@ -501,6 +508,10 @@ class TestSubmissionHistory(unittest.TestCase):
             (rid, 1, 5),
         )
         self.assertEqual(len(rows), 1, "dedup 后应只剩 1 条（max id）")
+        self.assertEqual(
+            int(db2._conn.execute("PRAGMA user_version").fetchone()[0]), 2,
+            "迁移跑完必须把版本号写回去，否则下次打开又要全表扫一遍",
+        )
         import json as _json2
         # 应保留 max(id) 的那条，opts=[2]
         self.assertEqual(_json2.loads(rows[0]["options_selected"]), [2])
@@ -511,6 +522,130 @@ class TestSubmissionHistory(unittest.TestCase):
         names = {r[0] for r in idxs}
         self.assertIn("idx_answers_unique", names)
         db2.close()
+
+
+    def test_query_runs_and_resume_are_stable_within_same_second(self) -> None:
+        """v2.5 回归：started_at 只有秒级精度，排序必须带 id DESC 兜底。
+
+        同一秒内建多个批次时：
+          - query_runs 的展示顺序不确定（GUI 历史列表跳序）；
+          - find_resumable_run 的 ``LIMIT 1`` 命中哪一条不确定 —— 挑错批次
+            续传会直接从错误的份数接续，造成重复提交。
+        旧断言用 time.sleep(0.01) 想跨过时间边界，但 0.01s 远小于 1s 精度，
+        一直靠 SQLite 排序器的运气通过。这里改成一秒内批量建，专门测兜底。
+        """
+        url = "https://example.test/resume-stability"
+        ids = [
+            self.db.start_run(url, 10, "edge", False)
+            for _ in range(5)
+        ]
+        for rid in ids[:-1]:
+            self.db.finish_run(
+                rid, success_count=1, fail_count=0,
+                total_elapsed_seconds=1.0, status="interrupted",
+            )
+        newest = ids[-1]
+
+        listed = [r["id"] for r in self.db.query_runs(limit=50)]
+        self.assertEqual(listed[:5], list(reversed(ids)),
+                         "同秒内建的批次应按 id 倒序，而非顺序随机")
+
+        # 全部都标 interrupted，find_resumable_run 必须挑到 id 最大的那条
+        for rid in ids:
+            self.db.finish_run(
+                rid, success_count=1, fail_count=0,
+                total_elapsed_seconds=1.0, status="interrupted",
+            )
+        prev = self.db.find_resumable_run(url)
+        self.assertIsNotNone(prev)
+        self.assertEqual(
+            int(prev["id"]), newest,
+            "续传必须命中最近创建的批次；挑到旧批次会导致重复提交",
+        )
+
+
+    # ---------------------------------------------------------------
+    #  v2.6：版本化迁移 / 孤儿批次收尾
+    # ---------------------------------------------------------------
+    def test_dedup_migration_does_not_rerun_on_current_version(self) -> None:
+        """含全表扫描的升级脚本必须**只跑一次**。
+
+        旧实现把 dedup 写在构造路径上，于是每开一次库（GUI 每点一次历史 Tab）
+        都重扫一遍 answers。v2.6 用 PRAGMA user_version 记账；这里验证：
+        已经升级过的库再打开时，即使人为塞进重复行也不会被 dedup 动到
+        （唯一索引会直接拒绝写入，所以这里断言的是"没再触发全表 DELETE"）。
+        """
+        import sqlite3 as _sqlite3
+
+        self.db.close()
+        conn = _sqlite3.connect(self._tmppath)
+        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        self.assertEqual(version, 2, "新建库应当已落在当前版本")
+        # 若把 dedup 挂回构造路径，下面这次打开会执行全表 DELETE；
+        # 用触发器把它的执行次数记录下来。
+        conn.execute("DROP TABLE IF EXISTS _dedup_probe")
+        conn.execute("CREATE TABLE _dedup_probe (n INTEGER)")
+        conn.execute(
+            "CREATE TRIGGER _probe AFTER DELETE ON answers BEGIN "
+            "INSERT INTO _dedup_probe VALUES (1); END"
+        )
+        conn.commit()
+        conn.close()
+
+        from src.history import SubmissionHistory
+        db2 = SubmissionHistory(self._tmppath)
+        db2.close()
+
+        conn = _sqlite3.connect(self._tmppath)
+        fired = conn.execute("SELECT COUNT(*) FROM _dedup_probe").fetchone()[0]
+        conn.close()
+        self.assertEqual(
+            fired, 0,
+            "当前版本的库再次打开时不该重跑 dedup（那是一次全表扫描）",
+        )
+
+    def test_reap_stale_runs_marks_old_running_rows_failed(self) -> None:
+        """进程被强杀留下的 running 行，下次启动要改判 failed。
+
+        running 被 find_resumable_run 当可恢复；不处理就会提示续传一个
+        早已死掉、页面状态完全未知的批次。
+        """
+        rid = self.db.start_run("https://x/orphan", 10, "edge", False)
+        # 手工把开始时间推到 2 小时前，模拟"上次会话早就没了"
+        self.db._execute(
+            "UPDATE runs SET started_at = datetime('now', '-2 hours') WHERE id=?",
+            (rid,),
+        )
+        row = self.db._query_one("SELECT status FROM runs WHERE id=?", (rid,))
+        self.assertEqual(row["status"], "running")
+
+        n = self.db.reap_stale_runs(stale_after_minutes=60)
+        self.assertEqual(n, 1)
+
+        after = self.db._query_one("SELECT * FROM runs WHERE id=?", (rid,))
+        self.assertEqual(after["status"], "failed")
+        self.assertIsNotNone(after["finished_at"], "闭合时间要补上")
+        self.assertIsNone(
+            self.db.find_resumable_run("https://x/orphan"),
+            "崩溃批次不能再被当成可续传批次提供出去",
+        )
+
+    def test_reap_stale_runs_leaves_live_runs_alone(self) -> None:
+        """阈值之内的 running 不能动 —— GUI 开着同时跑 CLI 是正常用法。"""
+        rid = self.db.start_run("https://x/live", 10, "edge", False)
+        self.assertEqual(self.db.reap_stale_runs(stale_after_minutes=60), 0)
+        row = self.db._query_one("SELECT status FROM runs WHERE id=?", (rid,))
+        self.assertEqual(row["status"], "running")
+
+    def test_wal_enabled_for_file_db(self) -> None:
+        """文件库开 WAL：GUI 读历史时不再和批量提交的写事务抢同一把锁。"""
+        mode = self.db._conn.execute("PRAGMA journal_mode").fetchone()[0]
+        self.assertEqual(str(mode).lower(), "wal")
+
+    def test_busy_timeout_is_configured(self) -> None:
+        ms = self.db._conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        self.assertGreaterEqual(int(ms), 5000,
+                                "默认 5s 忙等且报错被吞会让 runs 行永停 running")
 
 
 if __name__ == "__main__":

@@ -136,5 +136,63 @@ class TestRunBatchSmoke(unittest.TestCase):
         self.assertEqual(row["fail_count"], 3)
 
 
+    def test_webdriver_exception_in_one_round_does_not_abort_batch(self) -> None:
+        """V2.5 回归：单轮 WebDriver 异常只计该份失败，剩余份数继续跑。
+
+        此前只接 InvalidSessionIdException，一次 TimeoutException 就冒泡到
+        兜底 except → mark_crashed → 整批夭折且批次记 failed（不可续传），
+        前面已成功的份数被静默丢弃。
+        """
+        from selenium.common.exceptions import TimeoutException
+
+        calls = {"n": 0}
+
+        def flaky(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise TimeoutException("page load timeout")
+            return "success"
+
+        with SubmissionHistory(":memory:") as db:
+            with mock.patch("src.browser.create_driver",
+                            side_effect=_fake_driver_factory), \
+                 mock.patch("src.utils.human_pause", return_value=0.0), \
+                 mock.patch("src.pipeline.run_one_submission", side_effect=flaky):
+                success, fail = cli.run_batch(SURVEY_URL, 3, history_db=db)
+            row = db._query_one("SELECT * FROM runs")
+
+        self.assertEqual(calls["n"], 3, "第 1 轮异常后必须继续跑第 2、3 轮")
+        self.assertEqual((success, fail), (2, 1))
+        self.assertEqual(
+            row["status"], "finished",
+            "单轮异常不能被当成整批崩溃（failed 会让 find_resumable_run 拒绝续传）",
+        )
+
+    def test_dead_window_rebuilds_driver_and_continues(self) -> None:
+        """NoSuchWindowException（用户手关窗口）应重建浏览器后继续，而非终止批次。"""
+        from selenium.common.exceptions import NoSuchWindowException
+
+        created = {"n": 0}
+        calls = {"n": 0}
+
+        def factory(browser="edge", **kwargs):
+            created["n"] += 1
+            return FakeDriver()
+
+        def flaky(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise NoSuchWindowException("window closed")
+            return "success"
+
+        with mock.patch("src.browser.create_driver", side_effect=factory), \
+             mock.patch("src.utils.human_pause", return_value=0.0), \
+             mock.patch("src.pipeline.run_one_submission", side_effect=flaky):
+            success, fail = cli.run_batch(SURVEY_URL, 2)
+
+        self.assertEqual(created["n"], 2, "关窗后应重建一次浏览器")
+        self.assertEqual((success, fail), (1, 1))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1,0 +1,15 @@
+# 开发/CI 依赖（与运行时依赖分开，避免生产安装被测试工具污染）
+#
+# 为什么要单独钉版本：此前 CI 写的是 `pip install pytest ruff`（不钉版本），
+# 于是任何一次 pytest/ruff 发布都可能让构建变红或让 lint 规则口径悄悄变化 ——
+# 而 ruff 的判定结果是被当门禁用的，口径必须稳定。
+
+# ---- 测试 ----
+pytest==9.1.1
+pytest-cov==7.1.0
+
+# ---- 静态检查 ----
+ruff==0.16.6
+
+# 类型检查走 pyright，由 CI 用 npx 现取（见 .github/workflows/ci.yml），
+# 不需要在此钉版本：pyrightconfig.json 已固定 pythonVersion 与规则模式。

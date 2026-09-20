@@ -12,19 +12,42 @@
     避免单一布尔值或纯字符串承载多个状态。
   - 不破坏 V2.2 已通过的 130/130 测试。
 
-迁移策略:
-    第 1 步（本模块）:定义模型 + 提供双向转换 + 单元测试。
-    第 2 步:detection.py / answering_v2.py / pipeline.py 内部改用 dataclass。
-    第 3 步:config_io.py 用 ``WeightConfigEntry`` 替代 ad-hoc dict 校验。
+迁移策略（v2.3 提出，v2.6 定案）:
+    原计划三步：1) 定义模型 + 双向转换 + 单测；2) detection / answering_v2 /
+    pipeline 内部改用 dataclass；3) config_io 用 ``WeightConfigEntry``
+    替代 ad-hoc dict 校验。
+
+    **第 1 步已完成；第 2、3 步经评估判定为不做。** 理由：
+      - 生产链路已全程传 ``dict[str, Any]`` 并被 280+ 项测试覆盖，
+        detection 的返回结构由注入 JS 直接产出，改成 dataclass 只会在
+        JS ↔ Python 边界上多一次构造/序列化，不消除任何现有缺陷；
+      - 校验逻辑（config_io）需要区分"警告"与"拒绝运行"并逐题回报，
+        WeightConfigEntry 的强类型反而会把非法值在构造期就抛掉，丢掉错误信息。
+
+    因此本模块的 4 个题型 dataclass 定位为**契约文档 + 未来重构锚点**，
+    当前无生产调用点。它们与 QUESTION_TYPE_ALIASES 曾经各持一份题型别名映射
+    （漂移隐患），v2.6 已合并为 _STORAGE_NAMES/_ALIASES 单一声明。
+    若将来要启用，请以 tests/test_models.py 的往返用例为验收标准。
 """
 
 from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
-from .interaction import SubmitOutcome, SUBMIT_SUCCESS, SUBMIT_FAILED, SUBMIT_UNKNOWN
+
+# ============================================================================
+# 提交结果三态（本模块定义，interactions.submit 反向引用）
+# ============================================================================
+# 放在这里而不是 interactions/submit.py：SubmitResult 的 ``outcome`` 字段要用它，
+# 而 models 是「纯数据层」。此前方向是 models → interaction → selenium，
+# 导致 ``import src.models`` 会连带加载 100+ 个 selenium.* 模块，
+# 也让离线单测无法在不装浏览器依赖的情况下构造 SubmitResult。
+SubmitOutcome = Literal["success", "failed", "unknown"]
+SUBMIT_SUCCESS: SubmitOutcome = "success"
+SUBMIT_FAILED: SubmitOutcome = "failed"
+SUBMIT_UNKNOWN: SubmitOutcome = "unknown"
 
 
 # ============================================================================
@@ -36,12 +59,9 @@ class QuestionType(str, enum.Enum):
     继承 ``str`` 使其可直接 JSON 序列化、与旧字符串字面量 ``==`` 比较,
     例如 ``QuestionType.SINGLE == "single"`` 返回 ``True``。
 
-    别名兼容（``from_str`` 接受）:
-        - ``radio`` → ``SINGLE``
-        - ``checkbox`` → ``MULTI``
-        - ``rating`` → ``SCALE``
-        - ``textarea`` / ``input`` / ``fillblank`` → ``TEXT``
-        - ``matrix`` → ``MATRIX_SINGLE``
+    成员的 value 是**规范化题型名**（detection / JSON 配置用的那套），
+    ``.storage_name`` 是 history.answers.question_type 列的落库名。
+    两者只在矩阵题上不同：``matrix_single`` ↔ ``matrix``。
     """
 
     SINGLE = "single"                # 单选
@@ -50,6 +70,20 @@ class QuestionType(str, enum.Enum):
     SCALE = "scale"                  # 量表/评分
     TEXT = "text"                    # 填空/textarea
     MATRIX_SINGLE = "matrix_single"  # 矩阵单选
+
+    @property
+    def storage_name(self) -> str:
+        """落库用的短名（目前只有矩阵题与 value 不同）。"""
+        return _STORAGE_NAMES[self]
+
+    @property
+    def aliases(self) -> tuple[str, ...]:
+        """本题型接受的其他写法。"""
+        return _ALIASES[self]
+
+    def __str__(self) -> str:  # 类型:ignore[override]
+        """直接拿 .value,避免 ``str(QuestionType.SINGLE)`` 返回 ``"QuestionType.SINGLE"``。"""
+        return self.value
 
     @classmethod
     def from_str(cls, raw: str | None) -> "QuestionType":
@@ -62,53 +96,59 @@ class QuestionType(str, enum.Enum):
         if raw is None:
             raise ValueError("题型字符串为 None")
         s = str(raw).lower()
-        alias = {
-            "radio": cls.SINGLE,
-            "checkbox": cls.MULTI,
-            "rating": cls.SCALE,
-            "textarea": cls.TEXT,
-            "input": cls.TEXT,
-            "fillblank": cls.TEXT,
-            "matrix": cls.MATRIX_SINGLE,
-        }
-        if s in alias:
-            return alias[s]
         try:
-            return cls(s)
-        except ValueError:
+            return _LOOKUP[s]
+        except KeyError:
+            # 保持 v2.3 以来的契约：调用方（answering_v2 / weight_panel）
+            # 统一 except ValueError 兜底成 SINGLE，不能换成 KeyError
             raise ValueError(f"未知题型: {raw!r}") from None
 
-    def __str__(self) -> str:  # 类型:ignore[override]
-        """直接拿 .value,避免 ``str(QuestionType.SINGLE)`` 返回 ``"QuestionType.SINGLE"``。"""
-        return self.value
 
+# 每个题型的"落库短名"。与下面的 _ALIASES 一起构成**唯一**的题型命名表。
+_STORAGE_NAMES: dict[QuestionType, str] = {
+    QuestionType.SINGLE: "single",
+    QuestionType.MULTI: "multi",
+    QuestionType.DROPDOWN: "dropdown",
+    QuestionType.SCALE: "scale",
+    QuestionType.TEXT: "text",
+    QuestionType.MATRIX_SINGLE: "matrix",
+}
 
-# ============================================================================
-# 题型别名 → 存储名的单一真相表
-# ============================================================================
-# history.answers.question_type 列的存储名约定为 6 类：
-#   single / multi / dropdown / scale / text / matrix
-# （注意 matrix 的存储名是 ``matrix`` 而非枚举成员名 ``matrix_single``，
-#   与历史库既有数据保持兼容）。此前同一份别名知识散落在
-#   question_stage / weight_panel / controller / config_io 四处，
-#   现统一收敛到这张表。
-QUESTION_TYPE_ALIASES: dict[str, str] = {
-    "single": "single",
-    "radio": "single",
-    "multi": "multi",
-    "checkbox": "multi",
-    "dropdown": "dropdown",
-    "scale": "scale",
-    "rating": "scale",
-    "text": "text",
-    "input": "text",
-    "textarea": "text",
-    "fillblank": "text",
-    "matrix": "matrix",
-    "matrix_single": "matrix",
+# 每个题型接受的别名（不含自己的 value，value 由 _build_tables 自动登记）
+_ALIASES: dict[QuestionType, tuple[str, ...]] = {
+    QuestionType.SINGLE: ("radio",),
+    QuestionType.MULTI: ("checkbox",),
+    QuestionType.DROPDOWN: (),
+    QuestionType.SCALE: ("rating",),
+    QuestionType.TEXT: ("textarea", "input", "fillblank"),
+    QuestionType.MATRIX_SINGLE: ("matrix",),
 }
 
 
+def _build_tables() -> tuple[dict[str, str], dict[str, QuestionType]]:
+    """由 _STORAGE_NAMES + _ALIASES 生成对外的两张视图。"""
+    aliases: dict[str, str] = {}
+    lookup: dict[str, QuestionType] = {}
+    for qtype, storage in _STORAGE_NAMES.items():
+        for name in (qtype.value, *qtype.aliases):
+            aliases[name] = storage
+            lookup[name] = qtype
+        aliases[storage] = storage      # 落库短名自身也能反查（如 "matrix"）
+        lookup.setdefault(storage, qtype)
+    return aliases, lookup
+
+
+QUESTION_TYPE_ALIASES, _LOOKUP = _build_tables()
+
+
+# ============================================================================
+# 题型别名 → 存储名（由上面的单一真相表派生）
+# ============================================================================
+# 历史背景：这份别名知识曾散落在 question_stage / weight_panel / controller /
+# config_io 四处，v2.4 收进 QUESTION_TYPE_ALIASES 手写表；但 QuestionType.from_str
+# 里还留着**另一份**手写别名映射，两张表各自演化迟早会漂（矩阵题的
+# "matrix_single vs matrix" 就是这类漂移的高发点）。
+# v2.6 起QUESTION_TYPE_ALIASES 与 from_str 共用 _STORAGE_NAMES/_ALIASES 这一份声明。
 def normalize_question_type(raw: str | None) -> str:
     """把任意题型字符串归一化为 history 存储名（6 类之一）。
 
@@ -427,6 +467,7 @@ class RunState:
     stop_flag: bool = False                   # GUI 用户点击"停止"的标志位
     survey_url: str = ""                      # 问卷 URL（续传 find_resumable_run 已用）
     crash_message: Optional[str] = None       # 未捕获异常说明（非空 = 批次崩溃 → history 记 failed）
+    no_record_text: bool = False              # 隐私保护：填空题答案不写入 SQLite（CLI 同名参数）
 
     # ------------ 只读派生属性 ------------
     @property

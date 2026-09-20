@@ -132,6 +132,10 @@ def draw_vertical_gradient(
     n = max(1, y2 - y1)
     segments = len(colors) - 1
     steps_per_seg = max(1, n // segments)
+    # 每一段都要带 tag：调用方靠 canvas.delete(tag) 清理重绘，只给首行打 tag
+    # 等于没给 —— 之前这里算出 kwargs 却没传给 create_line，卡片每次 <Configure>
+    # 重绘都留下一批删不掉的线段，canvas item 随窗口拖动无界累积。
+    tags: tuple[str, ...] = () if tag is None else (tag,)
     for si in range(segments):
         c_start, c_end = colors[si], colors[si + 1]
         y_start = y1 + si * steps_per_seg
@@ -139,10 +143,8 @@ def draw_vertical_gradient(
         for i in range(y_end - y_start):
             t = i / max(1, (y_end - y_start) - 1)
             c = lerp_color(c_start, c_end, t)
-            kwargs = {}
-            if tag is not None and si == 0 and i == 0:
-                kwargs["tags"] = tag
-            canvas.create_line(x1, y_start + i, x2, y_start + i, fill=c, width=1)
+            canvas.create_line(x1, y_start + i, x2, y_start + i,
+                               fill=c, width=1, tags=tags)
 
 
 _draw_vertical_gradient = draw_vertical_gradient
@@ -158,6 +160,7 @@ def draw_horizontal_gradient(
     n = max(1, x2 - x1)
     segments = len(colors) - 1
     steps_per_seg = max(1, n // segments)
+    tags: tuple[str, ...] = () if tag is None else (tag,)
     for si in range(segments):
         c_start, c_end = colors[si], colors[si + 1]
         x_start = x1 + si * steps_per_seg
@@ -165,10 +168,8 @@ def draw_horizontal_gradient(
         for i in range(x_end - x_start):
             t = i / max(1, (x_end - x_start) - 1)
             c = lerp_color(c_start, c_end, t)
-            kwargs = {}
-            if tag is not None and si == 0 and i == 0:
-                kwargs["tags"] = tag
-            canvas.create_line(x_start + i, y1, x_start + i, y2, fill=c, width=1)
+            canvas.create_line(x_start + i, y1, x_start + i, y2,
+                               fill=c, width=1, tags=tags)
 
 
 _draw_horizontal_gradient = draw_horizontal_gradient

@@ -10,16 +10,10 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from selenium.webdriver.support.ui import WebDriverWait
 
 from ..answering import build_answer_strategy
 from ..answering_v2 import generate_answer as generate_answer_v2
 from ..config import (
-    Q_LONG_PAUSE_HI,
-    Q_LONG_PAUSE_LO,
-    Q_LONG_PAUSE_PROB,
-    Q_THINK_HI,
-    Q_THINK_LO,
     Q_THINK_MU,
     Q_THINK_SIGMA,
 )
@@ -37,18 +31,46 @@ from .page_loader import QUESTION_CONTROL_SELECTOR
 # ============================================================================
 #  等待题目控件渲染（覆盖 6 类题型常见输入控件）
 # ============================================================================
-def _wait_for_questions(driver: Any, timeout: float) -> bool:
-    """等待题目输入框出现在 DOM 中（V2 扩展：覆盖 6 类题型的常见输入控件）。"""
+def _wait_for_questions(
+    driver: Any,
+    timeout: float,
+    hold_lock: Any | None = None,
+) -> bool:
+    """等待题目输入框出现在 DOM 中（V2 扩展：覆盖 6 类题型的常见输入控件）。
+
+    :param hold_lock: 人工介入锁。传入后，**处于 holding 状态的时间不计入超时预算**。
+
+    Why 不用 WebDriverWait(driver, timeout).until(...)：
+    那条路径把 timeout 交给 WebDriver 的墙钟，而验证码可能在题目等待期间才弹出。
+    用户正在拉滑块的十几~几十秒里页面本来就不会出现新控件，于是等待超时 →
+    本轮 SUBMIT_FAILED → 人工白忙一场。ManualHoldLock 的文档一直声称
+    "pipeline 中的任何超时逻辑看到 is_holding 就不该判失败"，此前却没有任何
+    调用点实现它 —— 这里就是那个接线点。
+    """
     selector = QUESTION_CONTROL_SELECTOR
-    try:
-        WebDriverWait(driver, timeout).until(
-            lambda d: d.execute_script(
+    deadline = time.perf_counter() + timeout
+    while True:
+        try:
+            found = driver.execute_script(
                 f"return document.querySelectorAll('{selector}').length > 0"
             )
-        )
-        return True
-    except Exception:
-        return False
+        except TRANSIENT_DOM_EXCEPTIONS:
+            return False
+        except Exception as _e:
+            raise_non_recoverable(_e)
+            return False
+        if found:
+            return True
+
+        # 人工介入期间暂停计时：把 deadline 往后挪一个轮询片
+        if hold_lock is not None and getattr(hold_lock, "is_holding", False):
+            deadline += _HOLD_POLL
+        elif time.perf_counter() >= deadline:
+            return False
+        time.sleep(_HOLD_POLL)
+
+
+_HOLD_POLL = 0.25   # 轮询片长度（秒）；也是 holding 期间时钟暂停的粒度
 
 
 # ============================================================================
@@ -133,7 +155,10 @@ def _answer_one_question(
             elif ans_type == "scale":
                 val = int(ans.get("value", 3))
                 smax = q.get("scale")
-                is_ok = js_set_scale(driver, qnum, val, scale_max=smax)
+                smin = q.get("scale_min")
+                is_ok = js_set_scale(
+                    driver, qnum, val, scale_max=smax, scale_min=smin
+                )
                 options_selected = [val]
 
             elif ans_type == "dropdown":
@@ -190,7 +215,17 @@ def _answer_one_question(
             # V2.4 整改：题型别名归一化收敛到 models.normalize_question_type（单一真相）
             norm_type = normalize_question_type(qtype)
 
-            # 隐私保护：no_record_text=True 时填空题文本不落盘
+            # 隐私保护：no_record_text=True 时**用户输入**的文本不落盘。
+            #
+            # 这里刻意只判 norm_type == "text"。text_answer 这一列有两个写入方：
+            #   1. 填空题 —— 存的是生成出来的姓名/手机/邮箱等**用户侧内容**，
+            #      这是本开关要保护的对象；
+            #   2. 下拉题 —— 存的是**问卷页面自己的 <option> 文案**（站点内容，
+            #      见上面 dropdown 分支），它不是任何人的个人信息，
+            #      抹掉只会让历史明细失去可读性。
+            # 因此 --no-record-text 的契约就是"不记录填空题答案"（README/CLI 帮助
+            # 文案一致），不要顺手扩到这里；真要连站点文案一起匿名化的话，
+            # 应该另开一个开关，而不是改变本参数的既有语义。
             persisted_text: str | None = text_answer
             if no_record_text and norm_type == "text":
                 persisted_text = None  # 写 NULL 占位，不存敏感内容

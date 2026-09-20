@@ -15,10 +15,12 @@ import sys
 import threading
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src import utils  # noqa: E402
+from src.utils import sanitize_weights, weights_are_usable  # noqa: E402
 
 
 class TestRetryWithBackoff(unittest.TestCase):
@@ -205,5 +207,106 @@ class TestManualHoldLock(unittest.TestCase):
         lock.release()
 
 
+# ============================================================================
+#  权重清洗（v2.5：v1/v2 采样器共用同一份判定）
+# ============================================================================
+class TestWeightsUsable(unittest.TestCase):
+    """weights_are_usable / sanitize_weights。
+
+    回归背景：全 0 权重在 numpy 分支除零、NaN 权重让 random.choices 抛
+    ValueError，而这类异常不在 TRANSIENT_DOM_EXCEPTIONS 里 → 整批任务在
+    第一道题就终止。现已统一降级为等权重。
+    """
+
+    def test_rejects_all_zero_and_nan_and_inf_and_length(self) -> None:
+        for bad in ([0, 0, 0], [0.0, 0.0], [float("nan"), 1.0, 1.0],
+                    [float("inf"), 1.0], [1.0, 2.0], None, "abc", [True, False]):
+            self.assertFalse(
+                weights_are_usable(bad, 3),
+                f"{bad!r} 应判为不可用",
+            )
+
+    def test_accepts_normal_weights(self) -> None:
+        self.assertTrue(weights_are_usable([1, 2, 3], 3))
+        self.assertTrue(weights_are_usable([0.0, 0.0, 5.0], 3))
+
+    def test_sanitize_returns_none_so_caller_can_degrade(self) -> None:
+        warned: list = []
+        self.assertIsNone(
+            sanitize_weights([0, 0], 2, question=1, warn=warned.append)
+        )
+        self.assertEqual(len(warned), 1, "降级必须留一行可见日志，不能静默")
+        self.assertEqual(sanitize_weights([1, 3], 2), [1.0, 3.0])
+
+    def test_generator_no_longer_crashes_on_bad_weights(self) -> None:
+        """端到端：坏权重只降级，不抛。"""
+        from src import answering, answering_v2
+
+        cfgs = {
+            1: {"type": "multi", "weights": [0, 0, 0],
+                "count_options": [2], "count_weights": [0]},
+            2: {"type": "scale", "scale": 5,
+                "weights": [float("nan")] * 5},
+        }
+        with mock.patch.dict("src.config.WEIGHT_CONFIG", cfgs, clear=True):
+            out = answering.build_answer_strategy(
+                {"q": 1, "type": "multi", "choices": [1, 2, 3]}
+            )
+            self.assertEqual(len(out), 2)
+            scale = answering_v2.generate_answer(
+                {"q": 2, "type": "scale", "scale": 5}
+            )
+            self.assertIn(scale["value"], (1, 2, 3, 4, 5))
+            multi = answering_v2.generate_answer(
+                {"q": 1, "type": "multi", "choices": ["a", "b", "c", "d"]}
+            )
+            self.assertTrue(multi["selected"])
+
+
+# ============================================================================
+#  human_pause 的可中断性（v2.6：GUI 停止按钮响应延迟）
+# ============================================================================
+class TestHumanPauseAbortCheck(unittest.TestCase):
+    """abort_check 生效时不必等满整段高斯停顿。
+
+    此前轮间停顿是一次性 sleep，最长 20s 且打不断 —— 用户点「停止」后
+    还要等这一整段跑完才见效。
+    """
+
+    def test_no_abort_check_keeps_original_single_sleep(self) -> None:
+        slept: list = []
+        got = utils.human_pause(
+            1.0, 0.1, 0.5, 2.0, _sleep_fn=slept.append,
+        )
+        self.assertEqual(len(slept), 1, "不传 abort_check 时必须仍是一次整段 sleep")
+        self.assertAlmostEqual(got, slept[0], places=6)
+
+    def test_abort_check_shortens_a_long_pause(self) -> None:
+        slept: list = []
+        calls = {"n": 0}
+
+        def abort_after_two():
+            calls["n"] += 1
+            return calls["n"] > 2
+
+        got = utils.human_pause(
+            10.0, 0.0, 10.0, 10.0,          # 恒定 10s，好验证被截断
+            _sleep_fn=slept.append,
+            abort_check=abort_after_two,
+        )
+        self.assertLess(got, 1.0, f"应在 2 个轮询片后就停，实际睡了 {got}s")
+        self.assertEqual(len(slept), 2)
+
+    def test_completes_normally_when_never_aborted(self) -> None:
+        slept: list = []
+        got = utils.human_pause(
+            1.0, 0.0, 1.0, 1.0,
+            _sleep_fn=lambda s: slept.append(s),
+            abort_check=lambda: False,
+        )
+        self.assertAlmostEqual(got, 1.0, places=2)
+        self.assertAlmostEqual(sum(slept), 1.0, places=2)
+
+
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)

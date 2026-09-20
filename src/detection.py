@@ -147,29 +147,49 @@ return (function() {
             if (!qid || seen.has(qid)) return;
             seen.add(qid);
 
-            // 数内部"可选项"数量（li / a / span 带分数语义）
-            var kids = area.querySelectorAll('li, a, span, i');
-            var levelCount = 0;
-            kids.forEach(function(k) {
-                var cls = (k.className || '').toString();
-                if (/item|star|level|score|point|right|ok|full/.test(cls) ||
-                    /^\d+$/.test((k.textContent || '').trim())) {
-                    levelCount++;
-                }
+            // ---- 量表边界：优先读隐藏 radio 的真实 value 区间 ----
+            // 此前这里写死 s.scale_min = 1 且 s.scale = 选项个数，
+            // 于是 2~10 分的量表被识别成 scale=9 / scale_min=1：
+            //   作答时永远点不到 10，还会去点根本不存在的 1。
+            // radio 的 value 才是权威边界；只有拿不到 radio 时才退回"数格子"。
+            var hiddenRadios = document.querySelectorAll(
+                'input[type="radio"][name="q' + qid + '"]'
+            );
+            var scaleVals = [];
+            hiddenRadios.forEach(function(r) {
+                var v = parseInt(r.value);
+                if (!isNaN(v)) scaleVals.push(v);
             });
-            // 常见 5 / 10 级兜底
-            if (levelCount < 2 || levelCount > 12) {
-                // 数一下带 value 的隐藏 radio 数量
-                var hiddenRadios = document.querySelectorAll(
-                    'input[type="radio"][name="q' + qid + '"]'
-                );
-                levelCount = hiddenRadios.length;
+
+            var levelMin, levelMax;
+            if (scaleVals.length >= 2) {
+                levelMin = Math.min.apply(null, scaleVals);
+                levelMax = Math.max.apply(null, scaleVals);
+            } else {
+                // 数内部"可选项"数量（li / a / span 带分数语义）
+                var kids = area.querySelectorAll('li, a, span, i');
+                var levelCount = 0;
+                kids.forEach(function(k) {
+                    var cls = (k.className || '').toString();
+                    if (/item|star|level|score|point|right|ok|full/.test(cls) ||
+                        /^\d+$/.test((k.textContent || '').trim())) {
+                        levelCount++;
+                    }
+                });
+                // 常见 5 / 10 级兜底
+                if (levelCount < 2 || levelCount > 12) {
+                    levelCount = hiddenRadios.length;
+                }
+                levelMin = 1;
+                levelMax = levelCount;
             }
-            if (levelCount >= 2 && levelCount <= 12) {
+
+            var levels = levelMax - levelMin + 1;
+            if (levels >= 2 && levels <= 12) {
                 var s = slot(qid);
                 s.type = 'scale';
-                s.scale = levelCount;
-                s.scale_min = 1;
+                s.scale = levelMax;
+                s.scale_min = levelMin;
             }
         });
     })();

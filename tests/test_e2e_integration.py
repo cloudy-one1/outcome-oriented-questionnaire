@@ -14,9 +14,7 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -37,10 +35,13 @@ else:
         webdriver = None  # type: ignore[assignment]
 
 
-pytestmark = pytest.mark.skipif(
-    _DRIVER_ERR is not None,
-    reason=f"E2E 需要 Selenium: {_DRIVER_ERR}",
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        _DRIVER_ERR is not None,
+        reason=f"E2E 需要 Selenium: {_DRIVER_ERR}",
+    ),
+]
 
 
 # ------------------------------ Fixtures ------------------------------
@@ -116,14 +117,14 @@ def history_db(tmp_path):
 
 # ------------------------------ 测试主体 ------------------------------
 
-def test_detection_discovers_all_10_questions(driver):
-    """detection 必须识别出 mock HTML 的全部 10 道题，类型/参数正确。"""
+def test_detection_discovers_all_11_questions(driver):
+    """detection 必须识别出 mock HTML 的全部 11 道题，类型/参数正确。"""
     from src.detection import detect_questions
 
     qs = detect_questions(driver)
-    # 按题号升序，q1..q10 必须都在
+    # 按题号升序，q1..q11 必须都在
     qnums = [q["q"] for q in qs]
-    assert qnums == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], (
+    assert qnums == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], (
         f"题号集不匹配: {qnums}"
     )
 
@@ -169,6 +170,15 @@ def test_detection_discovers_all_10_questions(driver):
     assert by_q[10]["type"] == "matrix_single"
     assert by_q[10]["rows"] == [1, 2, 3, 4]
     assert by_q[10]["cols"] == [1, 2, 3, 4, 5]
+
+
+
+    # 11. scale —— 起点不是 1 的量表（v2.6 新增的 fixture 题）
+    # detection 此前硬编码 scale_min=1 且把"格子数"当 scale，
+    # 于是 2~10 分的量表被读成 scale=9 / scale_min=1：永远点不到 10，还会去点 1。
+    assert by_q[11]["type"] == "scale"
+    assert by_q[11]["scale"] == 10, by_q[11]
+    assert by_q[11]["scale_min"] == 2, by_q[11]
 
 
 def test_full_pipeline_fill_and_history(driver, history_db):
@@ -360,3 +370,116 @@ def test_full_pipeline_fill_and_history(driver, history_db):
     assert stats["total_success"] == 1
     assert stats["total_fail"] == 0
     assert 0.0 <= stats["success_rate"] <= 1.0
+
+
+# ==========================================================================
+#  真实提交路径（v2.6 新增）
+#
+#  此前两个 E2E 只做"填写"，从不走 find_and_click_submit / run_one_submission，
+#  所以本轮修掉的三个 P0（重复点击提交、成功路径冒泡触发整批重试、
+#  selector 拼进 JS 字面量导致非法 CSS）它一个都抓不到。
+#  mock 页面现在会用 JS 模拟问卷星的 AJAX 提交：URL 不变、150ms 后渲染
+#  「提交成功」文案，并把点击次数记在 window.__submitClicks 上。
+# ==========================================================================
+
+def test_submit_clicks_once_and_detects_ajax_success(driver):
+    """提交必须恰好点一次，并通过页面文案（而非 URL 变化）判定成功。"""
+    from src.interaction import SUBMIT_SUCCESS, find_and_click_submit
+
+    assert driver.execute_script("return window.__submitClicks;") == 0
+
+    result = find_and_click_submit(driver, wait_url_change_timeout=5.0)
+
+    assert result == SUBMIT_SUCCESS, (
+        "AJAX 式提交（URL 不变 + 稍后出现成功文案）必须被识别为成功，"
+        f"实际 {result!r}"
+    )
+    clicks = driver.execute_script("return window.__submitClicks;")
+    assert clicks == 1, f"提交按钮必须恰好点一次，实际 {clicks} 次（重复提交风险）"
+
+
+def test_submit_does_not_reclick_when_page_is_busy(driver):
+    """点击后页面跳转期间读 current_url 抛错，绝不能导致重新点击。
+
+    这是 v2.5 那个 P0 的真浏览器版本：旧实现把有副作用的点击和点击后的
+    URL 确认放在同一个 @js_execute_retry(3) 区域内，确认阶段一抛异常
+    就把整份问卷重新提交一遍。
+    """
+    from selenium.common.exceptions import WebDriverException
+
+    from src.interaction import find_and_click_submit
+
+    before = driver.execute_script("return window.__submitClicks;")
+
+    class FlakyUrlProxy:
+        """代理 driver：前 N 次 current_url 读取抛 WebDriverException。
+
+        这正是"提交导致页面跳转、驱动短暂读不到 URL"的真实形态。
+        """
+
+        def __init__(self, inner, fail_first: int):
+            self._inner = inner
+            self._remaining = fail_first
+
+        @property
+        def current_url(self):
+            self._remaining -= 1
+            if self._remaining >= 0:
+                raise WebDriverException("navigation in progress")
+            return self._inner.current_url
+
+        def find_element(self, *a, **kw):
+            return self._inner.find_element(*a, **kw)
+
+        def execute_script(self, *a, **kw):
+            return self._inner.execute_script(*a, **kw)
+
+    proxy = FlakyUrlProxy(driver, fail_first=3)
+    find_and_click_submit(proxy, wait_url_change_timeout=1.0)
+
+    after = driver.execute_script("return window.__submitClicks;")
+    assert after - before == 1, (
+        f"URL 读取抖动导致重复提交：本轮实际点击 {after - before} 次"
+    )
+
+
+def test_full_submission_roundtrip_through_pipeline(driver, history_db):
+    """走完整 run_one_submission：探测 → 作答 → 提交 → 三态判定 → 落盘。
+
+    这条是整套 E2E 真正的"全链路"，覆盖 iframe 适配、断点续填扫描、
+    验证码探测、6 类题型的 JS 交互与提交确认。
+    """
+    import pathlib
+
+    from src.pipeline import run_one_submission
+    from src.utils import ManualHoldLock
+
+    url = "file:///" + (
+        pathlib.Path(__file__).resolve().parent / "fixtures" / "mock_wjx.html"
+    ).as_posix()
+
+    run_id = history_db.start_run(url, 1, "edge", False)
+    outcome = run_one_submission(
+        driver, url, ManualHoldLock(),
+        history_db=history_db, run_id=run_id, submission_index=1,
+        no_record_text=True,
+    )
+    history_db.finish_run(
+        run_id,
+        success_count=1 if outcome == "success" else 0,
+        fail_count=0 if outcome == "success" else 1,
+        total_elapsed_seconds=1.0, status="finished",
+    )
+
+    assert outcome == "success", f"mock 问卷应能被完整答完并提交，实际 {outcome!r}"
+    clicks = driver.execute_script("return window.__submitClicks;")
+    assert clicks == 1, f"整轮只应提交一次，实际 {clicks} 次"
+
+    answers = history_db.query_answers(run_id=run_id)
+    qnums = sorted({int(a["question_number"]) for a in answers})
+    assert len(qnums) >= 8, f"逐题明细应覆盖绝大多数题目，实际 {qnums}"
+    # no_record_text 必须真的屏蔽填空原文
+    texts = [a["text_answer"] for a in answers if a["question_type"] == "text"]
+    assert texts and all(t is None for t in texts), (
+        f"--no-record-text 下填空文本应全为 NULL，实际 {texts[:3]}"
+    )

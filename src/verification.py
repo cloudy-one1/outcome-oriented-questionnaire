@@ -15,31 +15,67 @@
 
 from __future__ import annotations
 
+import logging
+import threading
 import time
 from typing import Any
 
 from .config import VERIFICATION_TIMEOUT
 from .utils import ManualHoldLock
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
-#  Windows 弹窗强制切前台 — 当检测到验证码时，弹出一个 MessageBox
-#  将脚本窗口强制拉到最前面，提醒用户手动处理验证
+#  Windows 弹窗提示 — 当检测到验证码时提醒用户手动处理
+#
+#  关键约束：**绝不能阻塞调用线程**。MessageBoxW 是同步模态框，返回前不释放
+#  控制权；本函数过去直接在批量提交的工作线程上调用，于是「没人点确定」就等于
+#  整批任务永久挂起 —— 且 Win32 模态框吃不到 Ctrl+C，GUI 的停止按钮也只是给
+#  state 置位，谁都打不断它。现在改为守护线程弹窗 + 计时器自动关闭。
+#  真正的等待上限由 wait_for_manual_verification 自己的 timeout_seconds 负责。
 # ---------------------------------------------------------------------------
+_FOCUS_TITLE = "问卷脚本 — 需要人工处理"
+_FOCUS_TEXT = (
+    "智能验证已触发，请在浏览器中手动完成验证！\n\n完成后脚本自动继续。"
+)
+_WM_CLOSE = 0x0010
+
 try:
     import ctypes  # Windows API 调用库
+    from ctypes import wintypes
 
-    def force_focus() -> None:
-        """弹出 Windows 系统级消息框，强制将用户注意力拉到脚本。"""
-        ctypes.windll.user32.MessageBoxW(
-            0,  # 父窗口句柄，0 表示无父窗口
-            "智能验证已触发，请在浏览器中手动完成验证！\n\n完成后脚本自动继续。",
-            "问卷脚本 — 需要人工处理",
-            0x30,  # MB_ICONWARNING | MB_OK
-        )
+    def force_focus(auto_close_seconds: float = 25.0) -> None:
+        """非阻塞地弹一次提示框；无人响应则 auto_close_seconds 秒后自动关闭。"""
+        def _show() -> None:
+            try:
+                # MB_ICONWARNING(0x30) | MB_SETFOREGROUND | MB_TOPMOST
+                ctypes.windll.user32.MessageBoxW(
+                    0, _FOCUS_TEXT, _FOCUS_TITLE,
+                    0x30 | 0x00010000 | 0x00040000,
+                )
+            except Exception:
+                logger.debug("验证码提示弹窗失败（忽略，不影响等待）", exc_info=True)
+
+        def _dismiss() -> None:
+            try:
+                hwnd = ctypes.windll.user32.FindWindowW(None, _FOCUS_TITLE)
+                if hwnd:
+                    ctypes.windll.user32.PostMessageW(
+                        wintypes.HWND(hwnd), _WM_CLOSE,
+                        wintypes.WPARAM(0), wintypes.LPARAM(0),
+                    )
+            except Exception:
+                logger.debug("自动关闭验证码提示框失败（忽略）", exc_info=True)
+
+        threading.Thread(target=_show, daemon=True).start()
+        if auto_close_seconds > 0:
+            timer = threading.Timer(auto_close_seconds, _dismiss)
+            timer.daemon = True
+            timer.start()
 
 except ImportError:
     # 非 Windows 系统（Linux/Mac）降级
-    def force_focus() -> None:
+    def force_focus(auto_close_seconds: float = 25.0) -> None:
         pass
 
 
@@ -146,10 +182,18 @@ def _shadow_iframe_penetrate(driver: Any) -> bool:
     """)
 
 
-def is_smart_verification_showing(driver: Any) -> bool:
-    """综合三信号判断当前页面是否处于「需要人工介入的验证」状态。
+def _probe_verification_state(driver: Any) -> bool | None:
+    """三信号综合判定，返回 **三态**。
 
-    只要三种信号里任意一种命中 → 返回 True，进入人工介入流程。
+      - True  : 确实弹了验证
+      - False : 三个信号都跑完且都判否 —— 页面确实没有验证
+      - None  : 探测本身抛异常，**状态未知**
+
+    把「未知」和「没有」分开是这里的要点。此前 ``is_smart_verification_showing``
+    用 ``except Exception: pass`` 把两者压成同一个 False，而人工等待循环把
+    False 读成"用户已经做完验证了"：滑块正拉到一半时页面跳转、iframe detach、
+    JS 上下文销毁，一次偶发的 ``JavascriptException`` 就会让脚本打印"验证已通过"、
+    **释放 ManualHoldLock** 并继续往一个仍被挡住的页面作答。
     """
     try:
         if _dom_has_verification(driver):
@@ -159,8 +203,21 @@ def is_smart_verification_showing(driver: Any) -> bool:
         if _url_title_body_verification(driver):
             return True
     except Exception:
-        pass
+        return None
     return False
+
+
+def is_smart_verification_showing(driver: Any) -> bool:
+    """综合三信号判断当前页面是否处于「需要人工介入的验证」状态。
+
+    只要三种信号里任意一种命中 → 返回 True，进入人工介入流程。
+    探测失败按 False 处理：本函数的调用方做的是"要不要停下来等人工"这种
+    前置判断，误报成"有验证码"会让整批原地空等到超时。
+
+    **人工等待循环不要用本函数** —— 那里 False 的含义是"确认已放行"，
+    必须能区分探测失败，见 :func:`_probe_verification_state`。
+    """
+    return _probe_verification_state(driver) is True
 
 
 def wait_for_manual_verification(
@@ -175,7 +232,8 @@ def wait_for_manual_verification(
       2. force_focus 弹出 Windows MessageBox 抢占焦点
       3. 如果传入 hold_lock → 调用 acquire()，外部流程看到 is_holding=True 会挂起
       4. 每 2 秒轮询一次（比 v1 的 3 秒响应更快），每 10 秒打印进度
-      5. 用户完成验证 → 释放 lock 并返回 True
+      5. 探测**确认**验证已消失 → 释放 lock 并返回 True
+         （探测本身抛异常不算消失，继续等，上限仍是 timeout_seconds）
       6. 超时后：点击关闭弹窗 + 刷新页面 + 释放 lock + 返回 False
 
     参数：
@@ -203,15 +261,22 @@ def wait_for_manual_verification(
             time.sleep(2)
             waited += 2
 
-            if not is_smart_verification_showing(driver):
+            # 三态判定：只有"确认页面上没有验证"才放行。
+            # 探测本身抛异常时继续等（上限仍是 timeout_seconds），因为此刻
+            # 用户很可能正在拉滑块、JS 上下文正被跳转打断 —— 判成"已通过"会
+            # 提前释放 hold 锁并让 pipeline 撞进一个仍被挡住的页面。
+            state = _probe_verification_state(driver)
+            if state is False:
                 print(f"    验证已通过（{waited}s），继续运行")
                 return True
+            if state is None:
+                print(f"    [{waited}s] 验证状态探测失败，继续等待（不判为已通过）")
 
             if waited % 10 == 0:
                 print(f"    [{waited}s / {timeout_seconds}s] 仍在等待验证...")
 
         # 超时处理
-        print(f"    验证等待超时，正在刷新页面...")
+        print("    验证等待超时，正在刷新页面...")
         try:
             driver.execute_script("""
                 var c = document.querySelector('.layui-layer-close, .layui-layer-btn0,'

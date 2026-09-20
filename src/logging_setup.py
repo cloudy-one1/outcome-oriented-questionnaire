@@ -31,10 +31,20 @@ _CONFIGURED = False
 
 
 def _add_file_handler(logger: logging.Logger, log_file: str, level: int) -> None:
-    parent = os.path.dirname(os.path.abspath(log_file))
+    """为 logger 追加一个落盘 handler；**同一个文件不重复挂**。
+
+    FileHandler.baseFilename 已是绝对路径，可以直接拿来判重。此前没有这一步，
+    ``setup_logging(p)`` 连调两次就会在同一文件上挂两个 handler，每条记录写两遍。
+    """
+    target = os.path.abspath(log_file)
+    for handler in logger.handlers:
+        if isinstance(handler, logging.FileHandler) and handler.baseFilename == target:
+            handler.setLevel(level)      # 已存在 → 只调级别，不再追加
+            return
+    parent = os.path.dirname(target)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    fh = logging.FileHandler(log_file, encoding="utf-8")
+    fh = logging.FileHandler(target, encoding="utf-8")
     fh.setLevel(level)
     fh.setFormatter(logging.Formatter(_LOG_FORMAT))
     logger.addHandler(fh)
@@ -43,17 +53,20 @@ def _add_file_handler(logger: logging.Logger, log_file: str, level: int) -> None
 def setup_logging(log_file: str | None = None, *, level: int = logging.INFO) -> None:
     """配置 ``wjx`` 名字空间的根 logger（幂等，可重复调用）。
 
-    :param log_file: 可选日志文件路径；给出时追加 FileHandler（目录自动创建）。
-    :param level:    logger 级别（默认 INFO）。
+    :param log_file: 可选日志文件路径；给出时追加 FileHandler（目录自动创建，
+                     同一路径重复传不会挂第二个 handler）。
+    :param level:    logger 级别（默认 INFO）。**每次调用都生效** —— 否则
+                     「先 setup_logging() 再 setup_logging(p, level=DEBUG)」会
+                     得到一个 DEBUG 的 handler 配 INFO 的 logger，落盘出来是空文件。
     """
     global _CONFIGURED
     root = logging.getLogger(_LOGGER_NAMESPACE)
+    root.setLevel(level)
     if _CONFIGURED:
         # 幂等：console handler 只挂一次；file handler 按需追加
         if log_file:
             _add_file_handler(root, log_file, level)
         return
-    root.setLevel(level)
     stream = logging.StreamHandler(sys.stderr)
     stream.setFormatter(logging.Formatter(_LOG_FORMAT))
     root.addHandler(stream)

@@ -26,19 +26,15 @@
 
 from __future__ import annotations
 
-import math
 import random
 from typing import Any, Optional
 
-# numpy 为可选依赖：有则用其高效无放回加权抽样；没有则用纯 Python A-Res 算法
-try:
-    import numpy as np  # type: ignore
-    _HAS_NUMPY: bool = True
-except Exception:  # pragma: no cover - 环境缺 numpy 时走纯 Python 路径
-    np = None  # type: ignore
-    _HAS_NUMPY = False
-
 from .config import WEIGHT_CONFIG
+from .utils import (
+    sanitize_weights,
+    weighted_sample_no_replace,
+    weights_are_usable,
+)
 
 
 # ============================================================================
@@ -176,7 +172,7 @@ def _weighted_or_equal_choice(
     weights: Optional[list[float]] = None,
 ) -> int:
     """单个选项：有权重按权重抽，否则均匀。"""
-    if weights and len(weights) == len(indices) and sum(w for w in weights if w > 0) > 0:
+    if weights_are_usable(weights, len(indices)):
         return random.choices(indices, weights=weights, k=1)[0]
     return random.choice(indices)
 
@@ -186,31 +182,13 @@ def _weighted_multi(
     weights: Optional[list[float]],
     k: int,
 ) -> list[int]:
-    """多选：无放回加权抽样。numpy 优先，否则纯 Python A-Res 算法。"""
-    n = len(indices)
-    k = max(1, min(k, n))
+    """多选：无放回加权抽样。
 
-    # 分支 A：有 numpy → 经典概率法
-    if _HAS_NUMPY:
-        if weights and len(weights) == n and sum(w for w in weights if w > 0) > 0:
-            total = sum(weights)
-            probs = [w / total for w in weights]
-            return sorted(
-                np.random.choice(indices, size=k, replace=False, p=probs).tolist()
-            )
-        return sorted(np.random.choice(indices, size=k, replace=False).tolist())
-
-    # 分支 B：纯 Python —— A-Res 算法（Efraimidis & Spirakis, WRes 无放回加权抽样）
-    # key = u^(1/w)，取 top-k，保证概率正比于权重
-    safe_ws = list(weights) if weights and len(weights) == n else [1.0] * n
-    keys: list[tuple[float, int]] = []
-    for w, idx in zip(safe_ws, indices):
-        w_pos = max(w if w > 0 else 1e-12, 1e-12)
-        u = random.random()            # (0, 1) 均匀
-        # math.log 防下溢：key = log(u) / w → 排序等价于 u^(1/w)
-        keys.append((math.log(u) / w_pos, idx))
-    keys.sort(reverse=True)  # top-k 在最前
-    return sorted(idx for _, idx in keys[:k])
+    实现已上收到 ``utils.weighted_sample_no_replace``（v2.6）——
+    此前 answering.py 里有一份算法相同但**守卫不同**的副本，
+    那份缺非法权重保护，全 0 权重直接 ZeroDivisionError。
+    """
+    return weighted_sample_no_replace(list(indices), weights, k)
 
 
 def _cfg_weights(q: dict) -> Optional[list[float]]:
@@ -252,8 +230,14 @@ def generate_answer(question: dict) -> dict[str, Any]:
         n = len(indices)
         if cfg and "count_options" in cfg:
             count_opts = list(cfg["count_options"])
-            count_wts = list(cfg.get("count_weights", [1] * len(count_opts)))
-            k = random.choices(count_opts, weights=count_wts, k=1)[0]
+            count_wts = sanitize_weights(
+                list(cfg.get("count_weights", [1] * len(count_opts))),
+                len(count_opts),
+                question=qi if isinstance(qi, int) else None,
+                label="选中个数权重",
+            )
+            k = random.choices(count_opts, weights=count_wts, k=1)[0] \
+                if count_wts else random.choice(count_opts)
         else:
             k = random.randint(1, max(1, n))
         picked_indices = _weighted_multi(indices, _cfg_weights(question), k)
@@ -273,7 +257,7 @@ def generate_answer(question: dict) -> dict[str, Any]:
         indices = list(range(scale_min, scale_max + 1))
         # 权重：1→1分, 2→2分 ... 必须对齐 indices
         w = _cfg_weights(question)
-        if w and len(w) == len(indices):
+        if weights_are_usable(w, len(indices)):
             value = random.choices(indices, weights=w, k=1)[0]
         else:
             # 默认轻微偏向中上（4/5 概率更高）——符合真实打分习惯

@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, Literal, TypeVar
+from typing import Any, Callable, TypeVar
 
 from selenium.webdriver.common.by import By
 

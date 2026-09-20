@@ -16,31 +16,24 @@ import os
 import queue
 import sys
 import threading
-import time
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import messagebox, ttk
 
 # 将项目根目录加入 sys.path，使得启动脚本放在任意位置都能 import src
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from selenium.common.exceptions import InvalidSessionIdException  # noqa: E402
-from selenium.webdriver.support.ui import WebDriverWait  # noqa: E402
 
-from gui.qr_utils import decode_qr_from_image  # noqa: E402
 from gui.theme import (  # noqa: E402  7A: 主题常量/工具已从本文件剥离
     COLORS,
-    FONT_PRESETS,
     GRAD_DANGER,
     GRAD_HEADER,
     GRAD_PRIMARY,
     GRAD_SUCCESS,
     _draw_horizontal_gradient,
     _draw_vertical_gradient,
-    _hex_to_rgb,
     _lerp_color,
-    _rgb_to_hex,
     apply_ttk_style,
 )
 from gui.widgets import (  # noqa: E402  7B: 通用 UI 工厂方法已剥离
@@ -57,32 +50,17 @@ from gui.log_view import LogView  # noqa: E402  7E: 日志终端面板剥离
 from gui.controller import GuiController  # noqa: E402  7F: 命令处理器剥离
 from src import __version__ as APP_VERSION  # noqa: E402
 from src import config as _cfg_module  # noqa: E402
-from src.browser import cleanup_browser_state, create_driver  # noqa: E402
 from src.config import (  # noqa: E402
     BROWSER_OPTIONS,
     DEFAULT_BROWSER,
     DEFAULT_USE_UC,
-    RESTART_BROWSER_EVERY,
-    ROUND_LONG_PAUSE_HI,
-    ROUND_LONG_PAUSE_LO,
-    ROUND_LONG_PAUSE_PROB,
-    ROUND_WAIT_HI,
-    ROUND_WAIT_LO,
-    ROUND_WAIT_MU,
-    ROUND_WAIT_SIGMA,
     WEIGHT_CONFIG,
 )
-from src.utils import ManualHoldLock, human_pause  # noqa: E402
-from src.detection import detect_questions  # noqa: E402
 from src.models import RunState  # noqa: E402  Step 9: 共用状态对象
-from src.pipeline import run_one_submission  # noqa: E402
-from src.verification import (  # noqa: E402
-    is_smart_verification_showing,
-    wait_for_manual_verification,
-)
 # V2 新增：配置文件 IO / 历史记录
 try:
     from src.config_io import (  # noqa: E402
+        apply_weight_config,
         load_weight_config,
         save_weight_config,
         validate_weight_config,
@@ -93,6 +71,18 @@ except Exception:  # pragma: no cover
     save_weight_config = None  # type: ignore
     validate_weight_config = None  # type: ignore
     _HAS_CONFIG_IO = False
+
+    def apply_weight_config(cfg, *, replace=False):  # noqa: D103 降级实现
+        """config_io 不可用时的等价兜底：直接操作全局 WEIGHT_CONFIG。
+
+        必须是**原地改写**而非重新绑定 —— src.config.WEIGHT_CONFIG 这个对象
+        被 answering / answering_v2 / history 等多处以别名引用，重新赋值只会
+        让它们继续看着旧字典。
+        """
+        if replace:
+            _cfg_module.WEIGHT_CONFIG.clear()
+        for qnum, qcfg in dict(cfg).items():
+            _cfg_module.WEIGHT_CONFIG[int(qnum)] = dict(qcfg)
 try:
     from src.history import SubmissionHistory  # noqa: E402
     _HAS_HISTORY: bool = True
@@ -162,6 +152,10 @@ class SurveyGUI:
         # 浏览器选择
         self.browser_var = tk.StringVar(value=DEFAULT_BROWSER)
         self.use_uc_var = tk.BooleanVar(value=DEFAULT_USE_UC)
+        # 隐私：GUI 默认启用历史库（data/history.db），因此默认**不**落盘填空题原文。
+        # CLI 侧同名开关是 --no-record-text；此前 GUI 完全没有这个开关，
+        # 导致 run_one_submission 走默认 False，把姓名/手机/邮箱明文写进 SQLite。
+        self.no_record_text_var = tk.BooleanVar(value=True)
 
         # 动画状态
         self._breath_phase: float = 0.0
@@ -177,6 +171,9 @@ class SurveyGUI:
         self._log_view: LogView | None = None
         # （7F）命令处理器，封装 config IO / 二维码 / 探测题目
         self._controller: GuiController | None = None
+        # 批量提交工作线程（关窗时需要 join，见 _on_close）
+        self._run_thread: threading.Thread | None = None
+        self._closing = False
 
         self._setup_theme()
         self._build_ui()
@@ -192,7 +189,27 @@ class SurveyGUI:
         )
         self._start_log_poller()
         self._start_animations()
+        self._reap_orphan_runs()
         self._auto_load_default_config()
+
+    def _reap_orphan_runs(self) -> None:
+        """启动时收尾上次被强杀 / 断电留下的孤儿 ``running`` 批次。
+
+        ``running`` 被 find_resumable_run 视为可恢复；不先改判的话，
+        下次打开 GUI 会提示"从某个早已死掉的批次继续"，
+        而那个批次的页面与浏览器状态完全未知 —— 续传它可能直接重复提交。
+        """
+        db = self._history_get_db()
+        if db is None:
+            return
+        try:
+            reaped = db.reap_stale_runs()
+            if reaped:
+                self._log(f"[历史] 已把 {reaped} 个未正常收尾的批次改判为 failed",
+                          "WARN")
+        except Exception as e:
+            self._log(f"[历史] 孤儿批次收尾失败（不影响运行）: "
+                      f"{type(e).__name__}: {e}", "WARN")
 
     def _auto_load_default_config(self) -> None:
         if self._controller is None:
@@ -674,6 +691,14 @@ class SurveyGUI:
         )
         self.use_uc_chk.pack(side=tk.LEFT)
 
+        # 隐私开关（与 CLI --no-record-text 同义）
+        self.no_record_text_chk = self._make_toggle(
+            row,
+            text="🔒 不记录填空文本（保护隐私，历史库 text_answer 写 NULL）",
+            var=self.no_record_text_var,
+        )
+        self.no_record_text_chk.pack(side=tk.LEFT, padx=(14, 0))
+
     def _build_config_io_row(self, parent: tk.Frame) -> None:
         """配置导入 / 导出 / 另存默认。V2 新增。"""
         row = tk.Frame(parent, bg=COLORS["surface"])
@@ -1109,16 +1134,17 @@ class SurveyGUI:
             messagebox.showwarning("提示", "提交份数至少为 1")
             return
 
-        # ---- V2 权重配置 ----
+        # ---- V2 权重配置（统一走 config_io.apply_weight_config，语义与 CLI 一致） ----
         if self.questions:
-            _cfg_module.WEIGHT_CONFIG.clear()
-            _cfg_module.WEIGHT_CONFIG.update(self._build_weight_config())
+            apply_weight_config(self._build_weight_config(), replace=True)
             self._log(f"已加载 {len(_cfg_module.WEIGHT_CONFIG)} 道题的自定义权重", "INFO")
         else:
-            _cfg_module.WEIGHT_CONFIG.clear()
+            apply_weight_config({}, replace=True)
             self._log("未配置权重表格，所有题目使用等权重随机", "WARN")
 
         # ---- Step 9: 构造 RunState（全新批次），续传时更新 resume_start_idx / run_id ----
+        # 所有 Tk 变量必须在这里（主线程）读完后放进 state；
+        # _run_loop 跑在 worker 线程，之后再 .get() 就是跨线程访问 Tcl 解释器。
         browser_name = self.browser_var.get()
         use_uc_flag = bool(self.use_uc_var.get())
         state = RunState(
@@ -1128,6 +1154,7 @@ class SurveyGUI:
             browser=browser_name,
             use_uc=use_uc_flag,
             survey_url=url[:500],
+            no_record_text=bool(self.no_record_text_var.get()),
             weight_config_snapshot=RunState.snapshot_weight_config(
                 dict(_cfg_module.WEIGHT_CONFIG)
             ),
@@ -1147,8 +1174,7 @@ class SurveyGUI:
                         except Exception:
                             restored_w = {}
                         if restored_w:
-                            _cfg_module.WEIGHT_CONFIG.clear()
-                            _cfg_module.WEIGHT_CONFIG.update(restored_w)
+                            apply_weight_config(restored_w, replace=True)
                             state.weight_config_snapshot = (
                                 RunState.snapshot_weight_config(restored_w)
                             )
@@ -1231,11 +1257,12 @@ class SurveyGUI:
             self._log(f"▶ 开始执行，目标 {state.total_target} 份", "HEADER")
         self._log("═" * 40, "HEADER")
 
-        threading.Thread(
+        self._run_thread = threading.Thread(
             target=self._run_loop,
             args=(state,),
             daemon=True,
-        ).start()
+        )
+        self._run_thread.start()
 
     def _on_stop(self) -> None:
         if not self.running:
@@ -1251,171 +1278,58 @@ class SurveyGUI:
         self,
         state: RunState,
     ) -> None:
-        """批量提交主循环（Step 9：完全走 RunState，计数器统一到 state.mark_* 分支）。
+        """批量提交主循环 —— 已收敛为对 src.cli.run_batch 的一次调用（V2.6）。
 
-        签名简化：旧版 ``_run_loop(url,total,start_idx,resume_run_id)`` → 新版只传 state，
-        所有配置/续传/计数器都在 state 里。
+        这里原本是 run_batch 那 11 步的 170 行手抄副本。重复的代价付过两次：
+        v2.4 的 ``lock`` 漏传要在 CLI 和这里各修一次；v2.5 的
+        ``no_record_text`` / 单轮异常韧性 / 崩溃优先级又是三处双份修改。
+        现在批次语义只有一份实现，GUI 只负责三件事：
+            1. 把已经填好的 RunState 交出去（续传计数 / attempts_cap 由 _on_start 算）
+            2. 每完成一份回调刷日志与进度条
+            3. 收尾把 UI 复位
         """
-        driver = None
-        history_db: "SubmissionHistory | None" = None
-        url = state.survey_url
-        t0 = time.perf_counter()
-        state.total_elapsed_start = t0
+        from src.cli import run_batch
+
+        def on_round(res) -> None:
+            """每轮结束刷 UI。计数器镜像留在本线程读，Tk 控件经 after 回主线程。"""
+            level = {
+                "success": "OK",
+                "failed": "FAIL",
+                "unknown": "FAIL",
+                "error": "FAIL",
+                "browser_dead": "WARN",
+            }.get(res.outcome, "INFO")
+            self._log(
+                f"[{res.index}/{state.total_target}] {res.message}"
+                f"  (✓{state.success_count} ✕{state.fail_count})",
+                level,
+            )
+            self._sync_ui_mirrors_from_state()
+            self.root.after(0, self._update_progress)
+
+        db = self._history_get_db()
         try:
-            # ---- 历史落盘 ----
-            db = self._history_get_db()
-            if db is not None:
-                try:
-                    if state.run_id is None:
-                        state.run_id = db.start_run(
-                            survey_url=url[:500],
-                            total_submissions=state.total_target,
-                            browser=state.browser,
-                            use_uc=state.use_uc,
-                            weight_config=state.weight_config_snapshot,
-                        )
-                        self._log(
-                            f"[历史] Run #{state.run_id} 已记录起点"
-                            + (f" · 权重快照 {len(state.weight_config_snapshot)} 道题"
-                               if state.weight_config_snapshot else " · 等权重"),
-                            "INFO",
-                        )
-                    else:
-                        self._log(
-                            f"[历史] 续传模式 · 复用 Run #{state.run_id}"
-                            "（不重置计数，权重沿用上次）",
-                            "INFO",
-                        )
-                    history_db = db
-                except Exception as e:
-                    self._log(f"[历史] start_run 失败（不影响答题）: "
-                              f"{type(e).__name__}: {e}", "WARN")
-                    history_db = None
-                    state.run_id = None
-
-            # 启动浏览器
-            driver = create_driver(state.browser, use_uc=state.use_uc)
-
-            # V2.4 修复：人工介入锁贯穿整轮批次（与 CLI 同款）。
-            # 此前 v2.3 重构后本循环漏传 lock → run_one_submission 抛 TypeError
-            # 被兜底 except 吞成"运行异常"日志（P0 级回归）。
-            lock = ManualHoldLock()
-
-            # 循环：attempts_cap 为"还需跑多少份"（续传时 = planned - done）
-            while state.current_attempt < state.attempts_cap:
-                if state.stop_flag:
-                    # 用户点了"停止"→ CLI 同款 interrupted 语义
-                    state.mark_interrupted()
-                    self._log("已停止运行（已成功份数可下次恢复）", "WARN")
-                    break
-
-                state.advance_attempt()  # 当前尝试序号：1..attempts_cap
-                displayed_idx = state.displayed_round
-                self._sync_ui_mirrors_from_state()
-                self.root.after(0, self._update_progress)
-                self._log(f"[{displayed_idx}/{state.total_target}] 提交中...", "INFO")
-
-                try:
-                    # V2.4 修复：lock 必传（与 CLI 同一处回归）
-                    outcome = run_one_submission(
-                        driver, url,
-                        lock,
-                        history_db=history_db,
-                        run_id=state.run_id,
-                        submission_index=displayed_idx,
-                    )
-                except InvalidSessionIdException:
-                    self._log("浏览器断开，正在重建...", "WARN")
-                    try: driver.quit()
-                    except Exception:
-                        logger.debug("重建前 driver.quit() 失败（忽略）", exc_info=True)
-                    driver = create_driver(state.browser, use_uc=state.use_uc)
-                    state.mark_failure()
-                    self._sync_ui_mirrors_from_state()
-                    self.root.after(0, self._update_progress)
-                    continue
-
-                # ---- 三态统计（走 state 集中方法，避免散落分支漏同步） ----
-                if outcome == "success":
-                    state.mark_success()
-                    self._log("✓ 提交成功", "OK")
-                elif outcome == "unknown":
-                    state.mark_unknown()
-                    self._log("⚠ 提交状态未知（按钮已点击但效果超时）", "FAIL")
-                else:
-                    state.mark_failure()
-                    self._log("✕ 提交失败", "FAIL")
-                self._sync_ui_mirrors_from_state()
-                self.root.after(0, self._update_progress)
-
-                # V2.4 整改：浏览器状态清理收敛到 src.browser.cleanup_browser_state（CLI 共用）
-                cleanup_browser_state(driver)
-
-                if state.current_attempt % RESTART_BROWSER_EVERY == 0:
-                    self._log("重启浏览器释放内存", "INFO")
-                    try: driver.quit()
-                    except Exception:
-                        logger.debug("重启前 driver.quit() 失败（忽略）", exc_info=True)
-                    driver = create_driver(state.browser, use_uc=state.use_uc)
-
-                # V2.4 整改：轮间停顿统一为高斯分布（与 CLI 一致）。
-                # 旧版 uniform(min, max) 均匀分布是可疑的机器人特征，
-                # 与 config.py "正态分布 + 区间截断" 的反检测原则矛盾。
-                human_pause(
-                    ROUND_WAIT_MU, ROUND_WAIT_SIGMA,
-                    ROUND_WAIT_LO, ROUND_WAIT_HI,
-                    long_pause_prob=ROUND_LONG_PAUSE_PROB,
-                    long_lo=ROUND_LONG_PAUSE_LO,
-                    long_hi=ROUND_LONG_PAUSE_HI,
-                )
-
+            run_batch(
+                state.survey_url,
+                int(state.total_target),
+                browser=state.browser,
+                use_uc=state.use_uc,
+                history_db=db,
+                weight_config=state.weight_config_snapshot,
+                no_record_text=state.no_record_text,
+                # state 由 _on_start 预先算好（含续传的 run_id / success_count /
+                # attempts_cap / resume_start_idx），run_batch 会直接沿用
+                state=state,
+                on_round=on_round,
+                log=lambda msg: self._log(msg, "INFO"),
+                stop_check=lambda: state.stop_flag,
+                error_suffix=f"GUI · browser={state.browser} uc={state.use_uc}",
+            )
         except Exception as e:
-            # V2.4 修复：未捕获异常 → 批次记 failed。旧版注释声称"status=failed"
-            # 但从未实现，崩溃批次被 history_status() 误标 finished 污染成功率，
-            # 且状态为 finished 后 find_resumable_run 也不会再恢复它。
-            state.mark_crashed(f"{type(e).__name__}: {e}")
+            # run_batch 内部已 mark_crashed 并把批次以 failed 闭合；
+            # worker 线程再往上抛没有接收方，只转成日志
             self._log(f"运行异常: {type(e).__name__}: {e}", "FAIL")
         finally:
-            # ---- V2：写入结束状态（走 RunState.history_status / history_error_message） ----
-            if history_db is not None and state.run_id is not None:
-                try:
-                    note = f"GUI · browser={state.browser} uc={state.use_uc}"
-                    elapsed = time.perf_counter() - state.total_elapsed_start
-                    # 兼容旧版：如果 history 有 mark_interrupted 方法就用（GUI 续传友好）
-                    if (state.is_interrupted or state.stop_flag) and hasattr(
-                        history_db, "mark_interrupted"
-                    ):
-                        history_db.mark_interrupted(
-                            state.run_id,
-                            success_count=state.success_count,
-                            fail_count=state.fail_count,
-                            total_elapsed_seconds=max(0.0, elapsed),
-                            error_message=note,
-                        )
-                    else:
-                        history_db.finish_run(
-                            state.run_id,
-                            success_count=state.success_count,
-                            fail_count=state.fail_count,
-                            total_elapsed_seconds=max(0.0, elapsed),
-                            status=state.history_status(),
-                            error_message=state.history_error_message(suffix=note),
-                        )
-                    self._log(
-                        f"[历史] Run #{state.run_id} 已闭合: "
-                        f"{state.history_status()} "
-                        f"(✓ {state.success_count} / ✕ {state.fail_count})",
-                        "INFO",
-                    )
-                except Exception as he:
-                    self._log(
-                        f"[历史] finish_run 失败: {type(he).__name__}: {he}",
-                        "WARN",
-                    )
-            if driver:
-                try: driver.quit()
-                except Exception:
-                    logger.debug("收尾 driver.quit() 失败（忽略）", exc_info=True)
             self._sync_ui_mirrors_from_state()
             self.root.after(0, self._on_run_finished)
 
@@ -1459,10 +1373,44 @@ class SurveyGUI:
         self._redraw_progress()
 
     # ==================================================================
-    #  启动
+    #  启动 / 关闭
     # ==================================================================
 
+    def _on_close(self) -> None:
+        """关闭窗口：先优雅停止工作线程，再销毁 Tk。
+
+        此前没有 WM_DELETE_WINDOW 处理，而 _run_loop 是 daemon 线程 ——
+        窗口一关进程立刻退出，线程的 finally **根本不执行**，后果有两个：
+          1. driver.quit() 被跳过，msedgedriver / chromedriver 进程孤儿化残留；
+          2. finish_run 被跳过，runs 表那一行永远停在 status='running'，
+             而 find_resumable_run 把 'running' 也当可恢复 → 下次给出错误的续传。
+        """
+        if self._closing:
+            return
+        self._closing = True
+
+        if self._state is not None and self.running:
+            self._state.request_stop()
+            self._log("正在停止运行，等待当前轮次收尾…", "WARN")
+
+        if self._run_thread is not None and self._run_thread.is_alive():
+            # 最多等当前这一轮跑完（含点击/等待超时），超时后放弃 join 继续退出，
+            # 避免一个卡死的 WebDriver 调用把窗口永久钉在屏幕上。
+            self._run_thread.join(timeout=30.0)
+            if self._run_thread.is_alive():
+                self._log("工作线程未在 30s 内退出，强制关闭（浏览器可能残留）", "WARN")
+
+        try:
+            panel = self._history_panel
+            if panel is not None:
+                panel.close_db()
+        except Exception:
+            logger.debug("关闭历史库失败（忽略）", exc_info=True)
+
+        self.root.destroy()
+
     def run(self) -> None:
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.mainloop()
 
 

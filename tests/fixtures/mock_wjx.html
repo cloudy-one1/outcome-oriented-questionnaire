@@ -198,5 +198,70 @@
   <input type="submit" id="submit_button" value="提交问卷">
 </div>
 
+<div id="q11_block" class="div_question">
+  <div class="qtitle"><span class="idx">11.</span>满意度打分（<b>2~10 分</b>量表，注意起点不是 1）</div>
+  <div class="field rate" id="div11">
+    <input type="radio" name="q11" value="2" style="display:none">
+    <input type="radio" name="q11" value="3" style="display:none">
+    <input type="radio" name="q11" value="4" style="display:none">
+    <input type="radio" name="q11" value="5" style="display:none">
+    <input type="radio" name="q11" value="6" style="display:none">
+    <input type="radio" name="q11" value="7" style="display:none">
+    <input type="radio" name="q11" value="8" style="display:none">
+    <input type="radio" name="q11" value="9" style="display:none">
+    <input type="radio" name="q11" value="10" style="display:none">
+    <span class="star-item" data-v="2">2</span>
+    <span class="star-item" data-v="3">3</span>
+    <span class="star-item" data-v="4">4</span>
+    <span class="star-item" data-v="5">5</span>
+    <span class="star-item" data-v="6">6</span>
+    <span class="star-item" data-v="7">7</span>
+    <span class="star-item" data-v="8">8</span>
+    <span class="star-item" data-v="9">9</span>
+    <span class="star-item" data-v="10">10</span>
+  </div>
+</div>
+
+<script>
+// 提交行为：模拟问卷星的 AJAX 提交 —— URL 不变，稍后在页面里渲染成功文案。
+// 这正是 submit_success_detect_script() 要走"关键词"分支而不是"URL 变化"分支的原因。
+// 同时记录点击次数，供"绝不能重复提交"的回归用例断言。
+window.__submitClicks = 0;
+window.__lastCheckedValue = function (name) {
+  var r = document.querySelector('input[name="' + name + '"]:checked');
+  return r ? r.value : null;
+};
+(function () {
+  var btn = document.getElementById('submit_button');
+  if (!btn) return;
+  btn.addEventListener('click', function (ev) {
+    // 阻止默认提交：file:// 下会让页面跳走，把 E2E 的断言窗口弄没
+    if (ev && ev.preventDefault) ev.preventDefault();
+    window.__submitClicks += 1;
+    window.setTimeout(function () {
+      var box = document.createElement('div');
+      box.id = 'submit_result';
+      box.className = 'submit-succ';
+      box.textContent = '提交成功，感谢您的参与！';
+      document.body.appendChild(box);
+    }, 150);
+  });
+  // Q11 的星块点击只负责高亮，真实选中状态由隐藏 radio 承载（与问卷星一致）
+  Array.prototype.forEach.call(
+    document.querySelectorAll('#div11 .star-item'),
+    function (el) {
+      el.addEventListener('click', function () {
+        var r = document.querySelector('input[name="q11"][value="' + el.dataset.v + '"]');
+        if (r) r.checked = true;
+        el.parentNode.querySelectorAll('.star-item').forEach(function (s) {
+          s.classList.remove('active');
+        });
+        el.classList.add('active');
+      });
+    }
+  );
+})();
+</script>
+
 </body>
 </html>
