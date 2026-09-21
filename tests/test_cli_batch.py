@@ -127,13 +127,33 @@ class TestRunBatchSmoke(unittest.TestCase):
                 )
             rows = db._query("SELECT * FROM runs ORDER BY id")
             row = rows[0]
-        # attempts_cap = 5 - 3 = 2，两轮都失败 → 失败 1(旧) + 2(新) = 3
-        self.assertEqual((success, fail), (3, 3))
+        # 审查 P3-4 口径：上限是**尝试次数**，上次已消耗 done+fail = 3+1 = 4 次
+        # → attempts_cap = 5 - 4 = 1，一轮失败 → 失败 1(旧) + 1(新) = 2
+        self.assertEqual((success, fail), (3, 2))
         self.assertEqual(len(rows), 1, "续传不得新建 runs 行")
         self.assertEqual(row["id"], rid)
         self.assertEqual(row["status"], "finished")
         self.assertEqual(row["success_count"], 3)
-        self.assertEqual(row["fail_count"], 3)
+        self.assertEqual(row["fail_count"], 2)
+
+    def test_resume_cap_subtracts_consumed_attempts(self) -> None:
+        """target_success 模式的续传上限同样按「已尝试」而非「已成功」扣减。
+
+        旧实现只减 resume_done，于是续传后总尝试数会凭空多出 resume_fail 次：
+        上限 6、上次成功 2 失败 1 → 旧算法给 4 次（合计 7 次尝试），新算法给 3 次。
+        """
+        with mock.patch("src.browser.create_driver",
+                        side_effect=_fake_driver_factory), \
+             mock.patch("src.utils.human_pause", return_value=0.0):
+            success, fail = cli.run_batch(
+                SURVEY_URL,
+                5,
+                target_success=True,
+                max_attempts=6,
+                resume_done=2,
+                resume_fail=1,
+            )
+        self.assertEqual((success, fail), (0, 3), "本轮应只再尝试 6-(2+1)=3 次")
 
 
     def test_webdriver_exception_in_one_round_does_not_abort_batch(self) -> None:

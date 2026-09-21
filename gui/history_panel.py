@@ -30,7 +30,7 @@ from .widgets import _make_card as _default_make_card
 from .widgets import _make_icon_button as _default_make_icon_btn
 
 if TYPE_CHECKING:  # pragma: no cover - 仅用于类型注解，避免循环 import
-    from src.history import SubmissionHistory  # type: ignore
+    from src.history import SubmissionHistory
 
 
 def _csv_safe(value: Any) -> str:

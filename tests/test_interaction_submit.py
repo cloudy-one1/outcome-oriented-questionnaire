@@ -18,6 +18,7 @@ import threading
 import time as _time
 import unittest
 from typing import Any
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -28,6 +29,8 @@ from src.interaction import (
     _wait_until_submit_effect,
     find_and_click_submit,
 )
+from src.exceptions import format_exc_log
+from src.interactions._scripts import submit_success_detect_script
 
 
 class _FakeElement:
@@ -74,12 +77,12 @@ class _FakeDriver:
         return _FakeElement(found=True)
 
     def execute_script(self, script: str, *args: Any) -> Any:
-        # 成功文本检测脚本（含 "提交成功" / "感谢" / "已完成" 关键词）
-        if "提交成功" in script or "感谢" in script or "已完成" in script:
+        # 成功文本检测脚本（只含强信号：提交成功 / 感谢）
+        if "提交成功" in script or "感谢" in script:
             if self._state.has_success_selector:
                 return True
             return any(k in self._state.body_text for k in (
-                "提交成功", "感谢您的参与", "感谢您的认真填写", "已完成",
+                "提交成功", "感谢您的参与", "感谢您的认真填写",
             ))
         # JS 兜底找提交按钮（脚本里含 var sels = [...]）
         if "sels" in script:
@@ -123,6 +126,26 @@ class TestSubmitTriState(unittest.TestCase):
         result = _wait_until_submit_effect(driver, timeout=2.0)
         self.assertEqual(result, SUBMIT_SUCCESS)
 
+    def test_weak_keyword_alone_is_not_success(self) -> None:
+        """只有「已完成」这类弱文案、无强信号也无成功容器 → 不能判 success。
+
+        审查 P3-5：误判方向是危险的（失败计成成功会虚报份数）。宁可退回
+        保守的 unknown（上层计败但单独计数）。
+        """
+        script = submit_success_detect_script()
+        self.assertNotIn("已完成", script, "弱关键词必须从成功判定脚本里移除")
+
+        state = _ScriptResult()
+        driver = _FakeDriver(state)
+
+        def _set_text() -> None:
+            _time.sleep(0.2)
+            state.set_success_text("本次任务已完成，请继续填写剩余题目")
+
+        threading.Thread(target=_set_text, daemon=True).start()
+        result = _wait_until_submit_effect(driver, timeout=0.6)
+        self.assertEqual(result, SUBMIT_UNKNOWN)
+
     def test_timeout_returns_unknown_not_success(self) -> None:
         """超时（什么都没观察到）→ 返回 "unknown" 而非 "success"。
 
@@ -136,6 +159,24 @@ class TestSubmitTriState(unittest.TestCase):
         self.assertNotEqual(result, SUBMIT_SUCCESS,
                             "超时不能再被误判为 success（审查 P1-1 修复点）")
         self.assertEqual(result, SUBMIT_UNKNOWN)
+
+    def test_persistent_bug_logged_once_and_stays_unknown(self) -> None:
+        """轮询期撞上纯代码异常：控制流不变（仍超时 → unknown），但要留一次痕。
+
+        审查 P2-2 的同类站点（v2.8 补）。此前是 `except Exception: pass`，
+        TypeError 这类 bug 会被彻底吞掉；一次性留痕既能暴露它，又不会在
+        6 秒窗口里按 0.15s 的节奏刷出几十行。
+        """
+        class _BugDriver(_FakeDriver):
+            def execute_script(self, script: str, *args: Any) -> Any:
+                raise TypeError("模拟把 selector 拼进 JS 时的参数错误")
+
+        driver = _BugDriver(_ScriptResult())
+        with mock.patch("src.interactions.submit.format_exc_log",
+                        side_effect=format_exc_log) as spy:
+            result = _wait_until_submit_effect(driver, timeout=0.6)
+        self.assertEqual(result, SUBMIT_UNKNOWN)
+        self.assertEqual(spy.call_count, 1, "应留痕，且整个轮询期只留一次")
 
     # ------------------------------------------------------------------
     #  find_and_click_submit 端到端测试（public API 三态传播）

@@ -5,16 +5,23 @@
 
 from __future__ import annotations
 
+import importlib
+from typing import Any
+
 import numpy as np
 from tkinter import messagebox
 
-# OpenCV — 用于二维码解析（可选依赖）
+# OpenCV — 用于二维码解析（可选依赖）。
+# 用 importlib 而不是 "try: import cv2 / except ImportError + # type: ignore"：
+# 后者在装了 cv2 的环境里被 pyright 判成冗余 ignore，在没装的环境里又报模块解析不了，
+# 两侧各留一条 warning —— 数量会随环境 ±1，gui 纳入门禁时必须先把它消掉（v2.8）。
+cv2: Any = None
 try:
-    import cv2  # type: ignore
-
-    _HAS_CV2 = True
+    cv2 = importlib.import_module("cv2")
 except ImportError:
-    _HAS_CV2 = False
+    pass
+
+_HAS_CV2 = cv2 is not None
 
 
 def has_cv2() -> bool:

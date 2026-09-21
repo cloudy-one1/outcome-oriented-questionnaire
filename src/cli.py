@@ -385,7 +385,6 @@ def run_batch(
         ROUND_WAIT_MU,
         ROUND_WAIT_SIGMA,
     )
-    from .interaction import SUBMIT_SUCCESS  # noqa: F401  - 明确"成功"判定
     from .pipeline import run_one_submission
     from .utils import ManualHoldLock, human_pause
 
@@ -405,16 +404,20 @@ def run_batch(
     #   - target_success=True：total_submissions 是"目标成功数"，循环直到达成
     #     或 max_attempts 用尽（防死循环），submission_index 仍递增以保 history 连续
     # V2.4 续传：resume_done 计入两侧上限（剩余尝试 = 原上限 - 已完成）
+    # 审查 P3-4 修正口径：两个分支的上限都是**尝试次数**语义，而上一次批次已经
+    # 用掉 done+fail 次尝试。此前只减 done，续传后总尝试数会凭空多出 fail 次
+    # （计划 20 份、已完成 12、失败 3 → 旧算法再给 8 次 = 合计 23 次）。
+    consumed_attempts = int(resume_done) + int(resume_fail)
     attempts_cap: int
     if target_success:
         base_cap = int(max_attempts) if max_attempts else (int(total_submissions) * 2)
-        attempts_cap = max(1, base_cap - int(resume_done))
+        attempts_cap = max(1, base_cap - consumed_attempts)
         _log(
             f"[模式] 目标成功数 = {total_submissions}，最大尝试次数 = {attempts_cap}"
             + ("（不记录填空文本）" if no_record_text else "")
         )
     else:
-        attempts_cap = max(0, int(total_submissions) - int(resume_done))
+        attempts_cap = max(0, int(total_submissions) - consumed_attempts)
 
     # V2.3 命名整改（建议第四章）：用 RunState 集中管理批次状态,
     # 替代散落的 success/fail/unknown_count/is_interrupted/run_id 等局部变量
@@ -748,7 +751,8 @@ def main(argv: list[str] | None = None) -> None:
                 e, action="history.reap_stale_runs", recovery="忽略，继续运行",
             ))
     # 续传时沿用上次批次的计划份数（用户显式 -n 时以用户为准）；
-    # run_batch 把 total_submissions 当作「绝对目标份数」，attempts_cap = 目标 - 已完成，
+    # run_batch 把 total_submissions 当作「绝对目标份数」，attempts_cap = 目标 - 已尝试
+    # （已尝试 = 上次已成功 + 已失败），
     # 若这里仍传 args.count 的默认值，续传会按默认 17 份重新计划。
     count_explicit = args.count != DEFAULT_TOTAL_SUBMISSIONS
     if args.resume:

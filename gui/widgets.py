@@ -46,6 +46,17 @@ def _resolve_fonts(fonts: _FONTS_KIND | None) -> dict[str, tuple]:
 #  make_card + paint_card_border（原 SurveyGUI._make_card / _on_card_resize）
 # ============================================================================
 
+class CardFrame(tk.Frame):
+    """`make_card()` 产出的卡片容器。
+
+    两个引用是给重绘/滚动事件取用的；显式声明而不是靠动态赋值，
+    这样 `gui/` 纳入 pyright 门禁后它们仍然是有类型的（v2.8）。
+    """
+
+    _card_canvas: tk.Canvas
+    _card_body: tk.Frame
+
+
 def make_card(
     parent: tk.Misc,
     title: str,
@@ -62,7 +73,7 @@ def make_card(
     font_icon = fonts_dict["ICON"]
     font_title = fonts_dict["TITLE"]
 
-    outer = tk.Frame(parent, bg=COLORS["bg"])
+    outer = CardFrame(parent, bg=COLORS["bg"])
     outer.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
     outer.pack_propagate(True)
 

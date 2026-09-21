@@ -464,12 +464,17 @@ def submit_button_fallback_script() -> str:
 
 
 def submit_success_detect_script() -> str:
-    """_wait_until_submit_effect 的 success text/selector 命中检测。"""
+    """_wait_until_submit_effect 的 success text/selector 命中检测。
+
+    只保留**强**信号：URL 之外的「提交成功 / 感谢您的参与 / 感谢您的认真填写」
+    与成功提示容器。「已完成」曾在此列，v2.8 移除 —— 它太常见于页面自带文案
+    （答题进度、其它题的标签），6s 窗口内命中即会把失败判成成功，偏危险方向；
+    真正的完成页必然同时命中上面某个强信号，代价只是退化为本就保守的 unknown。
+    """
     return """
         var txt = (document.body && document.body.innerText) || '';
         return txt.indexOf('提交成功') !== -1 ||
                txt.indexOf('感谢您的参与') !== -1 ||
                txt.indexOf('感谢您的认真填写') !== -1 ||
-               txt.indexOf('已完成') !== -1 ||
                !!document.querySelector('.submit-succ, .success-tip, #success-tip, .success');
     """
