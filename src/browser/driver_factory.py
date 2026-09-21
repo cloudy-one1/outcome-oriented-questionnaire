@@ -37,6 +37,7 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
 import random
 from typing import Any
@@ -342,7 +343,11 @@ def create_chrome_driver(
     if use_uc:
         uc_driver: Any = None      # 已启动但尚未交付的 UC 浏览器，异常路径要回收
         try:
-            import undetected_chromedriver as uc
+            # 可选依赖：用 importlib + Any 而不是 `import undetected_chromedriver as uc`。
+            # 后者在没装这个包的 CI 里会报 reportMissingImports，而补 `# type: ignore`
+            # 又会在装了的开发机上被判成冗余 ignore（本仓库把 reportUnnecessaryTypeIgnore
+            # 也设成了 warning）—— 两种环境各留一条，门禁数字就随环境漂了（v2.8）。
+            uc: Any = importlib.import_module("undetected_chromedriver")
 
             uc_opts = uc.ChromeOptions()
             # UC 的参数风格：headless / user-data-dir 等

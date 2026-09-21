@@ -67,9 +67,9 @@ try:
     )
     _HAS_CONFIG_IO: bool = True
 except Exception:  # pragma: no cover
-    load_weight_config = None  # type: ignore
-    save_weight_config = None  # type: ignore
-    validate_weight_config = None  # type: ignore
+    load_weight_config = None
+    save_weight_config = None
+    validate_weight_config = None
     _HAS_CONFIG_IO = False
 
     def apply_weight_config(cfg, *, replace=False):  # noqa: D103 降级实现
@@ -87,7 +87,7 @@ try:
     from src.history import SubmissionHistory  # noqa: E402
     _HAS_HISTORY: bool = True
 except Exception:  # pragma: no cover
-    SubmissionHistory = None  # type: ignore
+    SubmissionHistory = None
     _HAS_HISTORY = False
 
 # V2.4：静默降级路径（except: pass）统一走 logger.debug 留痕（详见 src/logging_setup.py）
@@ -123,6 +123,19 @@ DEFAULT_HISTORY_DB_PATH = os.path.join(
 
 class SurveyGUI:
     """问卷自动填写工具 — 赛博朋克·极光主题。"""
+
+    # 这批字体由 _setup_theme() 用 setattr 从 gui.theme.FONT_PRESETS 挂上来
+    # （保留 self.FONT_* 的历史写法，2000+ 行调用点无需改动）。这里显式声明，
+    # gui/ 纳入 pyright 门禁后它们才是有类型的属性 —— 仅注解、不建属性，
+    # 所以 hasattr(self, "FONT_NORMAL") 那两处"主题未就绪"守卫照旧生效。
+    FONT_HUGE: tuple
+    FONT_TITLE: tuple
+    FONT_LARGE: tuple
+    FONT_NORMAL: tuple
+    FONT_SMALL: tuple
+    FONT_MONO: tuple
+    FONT_MONO_L: tuple
+    FONT_ICON: tuple
 
     def __init__(self) -> None:
         self.root = tk.Tk()
@@ -799,10 +812,28 @@ class SurveyGUI:
         self.history_runs_tree = panel.runs_tree
         self.history_ans_tree = panel.ans_tree
 
-    def _history_refresh(self) -> None:  self._history_ensure_panel() and self._history_panel.refresh()
-    def _history_select_run(self, _e=None) -> None:  self._history_ensure_panel() and self._history_panel.select_run(_e)
-    def _history_export_csv(self) -> None:  self._history_ensure_panel() and self._history_panel.export_csv()
-    def _history_purge_old(self) -> None:  self._history_ensure_panel() and self._history_panel.purge_old()
+    # 以下 4 个是 HistoryPanel 的薄代理：root 尚未就绪时 ensure 返回 None，静默跳过
+    # （旧写法 `ensure() and panel.method()` 会把 and 表达式当语句求值，
+    #  既触发 reportUnusedExpression，也让 panel 的 Optional 类型没法收敛）
+    def _history_refresh(self) -> None:
+        panel = self._history_ensure_panel()
+        if panel is not None:
+            panel.refresh()
+
+    def _history_select_run(self, _e=None) -> None:
+        panel = self._history_ensure_panel()
+        if panel is not None:
+            panel.select_run(_e)
+
+    def _history_export_csv(self) -> None:
+        panel = self._history_ensure_panel()
+        if panel is not None:
+            panel.export_csv()
+
+    def _history_purge_old(self) -> None:
+        panel = self._history_ensure_panel()
+        if panel is not None:
+            panel.purge_old()
 
     # ==================================================================
     #  权重表格卡片
@@ -839,11 +870,12 @@ class SurveyGUI:
     def _show_table_placeholder(self) -> None:  self._ensure_weight_panel().show_placeholder()
 
     def _populate_weight_table(self, questions: list[dict]) -> None:
-        self._ensure_weight_panel().populate(questions)
+        panel = self._ensure_weight_panel()
+        panel.populate(questions)
         # populate 已经通过共享引用更新了 self.questions[:] / self.weight_entries
         # 如果调用者期望 self.questions 是新 LIST 对象：重新赋回同一引用保证一致
         # （共享方式：panel.questions 与 self.questions 是同一个 list 对象）
-        self.table_frame = self._weight_panel.table_frame
+        self.table_frame = panel.table_frame
 
     # ==================================================================
     #  日志卡片（赛博朋克终端）
@@ -1043,10 +1075,10 @@ class SurveyGUI:
             self.log_lineno_count = self._log_view._lineno_count
 
     def _append_log(self, message: str, tag: str) -> None:
-        if self._log_view is None:
-            _ = self._ensure_log_view()
-        self._log_view._append(message, tag)
-        self.log_lineno_count = self._log_view._lineno_count
+        # ensure 是幂等的：已建好就原样返回，所以不必先读那个 Optional 属性
+        view = self._ensure_log_view()
+        view._append(message, tag)
+        self.log_lineno_count = view._lineno_count
 
     # ==================================================================
     #  权重配置导出
@@ -1084,9 +1116,9 @@ class SurveyGUI:
         self._controller.on_detect_questions()
 
     def _restore_weight_table_from_config(self, restored_w: dict[int, dict]) -> None:
-        self._ensure_weight_panel().restore_from_config(restored_w)
-        if self._weight_panel is not None:
-            self.table_frame = self._weight_panel.table_frame
+        panel = self._ensure_weight_panel()
+        panel.restore_from_config(restored_w)
+        self.table_frame = panel.table_frame
 
     def _on_questions_detected(self, questions: list[dict]) -> None:
         if self._controller is None:

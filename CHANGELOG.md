@@ -2,6 +2,97 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [2.8.0] - 2026-09-21
+
+针对 v2.7.0 全面评估报告（`CODE_REVIEW_v2.7.0.md`）的整改批次。逐条复测过：
+报告的门禁数字与代码定位基本可复现，两条 P2 都成立，按下表落地。
+
+### 修复
+
+- **P2-1 出厂默认权重污染每一次 CLI 运行**（数据正确性缺陷，不是配置卫生）。
+  `src/config.py` 里残留过一份特定真实问卷的 Q1–Q22 偏斜权重，而 CLI 不传
+  `--config` 时**从不调用** `apply_weight_config(replace=True)`，`answering.py:57`
+  又直接读那个全局 dict —— 实测不传配置时 Q1 四选项落在
+  `0.244/0.394/0.263/0.099`、Q5 落在 `0.01/0.05/0.10/0.65/0.19`，与内置值逐位吻合，
+  和 README「未配置的题目自动降级为等权重随机」正好相反，且会被 `cli.py:818`
+  写进批次快照。现在出厂默认是 `{}`，原值迁到 `examples/weight_config.example.json`
+  （**不是**报告建议的 `configs/` —— 那是运行产物目录、已在 `.gitignore` 里，
+  示例放进去就永远进不了版本库），并删掉 L33 的代码生成器占位注释。
+- **P2-2 pipeline 兜底 except 静默吞异常**：`pipeline.py` 的 body 就绪探测、
+  断点续填扫描、提交后验证码二次探测三处补 `format_exc_log` 留痕，与
+  `question_stage.py:133` 同一写法。**报告点名的第 4 处（L270）经复核是误伤**：
+  它在 `except Exception as e` 分支内部，主异常已打印并随后 `raise` 重抛，
+  被吞的只是次生的 `switch_to` 清理异常 —— 正是该写的写法，未动。
+- **P3-5 成功判定弱关键词**：`已完成` 从 `submit_success_detect_script()` 移除。
+  它太常出现在页面自带文案里，6 秒窗口内命中一次就把失败判成成功，方向危险；
+  真完成页必然同时命中「提交成功 / 感谢您的参与」或成功提示容器，代价只是退回
+  本来就保守的 `UNKNOWN`。
+- **P3-4 续传上限口径**：`attempts_cap` 此前只减 `resume_done`，而两个分支的上限
+  都是**尝试次数**语义，于是续传后总尝试数会凭空多出 `resume_fail` 次。
+  现在按「已尝试 = 上次成功 + 上次失败」扣减。这改了一条既有测试的期望值
+  （`test_cli_batch.py` 里那句 `attempts_cap = 5 - 3 = 2` 注释正是旧口径）。
+- **Nit**：删 `cli.py` 的死导入 `SUBMIT_SUCCESS`。
+
+### 新增（测试）
+
+离线套件 **493 → 509 项**（全量 514 = 离线 509 + E2E 5；CI 口径 507 passed + 2 skipped）：
+
+| 新文件 / 新用例 | 钉住的契约 |
+|---|---|
+| `tests/test_config_defaults.py`（6 项） | 出厂 `WEIGHT_CONFIG` 必须为空、空配置真的等权、示例文件仍可 `load` + 过校验 |
+| `tests/test_gui_proxies.py`（7 项） | 面板薄代理：拿得到就原样转发、拿不到（root 未就绪）静默跳过 |
+| `test_interaction_submit.py::test_weak_keyword_alone_is_not_success` | 只有「已完成」时不得判成功 |
+| `test_interaction_submit.py::test_persistent_bug_logged_once_and_stays_unknown` | 轮询期的纯代码异常留痕恰好一次，控制流不变 |
+| `test_cli_batch.py::test_resume_cap_subtracts_consumed_attempts` | 续传上限按已尝试次数扣减 |
+
+**为什么 493 个全绿的测试没抓到 P2-1**：`test_answering.py` 的 `setUp` 无条件
+`WEIGHT_CONFIG.clear()`，所以"未配置走等权"那条用例验的是一个人造的空字典，
+从来没验过出厂值。因此新测试用 `subprocess` 新起解释器读 `src.config` ——
+本进程内那个全局随时会被别的用例改写，"出厂那一刻是什么"在这里不可知。
+把旧权重塞回去做变异检验：2 条用例立刻红。
+
+### 类型门禁扩面到 `gui/`（报告列为"中期"的 P3-1 一并做完）
+
+`pyrightconfig.json` 的 `include` 现在有 `gui`，45 条诊断全部清零，**没有一条靠
+`# type: ignore` 豁免**。三类改造：
+
+- **Tkinter 上动态挂的属性** → 类级声明：`SurveyGUI.FONT_*`（`_setup_theme()` 一直
+  是用 `setattr` 挂的，只加注解不建属性，所以 `hasattr(self, "FONT_NORMAL")`
+  那两处"主题未就绪"守卫照旧生效）、`widgets.CardFrame`（`make_card` 的容器改用
+  这个 `tk.Frame` 子类，`_card_canvas` / `_card_body` 从"凭空赋值"变成有类型）。
+- **可选导入留下的 `Callable | None`** → 在闭包内重新收窄一次（`controller._worker`：
+  外层的 `if create_driver is None: return` 不会传进闭包，pyright 仍认为可能为 None）。
+- **推断过窄的字面量** → `weight_panel` 的 `cfg` 显式声明 `dict[str, Any]`
+  （同一份 cfg 后面还要塞 options / rows / cols / row_weights）。
+
+顺带两处：
+
+- **`try: import x` + `# type: ignore` 这个可选依赖写法被换掉**（`gui/qr_utils.py`
+  的 cv2、`src/browser/driver_factory.py` 的 undetected_chromedriver）：装了包时那条
+  ignore 被判"冗余"，没装时又报模块解析不了 —— 两类环境各留一条 warning，
+  诊断总数会随环境 ±1。改成 `importlib.import_module()` + `Any` 声明后，
+  pyright 在两种依赖口径下都是 **0 error 0 warning**，门禁数字第一次完全不随环境漂。
+- `src/interactions/submit.py` 轮询循环里的 `except Exception: pass`（P2-2 的同类
+  站点、报告未点名）改为**一次性留痕**：控制流刻意不动，仍然轮询到超时、仍然返回
+  unknown，只是那条 TypeError 级别的 bug 不再被彻底吞掉。
+
+### 文档口径（报告三条"口径不一"其实是同一个根因）
+
+README 的 72%、`ci.yml` 的 71%、README 的 45 条 gui 诊断 vs 报告的 44 条、
+"0 error 0 warning" vs 实测多 1 条 —— 在干净 venv（只装 `requirements*.txt`）
+与本机（额外装了可选 `opencv-python` / `undetected-chromedriver`）两侧重跑后确认：
+**四个数字都是对的，差在可选依赖装没装 + `--cov-report=term` 的四舍五入**。
+例如 gui 的第 15 条 warning 是 `qr_utils.py` 上那条 `# type: ignore`，
+只有装了 cv2 时它才算"冗余"。修法分两步：类型门禁侧把环境相关性**消掉**（见上一节），
+剩下确实相关的测试数与覆盖率则在 README 里列成"开发机 / CI"两列，
+`ci.yml`、`pyrightconfig.json`（其注释里的"33 条"是陈值）同步。
+
+### 仍然留着
+
+- `verification.py` 非 Windows 降级桩不可达（Nit，README 已记录）
+- 覆盖率地板仍留在 70：本轮实测 72.1%（CI）/ 72.4%（本机），抬到 71 只留 1pp 余量，
+  而 CI 矩阵里 Python 3.10 那条 leg 在本机没法测 —— 不拿没量过的环境赌门禁
+
 ## [2.7.0] - 2026-09-20
 
 补齐 README「已知缺口（诚实记录）」表里列出的五条覆盖率缺口，并修掉补测过程中

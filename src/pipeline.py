@@ -108,7 +108,12 @@ def _do_one_submission_core(
         pass
     except Exception as _e:
         raise_non_recoverable(_e)
-        pass
+        # 走到这里只剩纯 Python bug（TRANSIENT_DOM_EXCEPTIONS 已含 WebDriverException
+        # 基类）。按 exceptions.py 的契约留痕，不静默吞掉。
+        print("  " + format_exc_log(
+            _e, action="等待 document.body 就绪", submission_index=submission_index,
+            recovery="交给后续 _wait_for_questions 兜底",
+        ))
 
     # Step 2 验证码检查（打开页面立刻弹的情况）
     if not _check_verification_with_lock(driver, lock):
@@ -137,6 +142,10 @@ def _do_one_submission_core(
         answered_set = set()
     except Exception as _e:
         raise_non_recoverable(_e)
+        print("  " + format_exc_log(
+            _e, action="断点续填：扫描已填题号", submission_index=submission_index,
+            recovery="降级为本轮全部重答",
+        ))
         answered_set = set()
     skipped_count = 0
 
@@ -204,7 +213,10 @@ def _do_one_submission_core(
         pass
     except Exception as _e:
         raise_non_recoverable(_e)
-        pass
+        print("  " + format_exc_log(
+            _e, action="提交后验证码二次探测", submission_index=submission_index,
+            recovery="跳过二次探测，按已成功进入收尾",
+        ))
 
     # 成功已成事实：此处清理绝不能向上抛。
     # 此前它裸在 try 外，提交跳转导致 NoSuchWindowException 时会冒泡到

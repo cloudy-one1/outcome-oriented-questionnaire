@@ -10,6 +10,12 @@ from __future__ import annotations
 
 import tkinter as tk
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # 只在类型检查期可见：`tk.ttk` 需要 `import tkinter.ttk` 才会挂到 tk 上，
+    # 而运行时的 ttk 导入刻意留在 apply_ttk_style() 内部（Tk() 之后才创建）。
+    from tkinter import ttk
 
 # ============================================================================
 #  配色方案 — 高对比度·黑白极简主题（+ 蓝色点缀）
@@ -70,7 +76,8 @@ GRAD_HEADER:  tuple[str, ...] = ("#111111", "#222222", "#2a2a2a")   # 标题栏�
 #  字体常量（统一由 theme 模块暴露，避免 SurveyGUI 散设字体）
 # ============================================================================
 
-FONT_PRESETS: dict[str, tuple[str, int, str]] = {
+# Tk 的 font 元组允许两段（家族+字号）或三段（再加权重），所以两种都要能放进来
+FONT_PRESETS: dict[str, tuple[str, int] | tuple[str, int, str]] = {
     "HUGE":   ("Microsoft YaHei UI", 20, "bold"),
     "TITLE":  ("Microsoft YaHei UI", 14, "bold"),
     "LARGE":  ("Microsoft YaHei UI", 12, "bold"),
@@ -96,8 +103,12 @@ def hex_to_rgb(hex_str: str) -> tuple[int, int, int]:
 _hex_to_rgb = hex_to_rgb
 
 
-def rgb_to_hex(r: int, g: int, b: int) -> str:
-    """(R, G, B) 0-255 → #RRGGBB。"""
+def rgb_to_hex(r: float, g: float, b: float) -> str:
+    """(R, G, B) 0-255 → #RRGGBB。
+
+    参数取 float 是因为 `lerp_color()` 传进来的就是插值后的小数；
+    十六进制格式化要求整数，所以内部逐通道 `int()` 截断。
+    """
     return f"#{int(r):02x}{int(g):02x}{int(b):02x}"
 
 
@@ -183,7 +194,7 @@ def apply_ttk_style(
     root: tk.Tk,
     colors: Mapping[str, str] | None = None,
     font_presets: Mapping[str, tuple] | None = None,
-) -> tuple[tk.ttk.Style, dict[str, tuple]]:
+) -> tuple[ttk.Style, dict[str, tuple]]:
     """配置全局 ttk 样式 + 返回字体字典。
 
     返回：

@@ -15,6 +15,7 @@ from typing import Any
 from ._common import (
     TRANSIENT_DOM_EXCEPTIONS,
     By,
+    format_exc_log,
     gaussian_seconds,
     js_execute_retry,
     raise_non_recoverable,
@@ -119,6 +120,11 @@ def _wait_until_submit_effect(driver: Any, timeout: float) -> SubmitOutcome:
         old_url = None
     start = time.perf_counter()
     success_check_js = submit_success_detect_script()
+    # 瞬态集合已含 WebDriverException 基类，所以走到 `except Exception` 的几乎只剩
+    # KeyError/TypeError 这类纯代码 bug。此前它被 `pass` 无日志吞掉（审查 P2-2 的
+    # 同类站点）。控制流刻意不变：仍然轮询到超时、仍然返回 unknown，只是留一次痕
+    # —— 每 0.15s 轮一次，不打标记会在 6s 窗口里刷出几十行。
+    bug_logged = False
     while time.perf_counter() - start < timeout:
         try:
             cur = driver.current_url
@@ -133,6 +139,11 @@ def _wait_until_submit_effect(driver: Any, timeout: float) -> SubmitOutcome:
             pass
         except Exception as _e:
             raise_non_recoverable(_e)
-            pass
+            if not bug_logged:
+                bug_logged = True
+                print("  " + format_exc_log(
+                    _e, action="提交效果探测",
+                    recovery="继续轮询至超时，按 unknown 保守计败",
+                ))
         time.sleep(0.15)
     return SUBMIT_UNKNOWN

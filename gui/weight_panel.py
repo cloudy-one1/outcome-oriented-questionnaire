@@ -249,7 +249,9 @@ class WeightPanel:
                     "tel": "手机字段", "email": "邮箱字段",
                     "address": "地址字段", "addr": "地址字段", "age": "年龄字段",
                     "company": "公司字段", "org": "公司字段",
-                }.get(fld, "自由文本")
+                    # `or ""`：题面没给 field 时 fld 是 None，不是合法的 str 键，
+                    # 落到默认值"自由文本"，与原本 None 查不到键的行为一致。
+                }.get(fld or "", "自由文本")
             elif qtype in ("matrix_single", "matrix"):
                 rs = q.get("rows", [])
                 cs = q.get("cols", [])
@@ -468,7 +470,7 @@ class WeightPanel:
                         # 整条 continue 掉会让量表退化成"连级数都不知道"
                         self.log(f"Q{qi} 量表权重{reason}，已忽略权重：{raw}", "WARN")
                         weights = None
-                cfg = {"type": qtype, "scale": scale_max}
+                cfg: dict[str, Any] = {"type": qtype, "scale": scale_max}
                 if weights is not None:
                     cfg["weights"] = weights
                 smin = q.get("scale_min")
@@ -479,7 +481,10 @@ class WeightPanel:
 
             # text / input / textarea / fillblank
             if qtype in ("text", "input", "textarea", "fillblank"):
-                cfg = {"type": qtype}
+                # 显式声明值域：同一份 cfg 之后还要塞 options / rows / cols /
+                # row_weights 这类非字符串值，让 pyright 从字面量推成 dict[str, str]
+                # 会在每个后续赋值处报错。
+                cfg: dict[str, Any] = {"type": qtype}
                 fld = q.get("field")
                 if fld:
                     cfg["field"] = fld
@@ -492,7 +497,7 @@ class WeightPanel:
 
             # matrix / matrix_single
             if qtype in ("matrix_single", "matrix"):
-                cfg = {"type": qtype}
+                cfg: dict[str, Any] = {"type": qtype}
                 rows = q.get("rows", [])
                 cols = q.get("cols", [])
                 if rows:

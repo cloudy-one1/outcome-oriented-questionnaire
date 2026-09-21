@@ -43,11 +43,11 @@ try:
     )
     from .qr_utils import decode_qr_from_image
 except Exception:  # pragma: no cover - 导入失败在方法内部会告警
-    create_driver = None  # type: ignore[assignment]
-    detect_questions = None  # type: ignore[assignment]
-    is_smart_verification_showing = None  # type: ignore[assignment]
-    wait_for_manual_verification = None  # type: ignore[assignment]
-    decode_qr_from_image = None  # type: ignore[assignment]
+    create_driver = None
+    detect_questions = None
+    is_smart_verification_showing = None
+    wait_for_manual_verification = None
+    decode_qr_from_image = None
 
 from src.config_io import apply_weight_config  # noqa: E402  纯 Python，无 selenium 依赖
 from src.models import normalize_question_type  # noqa: E402
@@ -311,6 +311,11 @@ class GuiController:
 
         def _worker():
             import time as _t
+            # create_driver / detect_questions 属于"可选导入"，类型上是 Callable | None。
+            # 调用本方法前外层已挡过一次，但那处收窄不会传进闭包，所以这里再挡一次
+            # —— 否则下面两处调用在 pyright 眼里仍可能是 None。
+            if create_driver is None or detect_questions is None:
+                return
             driver = None
             try:
                 driver = create_driver(

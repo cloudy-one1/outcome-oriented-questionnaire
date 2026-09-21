@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![CI](https://github.com/cloudy-one1/outcome-oriented-questionnaire/actions/workflows/ci.yml/badge.svg)](https://github.com/cloudy-one1/outcome-oriented-questionnaire/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.7.0-brightgreen.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-2.8.0-brightgreen.svg)](CHANGELOG.md)
 
 本工具仅供学习与研究 Selenium 浏览器自动化技术使用，请务必遵守问卷星平台使用条款与相关法律法规（详见[免责声明](#免责声明)）。
 
@@ -79,7 +79,10 @@ python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 1 --save-config ./con
 
 每次提交会输出 `OK` / `FAIL` / `UNKNOWN` 之一：
 
-- `OK` — 页面跳转或出现「提交成功 / 感谢您的参与」等关键词，确认成功
+- `OK` — 页面跳转或出现「提交成功 / 感谢您的参与」等**强**信号，确认成功。
+  v2.8 起「已完成」不再单独构成成功信号 —— 它太常出现在页面自带文案里，
+  6 秒窗口内命中一次就把失败判成成功，方向是危险的；真完成页必然同时命中
+  上面某个强信号或成功提示容器，代价只是退回保守的 `UNKNOWN`
 - `FAIL` — 验证码未通过、题目探测失败、按钮定位失败等，确认失败
 - `UNKNOWN` — 按钮已点击但等待效果超时（可能是 AJAX 异步提交，也可能是服务端拒绝），保守计为失败并单独统计，便于事后复盘
 
@@ -97,7 +100,7 @@ python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 1 --save-config ./con
 | `--stats` | 关 | 运行结束后打印全库统计（需配合 `--history`） |
 | `--no-record-text` | 关 | 隐私保护：填空题答案不写入 SQLite（DOM 仍需填入真实文本） |
 | `--target-success` | 关 | 把 `-n` 解释为「目标成功份数」，达成即提前结束 |
-| `--max-attempts N` | `2×n` | 仅 `--target-success` 时生效：最大尝试次数上限 |
+| `--max-attempts N` | `2×n` | 仅 `--target-success` 时生效：最大尝试次数上限。`--resume` 时按**已尝试次数**扣减（上次成功数 + 失败数），所以续传后总尝试数不会超过 N |
 | `--resume` | 关 | 断点续传：复用同 URL 最近一次未完成批次的 run_id、计数与权重快照，并沿用其计划总份数（需配合 `--history`） |
 | `--log-file PATH` | 关 | 启用 logging 并把运行日志写入指定文件 |
 
@@ -169,7 +172,9 @@ python run_gui.py
 
 ### 方式一：编辑 `src/config.py`
 
-适合脚本固定场景，直接修改 `WEIGHT_CONFIG` 字典：
+适合脚本固定场景，直接修改 `WEIGHT_CONFIG` 字典。出厂它是**空的**（v2.8 起）——
+一份可直接抄、且能作为 `--config` 合法输入喂给 CLI 的 22 题样例见
+[`examples/weight_config.example.json`](examples/weight_config.example.json)：
 
 ```python
 WEIGHT_CONFIG = {
@@ -180,6 +185,11 @@ WEIGHT_CONFIG = {
 ```
 
 未配置的题目自动降级为等权重随机。
+
+> 为什么默认是空的：v2.7 及以前这里残留过一份**特定真实问卷**的 Q1–Q22 权重。
+> CLI 不传 `--config` 时不会清空全局，于是任何问卷的前 22 道单选/多选题都会静默
+> 套用那份分布（且被写进批次快照）—— 与上面那句承诺正好相反。现在由
+> `tests/test_config_defaults.py` 用新解释器把"出厂必须为空"钉住。
 
 ### 方式二：JSON 配置文件（推荐）
 
@@ -290,31 +300,49 @@ pip install -r requirements-dev.txt
 # 全量测试（含依赖真实浏览器驱动的 E2E）
 python -m pytest tests/ -v
 
-# 离线套件（无浏览器环境 / CI，493 项）
+# 离线套件（无浏览器环境 / CI，509 项）
 python -m pytest tests/ -m "not integration" -q
 
 # 仅浏览器 E2E（需本机 Edge / Chrome + WebDriver，5 项）
 python -m pytest tests/ -m integration -q
 ```
 
-当前测试全部通过：**498 项**（离线 493 + E2E 5）。
+当前测试全部通过：**514 项**（离线 509 + E2E 5）。
+
+> **类型门禁不随环境变**：`src/` + `gui/` + 入口在两种环境下都是 **0 error
+> 0 warning**。两处可选依赖（`opencv-python`、`undetected_chromedriver`）的动态
+> 导入改用 `importlib` + `Any` 声明 —— `try: import x` 配 `# type: ignore` 那个
+> 写法必然两类环境各留一条 warning：装了包时 ignore 被判"冗余"（本仓库把
+> `reportUnnecessaryTypeIgnoreComment` 也设成了 warning），没装时又报模块解析不了。
+>
+> 仍随环境变的只剩测试数与覆盖率（`requirements.txt` 只声明必选依赖，CI 装不到
+> 那两个可选项）—— 引用数字时请连同环境一起说：
+>
+> | 门禁 | 装齐可选依赖（开发机） | 未装（CI / 干净 venv） |
+> |---|---|---|
+> | 离线套件 | 509 passed | 507 passed + 2 skipped（二维码解析用例） |
+> | 覆盖率 TOTAL | 72.4%（`src/` 84.4%、`gui/` 58.6%） | 72.1%（`src/` 84.4%、`gui/` 58.0%） |
+>
+> 覆盖率请写一位小数，别写整数：`--cov-report=term` 会把两者都四舍五入成 **72%**，
+> 而 README 与 `ci.yml` 曾因此互相指对方口径不对。
+> 批次循环里有 `random` 分支，同一环境两次跑出 ±0.1pp 属正常抖动。
 
 ### 代码质量门禁
 
 | 门禁 | 命令 | 当前状态 |
 |---|---|---|
 | 静态检查 | `python -m ruff check .` | 通过 |
-| 类型检查 | `npx pyright` | `src/` **0 error 0 warning**（不设 baseline） |
-| 覆盖率 | `pytest --cov=src --cov=gui --cov-fail-under=70` | 实测 **72%**（`src/` 84%、`gui/` 58%），地板 70% 只许上调 |
+| 类型检查 | `npx pyright` | `src/` + `gui/` + 入口 **0 error 0 warning**（不设 baseline、不豁免，两种依赖口径下都一样） |
+| 覆盖率 | `pytest --cov=src --cov=gui --cov-fail-under=70` | 实测 **72.1%**（CI 口径）/ **72.4%**（装齐可选依赖），`src/` 84.4%、`gui/` 58.0~58.6%；地板 70% 只许上调 |
 
 - **`ruff.toml`** 启用 `E9/F63/F7/F82` + `F401/F841/F541`。后三条是刻意加的零误报
   「接线断链」防线：v2.4 的 `--resume` 静默失效（`main()` 算出 `resume_fail`
   却没传给 `run_batch`）正是 `F841` 一条规则就能在 CI 拦住的真实缺陷。
-- **`pyrightconfig.json`** 目前只纳入 `src/` 与入口脚本。`gui/` 还有 45 条诊断
-  （30 error + 15 warning，`npx pyright --project pyrightconfig.json gui` 实测）：
-  最大一组是 11 条已无对象的 `# type: ignore`，其余是同一类 Tkinter 写法
-  （往 Frame 子类上赋值、向 `dict[str, str]` 塞 list），属纯风格改造，
-  见下方「已知缺口」。
+- **`pyrightconfig.json`** 纳入 `src/`、`gui/` 与入口脚本。`gui/` 是 v2.8 才进来的：
+  此前挂着 45 条诊断（30 error + 14~15 warning），清零靠三类改造 —— Tkinter 上
+  动态挂的属性改成类级声明（`SurveyGUI.FONT_*`、`widgets.CardFrame`）、可选导入的
+  `Callable | None` 在闭包内重新收窄、`weight_panel` 的 `cfg` 显式声明 `dict[str, Any]`。
+  一条 `# type: ignore` 都没用 —— 需要豁免的门禁只是装饰。
 - **JS 生成器有真语法校验**：`tests/test_js_scripts.py` 会用 `node --check`
   实际解析每个脚本生成器的输出（本机无 node 时降级为退化片段检测）。
   但它只能保证**语法**合法 —— `input[name='q' + q + '']` 这类
@@ -343,16 +371,16 @@ E2E 因此覆盖到 `run_one_submission` 的完整链路、提交只点一次的
 | `src/browser/driver_factory.py` | 9% | **100%** |
 | `src/pipeline.py` | 26% | **100%** |
 | `src/verification.py` | 34% | **97%**（剩 3 行非 Windows 降级桩，本机不可达） |
-| `gui/`（8 个文件合计） | 15% | **58%**（`theme`/`log_view` 100%、`history_panel` 96%、`weight_panel` 92%） |
+| `gui/`（8 个文件合计） | 15% | **58.0~58.6%**（`theme`/`log_view` 100%、`history_panel` 96%、`weight_panel` 92%；区间取决于装没装可选 opencv，见上面的环境对照表） |
 
 仍然没有防线的地方：
 
 | 模块 | 离线覆盖率 | 为什么还留着 |
 |---|---|---|
 | `gui/controller.py` | 14% | 探测题目 / 二维码解码 / 配置导入都要真实 driver 或模态对话框 |
-| `gui/app.py` | 22% | `SurveyGUI.__init__` 一建就打开真实 `data/history.db` 并启动动画 `after` 循环，测试里无法安全实例化；`_run_loop` 已有契约测试 |
+| `gui/app.py` | 25% | `SurveyGUI.__init__` 一建就打开真实 `data/history.db` 并启动动画 `after` 循环，测试里无法安全实例化；`_run_loop` 与几个面板薄代理已有契约测试（`tests/test_gui_proxies.py`） |
 | `src/pipeline_stages/question_stage.py` | 29% | 逐题 DOM 交互主干，离线只覆盖等待与分发逻辑，真实点击仍靠 E2E |
-| `src/cli.py` | 68% | `run_batch` 主干已测，剩余是 `--save-config` / 统计打印一类输出分支 |
+| `src/cli.py` | 69% | `run_batch` 主干已测，剩余是 `--save-config` / 统计打印一类输出分支 |
 
 > **覆盖率不等于验证过。** 上面的 100% / 97% 是拿替身对象跑出来的 —— 它证明
 > 「指纹参数拼装、异常回收、锁必然释放」这些**逻辑**成立；但真实浏览器能否启动、
