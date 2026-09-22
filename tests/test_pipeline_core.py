@@ -971,3 +971,48 @@ def test_recheck_degrades_to_no_new_evidence(probe_error: BaseException) -> None
         detect_platform_questions=_REQUIRED_TWO,
     ):
         assert pipeline._recheck_gap(driver, {1}) == [2]
+
+
+# ---------------------------------------------------------------------------
+#  Step 7.6：提交区协议框（v3.1）—— 只提示、不拦停
+#
+#  探针自己的形状判据在 tests/test_consent_notice.py；这里锁的是接线的三件事：
+#    1. 说完那句话**仍然照常点提交** —— 兜底判据是文案关键词，认错框的代价不能是
+#       白拦一单本来能交成的问卷；
+#    2. 完整度自检已经把提交拦下时，不必再去问提交区（那一次 JS 往返没有读者）；
+#    3. 用**真**探针跑一遍也要一字不说："import 了没调用"与"没信号还瞎报"都在这条眼下。
+# ---------------------------------------------------------------------------
+def test_consent_notice_is_printed_but_submit_still_happens(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    notice = mock.Mock(name="consent_notice", return_value="[协议] 提交区有 1 处没勾的协议框")
+    with stages(consent_notice=notice) as st:
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+
+    assert "[协议]" in capsys.readouterr().out
+    notice.assert_called_once()
+    st.find_and_click_submit.assert_called_once()
+
+
+def test_consent_box_is_not_asked_when_the_submit_is_already_blocked() -> None:
+    """必答题缺口拦下时直接 return，不该再去扫一遍提交区。"""
+    notice = mock.Mock(name="consent_notice",
+                       side_effect=AssertionError("都不点提交了，问提交区做什么"))
+    with stages(detect_questions=_questions(1),
+                detect_platform_questions=_REQUIRED_TWO,
+                consent_notice=notice):
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_FAILED
+
+
+def test_real_consent_probe_stays_silent_in_the_wiring(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from src import detection
+
+    detection.reset_consent_notice()
+    try:
+        with stages():
+            assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+        assert "[协议]" not in capsys.readouterr().out
+    finally:
+        detection.reset_consent_notice()

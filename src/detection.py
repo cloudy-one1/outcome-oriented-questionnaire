@@ -29,7 +29,12 @@ from typing import Any
 
 from .interactions._scripts import option_blank_helper_script
 from .exceptions import TRANSIENT_DOM_EXCEPTIONS, raise_non_recoverable
-from .platforms import SurveyPlatform, WJX_MOBILE_LAYOUT_SELECTORS
+from .platforms import (
+    SurveyPlatform,
+    WJX_CONSENT_IDS,
+    WJX_CONSENT_KEYWORDS,
+    WJX_MOBILE_LAYOUT_SELECTORS,
+)
 
 
 # 两处 execute_script 脚本体共用的 JS 函数声明（见 option_blank_helper_script）：
@@ -795,3 +800,102 @@ def reset_mobile_layout_notice() -> None:
     """清空"已提示过"标记（仅测试用，与 ``crosscheck.reset_reported_drift`` 同角色）。"""
     global _mobile_layout_notice_sent
     _mobile_layout_notice_sent = False
+
+
+# ============================================================================
+#  提交前协议诊断：那个框不在题目容器里，逐题探测看不见它
+# ============================================================================
+
+# 只找**没勾的**：勾上了就没必要说话。命中条件两条路 —— 平台那个固定 id，
+# 或者"不在题目容器里 + 相邻文案含关键词"的兜底。后一条必须带容器条件，
+# 否则"我同意接收后续邮件"这种正经多选题的选项也会被报成协议框。
+_CONSENT_JS = """
+var ids = arguments[0], words = arguments[1];
+function labelOf(el) {
+    if (el.id) {
+        var lb = document.querySelector('label[for="' + el.id + '"]');
+        if (lb) return lb.textContent || '';
+    }
+    if (el.closest) {
+        var p = el.closest('label');
+        if (p) return p.textContent || '';
+    }
+    var sib = el.nextElementSibling;
+    if (sib && sib.tagName === 'LABEL') return sib.textContent || '';
+    return '';
+}
+function inQuestion(el) {
+    if (!el.closest) return false;
+    return !!(el.closest('#fieldset1') || el.closest('div[topic]'));
+}
+var hits = [], i, k;
+for (i = 0; i < ids.length; i++) {
+    var byId = document.getElementById(ids[i]);
+    if (byId && byId.type === 'checkbox' && !byId.checked) hits.push('#' + ids[i]);
+}
+var boxes = document.querySelectorAll('input[type="checkbox"]');
+for (i = 0; i < boxes.length; i++) {
+    var el = boxes[i];
+    if (el.checked || inQuestion(el)) continue;
+    var text = (labelOf(el) || '') + ' ' + (el.value || '');
+    for (k = 0; k < words.length; k++) {
+        if (text.indexOf(words[k]) >= 0) { hits.push('文案含「' + words[k] + '」'); break; }
+    }
+}
+if (!hits.length) return null;
+return JSON.stringify({n: hits.length, where: hits[0]});
+"""
+
+_consent_notice_sent = False
+
+
+def consent_notice(driver: Any) -> str | None:
+    """提交区有未勾选的隐私协议框时的一行说明；没有 / 读不到 / 说过一次 → ``None``。
+
+    形状与 ``mobile_layout_notice`` 同一家族：**只提示、不拦停**。这类框挂在提交区、
+    不在 ``#fieldset1`` 的题目容器里，所以逐题探测、完整度自检、结构对拍三道都看不见它
+    —— 症状是"题题都填了、点提交没反应"，而原因不在我们任何一道判据的射程里。
+
+    刻意**不**顺手去勾它。代被调查者签署隐私协议与替他答一道题不是同一件事：后者是我们
+    本来就在做的模拟作答，前者是一个只有真人能行使的同意动作。同类工具把这一步叫
+    "协议秒签"，我们不跟着走 —— 与"只接管 ``alert``、不替页面回答 ``confirm``"是同一条线
+    （见 ``interactions/_scripts.py``）。
+
+    也不拦停：兜底那条判据是文案关键词，认错的代价是一单本来能交成的问卷被判失败，
+    比多说一句废话重得多（``completeness`` 那句"宁可少拦，不能拦错"在这里同样成立）。
+    """
+    global _consent_notice_sent
+    if _consent_notice_sent:
+        return None
+    try:
+        raw: Any = driver.execute_script(
+            _CONSENT_JS, list(WJX_CONSENT_IDS), list(WJX_CONSENT_KEYWORDS)
+        )
+    except TRANSIENT_DOM_EXCEPTIONS:
+        return None
+    except Exception as _e:
+        raise_non_recoverable(_e)
+        # 这只是一句提醒：它自己出问题绝不改变本轮判定
+        return None
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = json.loads(raw)
+        count = int(parsed["n"])
+        where = str(parsed["where"])
+    except (TypeError, ValueError, KeyError):
+        return None
+    if count <= 0:
+        return None
+    _consent_notice_sent = True
+    return (
+        f"[协议] 提交区有 {count} 处**没勾**的隐私协议同意框（{where}）—— "
+        "本工具不代勾：签协议是只有真人能做的动作。这一版仍会照常点提交，"
+        "平台大概率把它弹回来（不是网络问题，也不是探测漏题 —— 上面几道自检都说没有）"
+    )
+
+
+def reset_consent_notice() -> None:
+    """清空"已提示过"标记（仅测试用，与 ``reset_mobile_layout_notice`` 同角色）。"""
+    global _consent_notice_sent
+    _consent_notice_sent = False

@@ -59,6 +59,7 @@ from .pipeline_stages import (
 )
 # 题目探测（断点续填/题目结构识别）来自 detection 模块，不属于 pipeline 职责
 from .detection import (
+    consent_notice,
     detect_answered_questions,
     detect_platform_questions,
     detect_questions,
@@ -450,6 +451,13 @@ def _do_one_submission_core(
         if _gap:
             driver.switch_to.default_content()
             return SUBMIT_FAILED
+
+    # Step 7.6 提交区协议框：这类框不在题目容器里，上面三道判据都看不见它。
+    # 只提示、不拦停，也不代勾 —— 判据是文案关键词，认错一次的代价是一单本来能交成的
+    # 问卷被判失败；而"替被调查者签协议"这个动作本身就不在本工具的权限里。
+    _consent = consent_notice(driver)
+    if _consent:
+        print("  " + _consent)
 
     # Step 8 点击提交 + 提交后快进
     _abort_if_stopped(stop_check, "点击提交前收到停止请求")
