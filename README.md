@@ -399,11 +399,11 @@ python -m pytest tests/ -v
 # 离线套件（无浏览器环境 / CI，827 项；只装 requirements*.txt 的口径下会有若干 skip）
 python -m pytest tests/ -m "not integration" -q
 
-# 仅浏览器 E2E（需本机 Edge / Chrome + WebDriver，14 项）
+# 仅浏览器 E2E（需本机 Edge / Chrome + WebDriver，16 项）
 python -m pytest tests/ -m integration -q
 ```
 
-当前测试全部通过：**841 项**（离线 827 + E2E 14）。
+当前测试全部通过：**843 项**（离线 827 + E2E 16）。
 
 > **类型门禁不随环境变**：`src/` + `gui/` + 入口在两种环境下都是 **0 error
 > 0 warning**。两处可选依赖（`opencv-python`、`undetected_chromedriver`）的动态
@@ -461,12 +461,17 @@ python -m pytest tests/ -m integration -q
 提交 → 弹原生 `alert` 并且不给成功文案** —— 上面那两条 v3.0 能力（补文本、
 接管弹窗）因此有了真浏览器证据，而不是只有一堆替身对象。
 `tests/fixtures/mock_wjx_multipage.html` 是两页版：第 2 页初始 `display:none`，
-靠"下一页"按钮切换。
+靠"下一页"按钮切换。`tests/fixtures/mock_wjx_consent_box.html` 专门给提交区协议框
+诊断用：一个未勾的 `#checkxiexi`（相邻文案同样含「同意」「协议」）、一个已勾的同意框、
+以及多选题里一个文案就是「我同意接收后续邮件」的**选项**。这一条不是走过场 ——
+协议框判据全靠元素之间的真实关系（`label[for]` 关联、`closest('div[topic]')` 祖先链），
+离线替身喂不出这棵树；id 那条与文案那条**重复计数**的缺陷就是在这层第一次跑出来时发现的。
 
 E2E 因此覆盖到 `run_one_submission` 的完整链路、提交只点一次的保证、量表边界识别、
 **题干探测**、矩阵多选真的勾上、排序题同时改 DOM 与写隐藏域、分页问卷
 "两页都答完且只在最后一页提交"、带框选项写上文本（含 `maxlength` 截断）、
-以及"页面弹 alert 时 WebDriver 不被噎住且文案能被读回 Python 侧"。
+以及"页面弹 alert 时 WebDriver 不被噎住且文案能被读回 Python 侧"、
+"协议框只报提交区那一个且只算一处"。
 v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock 对它们一律绿。
 
 ### 已知缺口（诚实记录）

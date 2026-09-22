@@ -809,6 +809,10 @@ def reset_mobile_layout_notice() -> None:
 # 只找**没勾的**：勾上了就没必要说话。命中条件两条路 —— 平台那个固定 id，
 # 或者"不在题目容器里 + 相邻文案含关键词"的兜底。后一条必须带容器条件，
 # 否则"我同意接收后续邮件"这种正经多选题的选项也会被报成协议框。
+#
+# 两条路之间还要按元素去重（JS 里的 ``already()``）：`#checkxiexi` 的相邻文案本来就
+# 写着同意与协议，不去重就会被各数一次，于是提示说"2 处"而页面上只有一处。
+# 这条是 E2E 真跑出来的，不是设想出来的（fixture 见 tests/fixtures/mock_wjx_consent_box.html）。
 _CONSENT_JS = """
 var ids = arguments[0], words = arguments[1];
 function labelOf(el) {
@@ -828,15 +832,22 @@ function inQuestion(el) {
     if (!el.closest) return false;
     return !!(el.closest('#fieldset1') || el.closest('div[topic]'));
 }
-var hits = [], i, k;
+var hits = [], picked = [], i, k;
+function already(el) {
+    for (var j = 0; j < picked.length; j++) { if (picked[j] === el) return true; }
+    return false;
+}
 for (i = 0; i < ids.length; i++) {
     var byId = document.getElementById(ids[i]);
-    if (byId && byId.type === 'checkbox' && !byId.checked) hits.push('#' + ids[i]);
+    if (byId && byId.type === 'checkbox' && !byId.checked) {
+        picked.push(byId);
+        hits.push('#' + ids[i]);
+    }
 }
 var boxes = document.querySelectorAll('input[type="checkbox"]');
 for (i = 0; i < boxes.length; i++) {
     var el = boxes[i];
-    if (el.checked || inQuestion(el)) continue;
+    if (el.checked || already(el) || inQuestion(el)) continue;
     var text = (labelOf(el) || '') + ' ' + (el.value || '');
     for (k = 0; k < words.length; k++) {
         if (text.indexOf(words[k]) >= 0) { hits.push('文案含「' + words[k] + '」'); break; }
