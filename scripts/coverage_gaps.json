@@ -1,0 +1,74 @@
+{
+  "_comment": "README 覆盖率口径块的数据源。reason 必填（留空即门禁红），模块名必须能在 coverage.json 里找到。",
+  "caliber": "`pytest tests/ -m \"not integration\" --cov=src --cov=gui`，依赖只装 `requirements*.txt`（即 CI 两条 leg 的环境）",
+  "closed_gaps": {
+    "title": "已补齐的缺口（v2.7 那五条）",
+    "baseline_header": "补齐前",
+    "rows": [
+      {
+        "module": "src/logging_setup.py",
+        "baseline": "0%",
+        "covered_by": ["tests/test_logging_setup.py"]
+      },
+      {
+        "module": "src/browser/driver_factory.py",
+        "baseline": "9%",
+        "covered_by": ["tests/test_driver_factory_offline.py"]
+      },
+      {
+        "module": "src/pipeline.py",
+        "baseline": "26%",
+        "note": "v3.0 加了分页与弹窗诊断分支",
+        "covered_by": ["tests/test_pipeline_core.py", "tests/test_pipeline_waits.py"]
+      },
+      {
+        "module": "src/verification.py",
+        "baseline": "34%",
+        "note": "非 Windows 降级桩本机不可达",
+        "covered_by": ["tests/test_verification_flow.py"]
+      },
+      {
+        "group": "gui/",
+        "baseline": "15%",
+        "covered_by": [
+          "tests/test_gui_panels.py",
+          "tests/test_gui_proxies.py",
+          "tests/test_gui_run_loop.py"
+        ]
+      }
+    ]
+  },
+  "open_gaps": {
+    "title": "仍然没有防线的地方",
+    "rows": [
+      {
+        "module": "gui/controller.py",
+        "reason": "探测题目 / 二维码解码 / 配置导入都要真实 driver 或模态对话框"
+      },
+      {
+        "module": "gui/app.py",
+        "reason": "`SurveyGUI.__init__` 一建就打开真实 `data/history.db` 并启动动画 `after` 循环，测试里无法安全实例化；`_run_loop` 与几个面板薄代理已有契约测试（`tests/test_gui_proxies.py`）"
+      },
+      {
+        "module": "src/pipeline_stages/question_stage.py",
+        "reason": "逐题 DOM 交互主干：等待、「哪道题调哪个填充器」的分发、带框选项只勾不填的降级都已有离线测试（`tests/test_question_stage_dispatch.py`），真实点击仍靠 E2E"
+      },
+      {
+        "module": "src/cli.py",
+        "reason": "`run_batch` 主干已测，剩余是 `--save-config` / 统计打印一类输出分支"
+      },
+      {
+        "module": "src/browser/__init__.py",
+        "reason": "`create_driver` 的 edge/chrome 分发与 `cleanup_browser_state` 整段 Cookie/Storage 清理没有离线替身（缺的正是那 11 行）—— `driver_factory` 有替身 driver，这层薄门面反而没人走一遍"
+      },
+      {
+        "module": "src/interactions/choices.py",
+        "reason": "三个 `@js_execute_retry` 包装函数的函数体一次都没在离线测试里执行（缺 21/31/42-46 行）—— 分发测到「该调哪个填充器」就停了，填充器自身的 `execute_script` 只有 E2E 覆盖"
+      }
+    ]
+  },
+  "declare_below_pct": 60.0,
+  "group_exempt_prefix": "gui/",
+  "tolerance_pp": 0.2,
+  "tolerance_lines": 6
+}

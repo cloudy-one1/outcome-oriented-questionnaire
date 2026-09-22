@@ -27,6 +27,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src import cli
+from src.exceptions import SubmissionAborted
 from src.history import SubmissionHistory
 
 SURVEY_URL = "https://example.com/survey"
@@ -212,6 +213,55 @@ class TestRunBatchSmoke(unittest.TestCase):
 
         self.assertEqual(created["n"], 2, "关窗后应重建一次浏览器")
         self.assertEqual((success, fail), (1, 1))
+
+
+class TestRunBatchStopWithinRound(unittest.TestCase):
+    """v3.0：run_batch 如何接住「轮内停止」（此前 stop_check 只在轮间生效）。"""
+
+    def test_abort_marks_interrupted_without_counting_the_round(self) -> None:
+        """轮内停止 → 该份不提交、不计成功也不计失败，批次 closed 为 interrupted。
+
+        计失败会把成功率人为压低；记成 failed（崩溃态）则 find_resumable_run
+        拒绝续传，前面已成功的份数被静默丢弃 —— 正是 v2.5 为 KeyboardInterrupt
+        修过的那类后果，只是这次发生在停止路径上。
+        """
+        calls = {"n": 0}
+
+        def _abort(*_a, **_kw):
+            calls["n"] += 1
+            raise SubmissionAborted("逐题作答期间收到停止请求", question=3)
+
+        rounds: list[cli.RoundOutcome] = []
+        with SubmissionHistory(":memory:") as db:
+            with mock.patch("src.browser.create_driver", side_effect=_fake_driver_factory),                  mock.patch("src.utils.human_pause", return_value=0.0),                  mock.patch("src.pipeline.run_one_submission", side_effect=_abort):
+                success, fail = cli.run_batch(
+                    SURVEY_URL, 3, history_db=db, on_round=rounds.append,
+                )
+            row = db._query_one("SELECT * FROM runs")
+
+        self.assertEqual((success, fail), (0, 0))
+        self.assertEqual(row["status"], "interrupted")
+        self.assertEqual([r.outcome for r in rounds], ["aborted"])
+        self.assertEqual(calls["n"], 1, "停止后不能再开下一份")
+
+    def test_stop_check_is_forwarded_into_the_round(self) -> None:
+        """接线契约：轮内停止依赖 stop_check 真的传进 run_one_submission。
+
+        v2.4 的 --resume、v2.3 的 lock 都是同一个形状的缺陷 —— 算好了却没传。
+        """
+        captured: dict = {}
+
+        def _spy(driver, url, lock, **kw):
+            captured.update(kw)
+            return "failed"
+
+        def chk() -> bool:
+            return False
+
+        with mock.patch("src.browser.create_driver", side_effect=_fake_driver_factory),              mock.patch("src.utils.human_pause", return_value=0.0),              mock.patch("src.pipeline.run_one_submission", side_effect=_spy):
+            cli.run_batch(SURVEY_URL, 1, stop_check=chk)
+
+        self.assertIs(captured["stop_check"], chk)
 
 
 if __name__ == "__main__":

@@ -37,6 +37,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src import verification  # noqa: E402
+from src.exceptions import SubmissionAborted  # noqa: E402
 from src.utils import ManualHoldLock  # noqa: E402
 
 # 本文件的测试默认把 force_focus 换成 no-op 记录器（见 focus_calls fixture）。
@@ -657,3 +658,35 @@ def test_auto_close_swallows_win32_errors(vthreading, user32) -> None:
     user32.raises = {"FindWindowW"}
     _REAL_FORCE_FOCUS(auto_close_seconds=5)
     vthreading.only_timer.fn()  # 不抛即通过
+
+
+# ---------------------------------------------------------------------------
+#  v3.0：停止按钮打断人工验证码等待
+# ---------------------------------------------------------------------------
+def test_abort_check_ends_the_wait_and_releases_the_lock(clock) -> None:
+    """一次验证码等待最长 VERIFICATION_TIMEOUT(120s)，此前期间点停止毫无反应。
+
+    锁不释放的话 pipeline 的超时判断会一直挂起 —— 卡住的不是这一份，是整批。
+    """
+    lock = ManualHoldLock()
+    d = FakeDriver(verdicts={"probe-dom": True})
+    with pytest.raises(SubmissionAborted):
+        verification.wait_for_manual_verification(
+            d, timeout_seconds=60, hold_lock=lock, abort_check=lambda: True,
+        )
+    assert lock.is_holding is False, "finally 必须释放人工介入锁"
+    assert d.refreshes == 0, "已被要求停止，就别再往页面发刷新请求"
+    assert clock.slept == [2], "第一轮轮询即退出，不再耗满预算"
+
+
+def test_abort_check_none_keeps_the_full_wait(clock) -> None:
+    """不传 abort_check（CLI 未开停止通道时的原路径）→ 行为与 v2.8 一致：超时返回 False。"""
+    lock = ManualHoldLock()
+    d = FakeDriver(verdicts={"probe-dom": True})
+    assert verification.wait_for_manual_verification(
+        d, timeout_seconds=6, hold_lock=lock
+    ) is False
+    # 3 轮轮询 + 超时收尾前的那一次 sleep(2)
+    assert clock.slept == [2, 2, 2, 2]
+    assert d.refreshes == 1, "超时路径仍要刷新页面"
+    assert lock.is_holding is False

@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>必答题漏探测 Mock（v3.1 完整度自检）</title>
+</head>
+<body>
+<!-- 复现 2026-09-22 真卷上的那一类缺口：日期题的输入框是
+     <input class="datebox" type="text" readonly>，而 detect_questions 的填空那一步
+     开头就 `if (el.disabled || el.readOnly) return;`（那条规则是挡量表/矩阵的隐藏
+     存储框用的，不能简单去掉）—— 于是整道题连出现在探测结果里都没有。
+     平台侧它仍是 topic=2、type=1、req=1 的必答题。
+     本 fixture 要锁的是：这种题在**点提交之前**就被完整度自检挑出来，而不是
+     交上去换一句平台的"第 2 题未答"。Q3 同样探测不到，但它没标必答 → 不许拦。 -->
+<h2>必答题漏探测 Mock</h2>
+
+<div id="div1" class="div_question" topic="1" type="3" req="1">
+  <div class="qtitle"><span class="idx">1.</span>您的性别是？（单选）</div>
+  <div class="field">
+    <label class="opt"><input type="radio" name="q1" id="q1_1" value="1">男</label>
+    <label class="opt"><input type="radio" name="q1" id="q1_2" value="2">女</label>
+  </div>
+</div>
+
+<div id="div2" class="div_question" topic="2" type="1" req="1">
+  <div class="qtitle"><span class="idx">2.</span>您的出生日期（日期题，只读输入框）</div>
+  <div class="field">
+    <input type="text" id="q2" name="q2" class="datebox" readonly placeholder="请选择日期">
+  </div>
+</div>
+
+<div id="div3" class="div_question" topic="3" type="1">
+  <div class="qtitle"><span class="idx">3.</span>选填备注（同样探测不到，但没标必答）</div>
+  <div class="field">
+    <input type="text" id="q3" name="q3" class="datebox" readonly placeholder="选填">
+  </div>
+</div>
+
+<!-- req="" 是"空属性"而不是"值为 0"：缺信号时必须朝**不拦**的方向降级，
+     拦错一次就是一单本来能交的问卷被判失败。这道题探测得到，顺带确认
+     空 req 不会被算进缺口。 -->
+<div id="div4" class="div_question" topic="4" type="3" req="">
+  <div class="qtitle"><span class="idx">4.</span>是否愿意回访（req 为空串）</div>
+  <div class="field">
+    <label class="opt"><input type="radio" name="q4" id="q4_1" value="1">愿意</label>
+    <label class="opt"><input type="radio" name="q4" id="q4_2" value="2">不愿意</label>
+  </div>
+</div>
+
+</body>
+</html>

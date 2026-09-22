@@ -1171,3 +1171,70 @@ def test_decode_non_image_bytes_returns_none(monkeypatch, tmp_path) -> None:
     assert qr_utils.decode_qr_from_image(str(bogus)) is None
     assert dialogs and dialogs[0][0] == "showerror"
     assert "无法解析图片" in dialogs[0][1]
+
+
+# ===========================================================================
+#  v3.0 题干锚点：导出的配置要能跟着题目走，而不是跟着题号走
+# ===========================================================================
+_QS_WITH_TITLES = [
+    {"q": 1, "type": "single", "choices": [1, 2, 3], "title": "1.您的性别是？"},
+    {"q": 3, "type": "scale", "scale": 5, "scale_min": 1, "title": "满意度评分"},
+]
+
+
+def test_build_weight_config_attaches_anchor_from_detected_title(frame) -> None:
+    """探测带回了题干 → 另存出去的配置必须带 anchor + 结构签名。
+
+    这一步断的是"GUI 侧真的把锚点写进配置"，而不只是 anchoring 支持锚点：
+    少了这一步，用户插一道题之后整份预设照样静默错位。
+    """
+    from src import anchoring
+
+    panel = _weight_panel(frame, questions=[dict(q) for q in _QS_WITH_TITLES])
+    panel.weight_entries[1].set("1,2,3")
+    cfg = panel.build_weight_config()
+
+    assert cfg[1]["anchor"] == {"title": "1.您的性别是？", "signature": "single:3"}
+    assert cfg[3]["anchor"] == {"title": "满意度评分", "signature": "scale:1-5"}
+    # 锚点认领的是**这道题**，不是"第 1 格"
+    assert anchoring.anchor_matches_question(cfg[1]["anchor"], _QS_WITH_TITLES[0])
+
+
+def test_build_weight_config_omits_anchor_when_no_title_detected(frame) -> None:
+    """题干取不到（老页面 / 探测降级）→ 不写 anchor，行为退回 v2.8 的按题号。
+
+    写一个空 anchor 反而更糟：lookup 会因为"带 anchor 的条目绝不退回答题号"
+    把这道题的权重整个弃用。
+    """
+    panel = _weight_panel(frame, questions=_copy_questions())
+    panel.weight_entries[1].set("1,2,3")
+    cfg = panel.build_weight_config()
+
+    assert "anchor" not in cfg[1], f"没题干却写了锚点: {cfg[1]}"
+
+
+def test_sort_row_exports_order_and_warns_on_unknown_items(frame) -> None:
+    """v3.0 排序题：权重格里写的逗号串是**固定顺序**，认不出的项要 WARN 并整条忽略。
+
+    留一半顺序不如干脆随机 —— 半截 order 会被当成"其余项没有位置"，
+    平台直接判该题无效。
+    """
+    qs = [{"q": 13, "type": "sort", "items": ["1", "2", "3", "4"],
+           "title": "请把下列渠道排序"}]
+    logs = LogRecorder()
+    panel = _weight_panel(frame, questions=qs, logs=logs)
+    assert panel.weight_entries[13] is not None, "排序题也要有一行可编辑"
+
+    panel.weight_entries[13].set("4,2")
+    assert panel.build_weight_config()[13]["order"] == ["4", "2"]
+    assert logs.records == [], "合法顺序不该产生噪音"
+
+    panel.weight_entries[13].set("4,9")
+    cfg = panel.build_weight_config()[13]
+    assert "order" not in cfg, f"含未知项的 order 必须整条弃用: {cfg}"
+    assert logs.levels == ["WARN"] and "不在探测到的" in logs.last[0]
+
+    panel.weight_entries[13].set("")
+    assert panel.build_weight_config()[13] == {
+        "type": "sort", "anchor": {"title": "请把下列渠道排序", "signature": "sort:4"},
+    }, "留空 = 随机排序，只落题型"

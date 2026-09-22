@@ -1,0 +1,56 @@
+# ============================================================================
+#  v3.0 打包元数据。
+#
+#  刻意保持"薄"：依赖版本仍以 requirements*.txt 为单一真相（那里还写着
+#  实测环境说明），本文件由 tests/test_packaging.py 逐条比对，漂了就红 ——
+#  两处各自演化的版本表迟早会出现"CI 装的和文档说的不是一套"。
+#
+#  安装（可编辑模式，源码目录保持不动）：
+#      pip install -r requirements.txt -e .
+#  之后可直接用 `wjx-fill -u <url>` / `wjx-gui`，不必再 python run_cli.py。
+# ============================================================================
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wjx-autofill"
+version = "3.0.0"
+description = "基于 Selenium Stealth 的问卷星批量填写工具（加权随机作答 + 人类行为模拟 + CLI/GUI 双入口）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "cloudy-one1" }]
+keywords = ["selenium", "questionnaire", "wjx", "automation", "stealth"]
+classifiers = [
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Operating System :: Microsoft :: Windows",
+]
+dependencies = [
+  "selenium==4.39.0",
+  "numpy==2.2.4",
+]
+
+[project.optional-dependencies]
+# 更强的 Chrome 反检测（仅 --uc 需要）
+uc = ["undetected-chromedriver==3.5.5"]
+# GUI 二维码 URL 解析（体积大，装不上时 GUI 只是不给二维码按钮）
+qr = ["opencv-python==4.10.0.84"]
+dev = [
+  "pytest==9.1.1",
+  "pytest-cov==7.1.0",
+  "ruff==0.16.6",
+]
+
+[project.scripts]
+wjx-fill = "src.cli:main"
+wjx-gui = "gui.app:main"
+
+[tool.setuptools]
+# 仓库现有布局就是顶层 src/ 与 gui/（run_cli.py 直接 from src.cli import main）；
+# 改成 src-layout 会牵动全部 import，收益只有"名字好看"，不在 v3.0 范围内。
+packages = ["src", "src.browser", "src.interactions", "src.pipeline_stages", "gui"]

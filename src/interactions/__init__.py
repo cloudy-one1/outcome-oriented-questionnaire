@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 # 题型：单选/多选
-from .choices import js_click_option, js_click_question_options
+from .choices import js_click_option, js_click_question_options, js_fill_option_blank
 # 题型：填空
 from .text import js_fill_text
 # 题型：量表
@@ -19,7 +19,9 @@ from .scale import js_set_scale
 # 题型：下拉
 from .dropdown import js_select_dropdown
 # 题型：矩阵
-from .matrix import js_fill_matrix_single
+from .matrix import js_fill_matrix_multi, js_fill_matrix_single
+# 题型：排序（v3.0）
+from .sort import js_fill_sort
 # 提交模块：三态常量 + 查找提交按钮 + 探测效果
 from .submit import (
     SUBMIT_FAILED,
@@ -37,9 +39,12 @@ __all__ = [
     # 题型
     "js_click_option",
     "js_click_question_options",
+    "js_fill_option_blank",
     "js_fill_text",
     "js_set_scale",
     "js_select_dropdown",
+    "js_fill_matrix_multi",
+    "js_fill_sort",
     "js_fill_matrix_single",
     # 提交
     "SUBMIT_SUCCESS",

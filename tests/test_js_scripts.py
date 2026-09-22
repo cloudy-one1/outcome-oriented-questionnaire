@@ -82,6 +82,41 @@ def test_click_question_options_injects_json_choices() -> None:
 
 
 # ---------------------------------------------------------------------------
+#  choices.fill_option_blank_script —— 选项自带填空框（"其他____"）
+# ---------------------------------------------------------------------------
+def test_fill_option_blank_escapes_every_slot() -> None:
+    """q / choice / text 三个槽位都必须是 json.dumps 后的字面量。
+
+    text 是**页面可控**的内容（用户在权重表里写的候选词会流经这里），
+    choice 来自 DOM 的 value —— 两者都不能被解析成代码。
+    """
+    text = '"; alert(1); var y="'
+    out = S.fill_option_blank_script(q=2, choice=5, text=text)
+    assert "var q = 2;" in out
+    assert "var choice = \"5\";" in out, "choice 必须序列化成字符串字面量"
+    assert json.dumps(text) in out
+    assert "return" in out
+
+
+def test_fill_option_blank_clamps_to_maxlength() -> None:
+    """程序赋值不受 maxlength 约束，必须自己截断。
+
+    不截的话"比框更长的文本"会被原样提交，前端看着填好了、服务端按超长拒，
+    最终又是一个看不出原因的 unknown。
+    """
+    out = S.fill_option_blank_script(q=2, choice=5, text="其他原因")
+    assert "maxlength" in out
+    assert "txt.substring(0, limit)" in out
+
+
+def test_fill_option_blank_uses_the_shared_locator() -> None:
+    """作答侧的定位必须来自共用的那个助手，而不是脚本里再写一遍。"""
+    out = S.fill_option_blank_script(q=2, choice=5, text="x")
+    assert out.count("function optionBlankInput") == 1, "定位函数被抄了两份"
+    assert "optionBlankInput(input)" in out
+
+
+# ---------------------------------------------------------------------------
 #  text.fill_text_script — JSON/text 转义正确性（第六章重点）
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("dangerous_text", [
@@ -171,6 +206,24 @@ def test_fill_matrix_injects_rowmap_via_json_dumps() -> None:
     )
 
 
+def test_fill_matrix_multi_selects_checkboxes_per_row() -> None:
+    """矩阵多选与单选共用一个生成器：两者都得能定位 checkbox，且多选不 break。
+
+    锁的是"共用不漂移"：单选那份若被改回只查 radio，矩阵多选题就会一格都点不上；
+    而多选一 break 就变成"每行只勾一个"，与题型语义相反。
+    """
+    row_map = {1: [2, 4], 2: ["北京"]}
+    out = S.fill_matrix_multi_script(q=9, row_selections=row_map)
+    assert json.dumps(row_map, ensure_ascii=False, default=str) in out
+    assert 'input[type="checkbox"]' in out, "多选路径没查 checkbox"
+    assert "Array.isArray(raw)" in out, "行值是否为数组必须在 JS 侧当场判定"
+    assert "if (!isMulti) break;" in out, "只有单选才允许命中后立刻 break"
+    # 单选那份仍走同一定位约定
+    single_out = S.fill_matrix_single_script(q=9, row_selections={1: 2})
+    assert 'input[type="checkbox"]' in single_out
+    assert "'q' + q + '_' + rowKey" in single_out
+
+
 # ---------------------------------------------------------------------------
 #  submit 模块小片段
 # ---------------------------------------------------------------------------
@@ -189,6 +242,46 @@ def test_submit_success_detect_contains_keywords() -> None:
     out = S.submit_success_detect_script()
     for kw in ['提交成功', '感谢您的参与', '.submit-succ']:
         assert kw in out, f"success detect JS 缺少关键词 {kw}"
+
+
+# ---------------------------------------------------------------------------
+#  页面级探针：接管 window.alert
+# ---------------------------------------------------------------------------
+def test_alert_recorder_only_takes_over_alert() -> None:
+    """只接管 alert，绝不碰 confirm / prompt。
+
+    后两者的返回值是页面控制流的一部分（"确认提交？"这类模板真用 confirm），
+    替用户回答"是"就是替用户提交 —— 一个诊断功能不该有这个权限。
+    """
+    out = S.install_alert_recorder_script()
+    assert "window.alert = function" in out
+    assert "window.confirm" not in out
+    assert "window.prompt" not in out
+
+
+def test_alert_recorder_does_not_reload_the_page() -> None:
+    """不许在 alert 里顺手刷新页面。
+
+    那是把"页面在报错"变成"页面重来一遍"：故障痕迹被抹干净，
+    同类工具 issue 里的"无限自动刷新一道题不做"就是这么来的。
+    """
+    out = S.install_alert_recorder_script()
+    for forbidden in ("location.reload", "window.location", "href ="):
+        assert forbidden not in out, f"alert 记录器里出现了导航动作 {forbidden!r}"
+
+
+def test_alert_recorder_is_idempotent_per_document() -> None:
+    """同一 document 重复注入不能把已攒下的文案清掉。"""
+    out = S.install_alert_recorder_script()
+    assert "if (window.__wjxBlockedAlerts) return true;" in out
+    assert "__wjxNativeAlert" in out, "原生 alert 要留着，页面自己可能还要还原它"
+
+
+def test_read_blocked_alerts_drains_and_bounds() -> None:
+    """读一次就清空（下次读到的都是新产生的），并且带上限。"""
+    out = S.read_blocked_alerts_script()
+    assert "window.__wjxBlockedAlerts = []" in out
+    assert "slice(0," in out
 
 
 # ---------------------------------------------------------------------------
@@ -233,8 +326,25 @@ def _script_cases() -> dict[str, str]:
         "fill_matrix_single_script__basic": S.fill_matrix_single_script(
             q=9, row_selections={1: 2, 2: "北京"}
         ),
+        "fill_matrix_multi_script__basic": S.fill_matrix_multi_script(
+            q=9, row_selections={1: [2, 4], 2: ["北京"]}
+        ),
+        "fill_sort_script__basic": S.fill_sort_script(q=13, order=["3", "1", "2"]),
+        "fill_sort_script__empty": S.fill_sort_script(q=13, order=[]),
+        "option_blank_helper_script__noargs": S.option_blank_helper_script(),
+        "fill_option_blank_script__basic": S.fill_option_blank_script(
+            q=2, choice=5, text="其他原因"
+        ),
+        "fill_option_blank_script__quote_in_text": S.fill_option_blank_script(
+            q=2, choice="a'\\\"", text='he said "hi"'
+        ),
+        "fill_option_blank_script__empty_text": S.fill_option_blank_script(
+            q=2, choice=5, text=""
+        ),
         "submit_button_fallback_script__noargs": S.submit_button_fallback_script(),
         "submit_success_detect_script__noargs": S.submit_success_detect_script(),
+        "install_alert_recorder_script__noargs": S.install_alert_recorder_script(),
+        "read_blocked_alerts_script__noargs": S.read_blocked_alerts_script(),
     }
 
 

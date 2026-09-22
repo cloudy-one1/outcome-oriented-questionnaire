@@ -8,21 +8,32 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, Callable
 
 
 from ..answering import build_answer_strategy
 from ..answering_v2 import generate_answer as generate_answer_v2
+from ..answering_v2 import generate_option_blank_text
 from ..config import (
     Q_THINK_MU,
     Q_THINK_SIGMA,
 )
-from ..exceptions import TRANSIENT_DOM_EXCEPTIONS, format_exc_log, raise_non_recoverable
+from ..exceptions import (
+    TRANSIENT_DOM_EXCEPTIONS,
+    SubmissionAborted,
+    format_exc_log,
+    raise_non_recoverable,
+)
 from ..models import normalize_question_type
-from ..interactions.choices import js_click_option, js_click_question_options
+from ..interactions.choices import (
+    js_click_option,
+    js_click_question_options,
+    js_fill_option_blank,
+)
 from ..interactions.dropdown import js_select_dropdown
-from ..interactions.matrix import js_fill_matrix_single
+from ..interactions.matrix import js_fill_matrix_multi, js_fill_matrix_single
 from ..interactions.scale import js_set_scale
+from ..interactions.sort import js_fill_sort
 from ..interactions.text import js_fill_text
 from ..utils import human_pause
 from .page_loader import QUESTION_CONTROL_SELECTOR
@@ -35,10 +46,13 @@ def _wait_for_questions(
     driver: Any,
     timeout: float,
     hold_lock: Any | None = None,
+    stop_check: Callable[[], bool] | None = None,
 ) -> bool:
     """等待题目输入框出现在 DOM 中（V2 扩展：覆盖 6 类题型的常见输入控件）。
 
     :param hold_lock: 人工介入锁。传入后，**处于 holding 状态的时间不计入超时预算**。
+    :param stop_check: 每个轮询片问一次；返回 True → 抛 ``SubmissionAborted``。
+        不传时行为与旧版逐位一致。
 
     Why 不用 WebDriverWait(driver, timeout).until(...)：
     那条路径把 timeout 交给 WebDriver 的墙钟，而验证码可能在题目等待期间才弹出。
@@ -50,6 +64,8 @@ def _wait_for_questions(
     selector = QUESTION_CONTROL_SELECTOR
     deadline = time.perf_counter() + timeout
     while True:
+        if stop_check is not None and stop_check():
+            raise SubmissionAborted("用户在等待题目渲染期间请求停止")
         try:
             found = driver.execute_script(
                 f"return document.querySelectorAll('{selector}').length > 0"
@@ -91,6 +107,9 @@ def _answer_one_question(
       ``js_click_question_options``，保证 100% 行为不变。
     - V2 题型 (text/scale/dropdown/matrix_single)：使用
       ``answering_v2.generate_answer``（统一 dict）+ 对应 interaction 新函数。
+    - v3.0 题型 (matrix_multi/sort)：同上，分发在下面的 ``ans_type`` 分支链。
+      链尾的 ``else`` 是"认不出就降级当单选"的兜底 —— 新题型必须显式加分支，
+      否则会被静默当成单选题点一下，页面收下的是一个毫无意义的答案。
 
     :param no_record_text: 审查 P2-3 隐私保护 —— True 时填空题答案
                             不会写入 SQLite 的 text_answer 列（写 NULL 占位），
@@ -104,7 +123,8 @@ def _answer_one_question(
     qtype = str(q.get("type", "single")).lower()
 
     # 用于 history 记录（options_selected / text_answer / elapsed_ms）
-    options_selected: list[int] | None = None
+    # 排序题会把 item id（字符串）也写进这一列，所以值域比"选项序号"宽
+    options_selected: list[Any] | None = None
     text_answer: str | None = None
     t0 = time.perf_counter()
     is_ok = False
@@ -139,6 +159,28 @@ def _answer_one_question(
             is_ok = False
         # history 记录：选项值列表
         options_selected = list(answer_values) if answer_values else None
+
+        # ---- 选项自带填空框（"其他____"）：勾完还要把那一格写上 ----
+        # 放在 try/except 之后而不是之内：上面降级成"逐一点击"的路径同样勾中了
+        # 那些项，一样需要补文本。少写这一处，症状是"报了成功、平台却整题拒收"。
+        selected_values = set(answer_values or [])
+        for blank_value in (q.get("blank_options") or []):
+            if blank_value not in selected_values:
+                continue
+            try:
+                if not js_fill_option_blank(
+                    driver, qnum, blank_value, generate_option_blank_text()
+                ):
+                    print(f"  [填空选项] Q{qnum} 第 {blank_value} 项的框没写进去"
+                          " → 本题计失败")
+                    is_ok = False
+            except Exception as _e:
+                raise_non_recoverable(_e)
+                print("  " + format_exc_log(
+                    _e, action="填写选项自带空", question=qnum, qtype=qtype,
+                    recovery="本题计失败，跳过继续答下一题",
+                ))
+                is_ok = False
 
     # ------------------------------------------------------------------
     #  V2 题型：text / scale / dropdown / matrix_single
@@ -179,6 +221,27 @@ def _answer_one_question(
                         for v in row_map.values()
                         if isinstance(v, int) or (isinstance(v, str) and v.isdigit())
                     ]
+
+            elif ans_type == "matrix_multi":
+                # v3.0：每行的值是列表 → 落库时把各行勾中的列值摊平成一维，
+                # 与 options_selected 列既有的"JSON 数组"形状保持一致。
+                row_map = ans.get("rows") or {}
+                is_ok = js_fill_matrix_multi(driver, qnum, row_map)
+                if isinstance(row_map, dict):
+                    options_selected = [
+                        int(v)
+                        for vals in row_map.values()
+                        for v in (vals if isinstance(vals, (list, tuple)) else [vals])
+                        if isinstance(v, int) or (isinstance(v, str) and v.isdigit())
+                    ]
+
+            elif ans_type == "sort":
+                # v3.0：order 是 item id 序列（探测回来的都是字符串）
+                order = [str(x) for x in (ans.get("order") or [])]
+                is_ok = js_fill_sort(driver, qnum, order)
+                options_selected = [
+                    int(v) if v.lstrip("-").isdigit() else v for v in order
+                ]
 
             else:
                 # 兜底：如果有 choices，降级成单选（与 answering_v2 的兜底一致）

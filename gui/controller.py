@@ -71,6 +71,8 @@ _TYPE_LABELS: dict[str, str] = {
     "scale": "量表",
     "text": "填空",
     "matrix": "矩阵",
+    "matrix_multi": "矩多",
+    "sort": "排序",
 }
 
 

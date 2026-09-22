@@ -127,18 +127,57 @@ def _discard(driver: Any) -> None:
         )
 
 
+_HEADLESS_MARKER = "wjx_headless"
+
+# 容器里 chromium 的二进制不在 Selenium 默认猜的位置上，且不能让 Selenium Manager
+# 去联网猜驱动版本（网络受限就直接失败）。给了环境变量就照它走。
+BINARY_ENV_VARS = ("WJX_BROWSER_BINARY", "WJX_CHROME_BINARY", "WJX_EDGE_BINARY")
+
+
+def _apply_binary_location(opts: Any) -> None:
+    """把浏览器二进制路径指到环境变量给的位置（未设置时什么都不做）。"""
+    import os
+    for var in BINARY_ENV_VARS:
+        path = os.environ.get(var, "").strip()
+        if path:
+            opts.binary_location = path
+            return
+
+
+def _mark_headless(driver: Any) -> None:
+    """把"这个实例是无头起来的"记在实例上。
+
+    验证码的人工介入等待要靠它决定"别等了，等的人不存在" —— 那比多等
+    ``VERIFICATION_TIMEOUT`` 秒严重：整批会卡在一个永远不会有答案的弹窗上。
+    """
+    try:
+        setattr(driver, _HEADLESS_MARKER, True)
+    except Exception:  # pragma: no cover - 只有解释器不让挂属性时才会走到
+        logging.getLogger(__name__).debug("无法在无头实例上标记 headless", exc_info=True)
+
+
+def driver_is_headless(driver: Any) -> bool:
+    """默认 False：测试替身与非浏览器对象都没这个属性，行为与 v2.8 一致。"""
+    return bool(getattr(driver, _HEADLESS_MARKER, False))
+
+
 def create_edge_driver(
     user_agent: str | None = None,
     *,
     headless: bool = False,
+    user_data_dir: str | None = None,
 ) -> Any:
     """创建 Stealth 版 Edge 浏览器实例。
 
     参数：
-      user_agent : 若未指定 → 自动从 USER_AGENT_POOL 中随机
-      headless   : 是否无头模式（注意：问卷星对无头非常敏感，只建议本地调试用）
+      user_agent    : 若未指定 → 自动从 USER_AGENT_POOL 中随机
+      headless      : 是否无头模式（注意：问卷星对无头非常敏感，只建议本地调试用）
+      user_data_dir : 浏览器 profile 目录（v3.0 --profile-dir）。复用它可以带上
+                      登录态与"这台机器本来就有这个 profile"的磁盘痕迹；
+                      代价是同一目录不能被两个实例同时占用。
     """
     opts = webdriver.EdgeOptions()
+    _apply_binary_location(opts)
 
     # ==================================================================
     #  Step 1. 挑选本实例的"身份"：UA + 屏幕 + 硬件配置（每次启动不同）
@@ -168,6 +207,9 @@ def create_edge_driver(
     opts.add_argument(f"user-agent={ua}")
     # 窗口略大于可用区域（模拟真实窗口有标题栏 + 边框）
     opts.add_argument(f"--window-size={screen_w},{screen_h}")
+
+    if user_data_dir:
+        opts.add_argument(f"--user-data-dir={user_data_dir}")
 
     if headless:
         opts.add_argument("--headless=new")  # Edge 新版无头模式
@@ -209,6 +251,8 @@ def create_edge_driver(
         # 此刻调用方还没拿到 d：不就地 quit 就是白漏一个 Edge 进程
         _discard(d)
         raise
+    if headless:
+        _mark_headless(d)
     return d
 
 
@@ -316,12 +360,14 @@ def create_chrome_driver(
     *,
     headless: bool = False,
     use_uc: bool = False,
+    user_data_dir: str | None = None,
 ) -> Any:
     """创建 Stealth 版 Chrome 浏览器实例。
 
     参数：
       user_agent : 若未指定 → 自动从 Chrome UA 池中随机
       headless   : 是否无头模式（注意：问卷星对无头非常敏感，只建议本地调试用）
+      user_data_dir : 浏览器 profile 目录（v3.0 --profile-dir），见 create_edge_driver
       use_uc     : 是否优先使用 undetected-chromedriver（需要已 `pip install undetected-chromedriver`）；
                    若启用但未安装 UC，则自动回退到 Selenium 原生 Chrome
 
@@ -351,6 +397,8 @@ def create_chrome_driver(
 
             uc_opts = uc.ChromeOptions()
             # UC 的参数风格：headless / user-data-dir 等
+            if user_data_dir:
+                uc_opts.add_argument(f"--user-data-dir={user_data_dir}")
             if headless:
                 uc_opts.add_argument("--headless=new")
             uc_opts.add_argument("--disable-gpu")
@@ -403,6 +451,8 @@ def create_chrome_driver(
                 device_memory=device_memory,
                 hw_concurrency=hw_concurrency,
             )
+            if headless:
+                _mark_headless(d)
             return d
         except BaseException as _uc_e:
             # UC 不可用（未安装 / driver 下载失败 / 权限问题） → 回退原生 Selenium。
@@ -418,6 +468,7 @@ def create_chrome_driver(
     #  Step 3. 回退路径：Selenium 原生 Chrome + Stealth CDP
     # ============================================================
     opts = webdriver.ChromeOptions()
+    _apply_binary_location(opts)
 
     # Chrome 隐私模式（对应 Edge 的 --inprivate）
     opts.add_argument("--incognito")
@@ -437,6 +488,9 @@ def create_chrome_driver(
     # UA + 窗口尺寸
     opts.add_argument(f"user-agent={ua}")
     opts.add_argument(f"--window-size={screen_w},{screen_h}")
+
+    if user_data_dir:
+        opts.add_argument(f"--user-data-dir={user_data_dir}")
 
     if headless:
         opts.add_argument("--headless=new")
@@ -473,4 +527,6 @@ def create_chrome_driver(
         # 与 Edge 路径同款窗口期：调用方还没拿到 d，不就地 quit 就是白漏一个 Chrome
         _discard(d)
         raise
+    if headless:
+        _mark_headless(d)
     return d

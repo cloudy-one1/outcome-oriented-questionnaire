@@ -4,6 +4,8 @@
 
 决策逻辑（按优先级）：
   1. 如果 WEIGHT_CONFIG 中有该题的自定义权重 → 使用加权随机
+     （v3.0 起"该题"由 ``src.anchoring.lookup_weight_entry`` 判定：
+       带 anchor 的条目按题干+结构签名认领，其余按题号）
      - 单选题：按 weights 加权采样，选中 1 个选项
      - 多选题：先从 count_options 中加权采样出"选几个"（k），
                再用 numpy 无放回加权抽样选出 k 个不同选项
@@ -16,7 +18,7 @@ from __future__ import annotations
 
 import random
 
-from .config import WEIGHT_CONFIG
+from . import anchoring
 from .utils import (
     equal_sample_no_replace,
     sanitize_weights,
@@ -54,7 +56,8 @@ def build_answer_strategy(question: dict) -> list[int]:
     """
     qi = question["q"]  # 题号
 
-    cfg = WEIGHT_CONFIG.get(qi)  # 该题的权重配置，可能为 None
+    # v3.0：锚点优先、题号兜底（带 anchor 的条目绝不退回答题号，见 anchoring 模块文档）
+    cfg = anchoring.lookup_weight_entry(question)  # 该题的权重配置，可能为 None
 
     # ------------------------------------------------------------------
     #  情况 A：用户配置了权重 → 加权随机

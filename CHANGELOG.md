@@ -2,6 +2,224 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [未发布]（目标 3.1.0）
+
+### 新增
+
+- **结构对拍：探测结果 ↔ 平台自报的题目结构**（`src/crosscheck.py`、
+  `src/detection.py::detect_platform_questions`、`src/platforms.py::WJX_TYPE_CODES`，接线在
+  `src/pipeline.py::_answer_current_page`）。
+  要补的是"探测发现自己判错了"这条路：`detect_questions` 从控件形状反推题型，而权重锚定的
+  `question_signature` 用的就是这份探测结果 —— 判错时签名跟着错，锚点比对一路放行，逐题作答
+  又照着同一个错结果点控件，症状一路延后到「提交后平台说该题未答」，日志里看不出从哪步开始错。
+  问卷星在题目容器上明写着题号与题型码（真卷形态
+  `<div id="divN" class="field" topic="N" type="C">`），那是一条独立于我们逻辑的读数，拿它来比。
+  三条契约：① **只提示、不拦停、不改作答**，码表未收录的码（8 / 10…）不参与题型比对；
+  ② **没有平台信号就彻底静默** —— 模板不标 `topic` 不是我们的探测错了，用假警训练用户忽略提示
+  比少一个诊断糟得多；③ 同一句提示每进程只印一次（分页每页都要对拍、一批又跑十几份）。
+  对拍与 `detect_questions` **共用** `pageHidden` 分页过滤（抽成 `_PAGE_HIDDEN_JS`）：
+  两边分页口径不一致时，每份分页问卷都会刷一堆"平台有 Q9 我们没探测到"的假警。
+- **码表来源是实测，不是抄文档**：2026-09-22 在一份真问卷（15 题，覆盖题型码
+  1/2/3/4/5/6/7/9/11）上把容器属性与容器内真实形状逐题对过。同一份卷上跑对拍，
+  **7 道出声**：Q7/Q8/Q9（矩阵量表被判成 `scale`）、Q10（量表被判成 `text`）、
+  Q14（多空填空被判成 `scale`）5 道题型不符，Q12（排序题）、Q15（日期题）2 道整题没探测到。
+  这些是真卷上现存的探测缺口，本条只负责把它们说出来，修复另计。
+- 离线契约测试 `tests/test_crosscheck.py` 32 项（平台读数的畸形输入免疫、三类差异各自出声、
+  未知码静默、无信号静默、去重）；浏览器 E2E 加 1 项：fixture 按真卷形态补上 `topic`/`type`
+  后，要求读数齐且**对拍零提示** —— 探测判对时不许出声，是这条功能的另一半。
+- **提交前完整度自检**（`src/completeness.py`，接线在 `pipeline` 的 Step 7.5，点提交之前）。
+  平台对必答题的拦截本来发生在**点提交之后**（弹一句"第 N 题未答"），本工具那时候的样子是
+  提交返回失败 / unknown，再从日志里猜是哪一题。而"某道题我们整份流程压根没探测到"
+  （真卷上的排序题、日期题就是这样）是**注定被拦**的一次提交：白点一次，还留下一条
+  看不懂原因的失败。这一步把这种题挑出来，直接判本轮失败并说出题号。
+  判据只收一种零歧义事实：**平台标了 `req` 且题号不在"整份探测到的题号并集"里** → 我们必定没答
+  → 平台必定拦。探测到了但题型判错（矩阵量表被判成 `scale` 那一类）**不归它管** —— 那种判定要靠
+  "已答扫描"，而已答扫描读的是同一套可能判错的结构，拿它当判据等于让错的判定自己给自己背书。
+  两条降级都是同一句话"宁可少拦，不能拦错"：拿不到平台结构 → 照常提交；容器没有 `req` 属性 →
+  视为不必答。被跳题 / 互斥逻辑藏起来的题在 JS 侧就不读出来（那种题平台本来不要求答）。
+  跨页口径：判据用的是逐页**并集** `detected_all`，只看最后一页会把前面几页答过的必答题误判成漏答。
+  测试：`tests/test_completeness.py` 13 项离线 + `test_pipeline_core.py` 加 5 项接线
+  （含两页并集、"无信号不拦"、"非必答不拦"、对拍看本页 / 自检看整卷）+ E2E 1 项
+  （真 DOM 上只读 `datebox` 探测不到、而平台标 `req=1` → 缺口正好是那一题）。
+
+- **README 的覆盖率口径改成生成物**（`scripts/readme_coverage.py`、`scripts/coverage_gaps.json`、
+  `tests/test_doc_consistency.py`，CI 多一步 `--check`）。要补的是"口径同步"这条重复劳动本身：
+  2026-09-22 一天里发过两次标题为「README / CHANGELOG / ci.yml 口径同步」的提交，只为把同一组
+  百分比抄到三处，而且缺口理由散在正文里，改代码的人不知道该同步哪几行。现在数字的唯一来源是
+  `coverage.json`（CI 跑测试那步顺手产出），`--write` 重写 README 的生成块，`--check` 当门禁；
+  地板 `--cov-fail-under` 反过来由 `ci.yml` 供给 README，**手写的覆盖率数字只剩地板那一处**。
+  三条设计：
+  ① **数字按容差比、清单按精确比** —— 批次循环里有 `random` 分支，同一环境两次实测
+  `src/answering_v2.py` 是 92.1% / 94.2%（TOTAL 差 0.08pp），精确串比对会随机变红。故百分比容忍
+  0.2pp、行数容忍 6 行，而缺口清单的模块**增删改名**是硬失败。
+  ② **低覆盖必须登记理由**（对标 `wjx-ai-kit` 的 capability-matrix：`intentional-gap` 的 reason
+  留空即红），并且反向要求"低于 60% 又没登记的模块"直接失败。上线当天就抓到两条 README 里
+  从没有过的：`src/browser/__init__.py` 52.2%（`create_driver` 的 edge/chrome 分发与
+  `cleanup_browser_state` 整段没有替身）、`src/interactions/choices.py` 58.8%（三个
+  `@js_execute_retry` 包装函数的 `execute_script` 那行离线一次都没执行）。**只登记，未修复。**
+  ③ **只在 3.13 那条 leg 上比** —— 3.10 本机量不到，拿没量过的环境断言"数字必须等于 3.13 实测"
+  等于把口径差异伪装成缺陷。`--write` 还会拒绝装了 `opencv-python` / `undetected_chromedriver`
+  的解释器（开发机口径实测比 CI 高 0.3pp，放任它写就会把口径悄悄换掉），确要如此用 `--force-env`。
+  顺带说实三句此前不实的话：`gui/` 是 **9** 个文件不是 8 个（合计行现在由脚本数）；
+  正文抄来的 674 passed / 75.6% 在本轮就已过期（实测 740 passed + 2 skipped / 76.3%）；
+  「离线覆盖率不等于验证过」那句保留。
+  测试：`tests/test_doc_consistency.py` 16 项 —— 哨兵在位、生成块之外不许再出现一位小数的百分比
+  或"剩 N 行"、清单指向的模块与契约测试文件必须真实存在、reason 非空、地板能从 `ci.yml` 读到且不低于 70。
+
+### 修复
+
+- **`tests/test_packaging.py` 在 3.10 那条 leg 上把整套离线测试拖红**：它顶部裸
+  `import tomllib`，而 `tomllib` 是 **Python 3.11 才进标准库**的 —— 3.10 上这不是一个
+  失败的用例，而是**收集阶段**的 `ModuleNotFoundError`，pytest 直接中断，733 项一起没跑。
+  CI 表现为 `test (3.10)` 红、`test (3.13)` 绿，和本仓库上一次 `Tk.after_info()` 那个
+  基座缺陷同一个形状。改为 `pytest.importorskip("tomllib")` 做模块级 skip：这些契约
+  （pyproject / requirements / 版本三方对齐）本身与解释器版本无关，且在 3.13 那条 leg
+  上照样真跑，少一条 leg 覆盖不损失任何判定。
+  > 根因是上一轮自己写进 README 的那句「3.10 本机量不到，这台机器只有 3.11/3.12/3.13」——
+  > 量不到就别拿它断言数字，是对的；但**同一理由不能用来放过 3.10 上的可运行性**。
+  > 已用隔离的 3.10.21 环境按 CI 原样命令复验：733 passed / 3 skipped，覆盖率 76.31% 过地板。
+- **README 代码块注释里还留着一个手抄的过期计数**：「离线套件（…，676 项；CI 口径
+  674 passed + 2 skipped）」与 7 行之后「离线 742」自相矛盾，实测 742。新增的
+  `test_doc_consistency.py` 只禁止**生成块之外**出现一位小数的百分比，整数计数不在其列，
+  所以这个洞没被拦住 —— 已按实测改为 742，并去掉无法本地复验的「CI 口径 674 passed」那半句。
+
+## [3.0.0] - 2026-09-22
+
+v3 主线：**从"只能本机开着窗口跑"往可部署、可停、可维护走**，同时补上题型覆盖。
+五个批次（停止谓词 / 题干锚定 / 新题型 / 平台层 / 运行形态）逐条带防线，
+每一条都在真实浏览器 E2E 上复量过 —— 这一轮 E2E 抓到 4 个离线全绿的缺陷，
+下文"修复"一节按现场列出。
+
+### 新增
+
+- **停止谓词贯穿单次提交**（`src/exceptions.py::SubmissionAborted`、`src/pipeline.py`）。
+  v2.6 只让**轮间**停顿可打断，逐题边界与每题"思考时间"（均值 ≈4.5s/题）打不断，
+  点了停止仍要等整份问卷答完并**真的点到提交**。现在：逐题边界、每题停顿
+  （`human_pause(abort_check=)`）、等题轮询、验证码人工等待都以 ≈0.2s 粒度问一次；
+  被打断的那一份**不提交、既不计成功也不计失败**，批次以 `interrupted` 闭合，
+  下次 `--resume` 从这一份重来。
+  - 刻意继承 `BaseException`：提交路径上有十几处为"浏览器偶发异常"写的
+    `except Exception`，停止信号若继承 `Exception` 会被就地吞成"本题失败、继续下一题"，
+    最后照样提交 —— 那正是要防的后果。
+  - 提交成功之后才到的停止信号**不改判这一份**（`except SubmissionAborted: pass`）：
+    成功已是既成事实，抹掉会让成功数少一、`--resume` 起点跟着错。
+- **权重配置支持题干锚定**（`src/anchoring.py`，JSON schema **3.0**）。
+  键仍是题号，但每条可选 `anchor = {title, signature}`；GUI「探测题目 → 另存」自动写入。
+  三条契约：① 带 anchor 的条目**只**按锚点生效，认不到题就走等权并提示一次，
+  **绝不退回答题号**（错位从来不报错，只是安静地给出错的分布）；② 不带 anchor 的老
+  配置行为与 v2.8 逐位一致，schema 2.0 文件照旧可读；③ 锚点优先于题号。
+  题干归一化会剥 `1.` / `第2题` / `（3）` 这类序号，但不会误剥 `2024年收入`；
+  结构签名（`single:4` / `scale:2-10` / `matrix:4x5` / `sort:4`）变了即脱钩。
+- **四类新覆盖**：
+  - **矩阵多选** `matrix_multi`（探测按行内是 radio 还是 checkbox 分流；与单选共用一个
+    JS 生成器；每行勾几个由 `pick_options` / `pick_weights` 控制，默认 1）
+  - **排序题** `sort`（`ul.lisort` + 隐藏 `input[name=qN]`；同时重排 DOM 与写提交值，
+    任一条做不到就整题判失败）
+  - **多分页问卷**（`src/pipeline_stages/page_nav.py`：≥2 个分页容器才承认是分页，
+    翻页后按可见题号继续作答；`no_more` / `advanced` / `failed` 三出口，
+    `failed` 时**不点提交**）
+  - **NPS**：`nps` 作为 `scale` 的别名（DOM 与作答完全同量表，单列题型只会复制分支）
+- **平台适配层**（`src/platforms.py`）。平台专属选择器此前散在 5 处，现在是一张
+  `SurveyPlatform` 表 + `platform_for_url()`；`_scripts.SUBMIT_SELECTORS` /
+  `page_nav.NEXT_PAGE_SELECTORS` / `page_loader.QUESTION_CONTROL_SELECTOR` 都成了它的
+  派生视图。**明确没做的部分也写在文档里**：题型识别与作答注入的 JS 仍是问卷星 DOM
+  约定，换平台要换的是那些脚本，不是这份常量表。附带一条真实能力：域名不在已适配
+  范围时批次开始就提示（此前表现为"探测不到题目 → 整批失败"，容易被误读成适配 bug）。
+- **运行形态**：`pyproject.toml` + `wjx-fill` / `wjx-gui` 控制台入口 + `Dockerfile`；
+  CLI 新增 `--headless`、`--profile-dir`、`--url-file`（顺序队列，每行 `URL[,份数]`，
+  与 `--resume` 互斥）、`--max-total-time`（到点按优雅停止收工，可续传）。
+- **同一份问卷的批次身份**（`platforms.canonical_survey_key` + `runs.survey_key` 新列）。
+  同一份问卷的答卷链接有 `jq`（电脑）/ `m`（移动）/ `vm`、`vj`（短码）/ `hj` 几种投放形态，
+  微信还会往 query 上挂 `kd`、`source` 一类可变字段 —— 而 `find_resumable_run` 此前是
+  `WHERE survey_url = ?` 字符串相等。对不上时的样子不是报错，是**安静地不弹续传提示**、
+  权重快照找不回来、统计被拆成几行。现在批次匹配走归一化键，v2→v3 迁移会把老库全部回填
+  （留 NULL 等于没修）。刻意**不**跨 host 合并、短码大小写**不**归一：误并批次的后果是
+  拿另一份问卷的中断计数去续传 → 重复提交，比少并（重跑一次）贵得多。
+- **选项自带填空框（"其他____"）**。`detect_questions` 标出 `blank_options`，判据是结构性的
+  （选项自己的 `label`/`li`/`td` 里住着一个文本框），不是 `class="underline"` 那类模板产物；
+  勾中这些项时同时写入短文本并按 `maxlength` 截断（程序赋值不会被浏览器裁，服务端却按超长拒），
+  没写成功就把本题记为失败。已答扫描同步收紧：**勾了却没写字不算已答**，续填才会重做它 ——
+  此前那种状态会被跳过，交上去只剩一个看不出原因的 unknown。探测与作答共用同一段定位 JS
+  （`option_blank_helper_script`），两边各写一份必然漂移。
+- **接管 `window.alert`**：切到题目 frame 后把 alert 换成记录器，提交非成功时把攒下的文案
+  作为失败原因打进日志。两件事一起解决：原生弹窗不再让下一条命令抛
+  `UnexpectedAlertPresentException`（整轮被当成瞬态异常重跑，重跑之后原因早就没了），
+  而问卷星必填校验那句"您第 N 题未填写"本来是页面自己说出来的。**只接管 `alert`**：
+  `confirm`/`prompt` 的返回值是页面控制流的一部分，替用户回答"是"就是替用户提交；
+  也不学同类脚本那样在 alert 里 `location.reload()`（那是把"页面在报错"变成"页面重来一遍"）。
+- **测试**：离线 **509 → 676 项**（CI 口径 674 + 2 skipped），E2E **5 → 12 项**。
+  新文件 `tests/test_anchoring.py`(46) `test_page_nav_and_sort.py`(18 → 30)
+  `test_runtime_forms.py`(13) `test_packaging.py`(7) `test_question_stage_dispatch.py`(3 → 7)。
+  批次键、选项填空、alert 接管三处各自补了离线契约 + 真浏览器用例（后两处的离线断言只到
+  "注入的脚本长什么样"，页面里到底成不成立仍由 E2E 说）。
+
+### 修复（4 条全部由真浏览器 E2E 抓到，离线 mock 一律绿）
+
+- **矩阵多选勾不上**：共用生成器里"先 `checked=true` 再补一个合成 click"对 radio 无害
+  （点只会选中），对 checkbox 却是**再翻回未选中** —— 脚本返回 True、页面一格没勾。
+  现在按 `r.type` 分流，复选框走原生 `click()`。
+- **排序题探测不到**：`closest('.field, ..., [id]')` 会先匹配到 `<ul>` 自己
+  （它有 `id="q13_list"`），scope 缩成一个查不到隐藏域的节点 → 整道题静默消失。
+- **翻页兜底会点到包裹 `<div>`**：文案匹配遍历 `span/div` 时，装着按钮的容器
+  `textContent` 也是"下一页"且自身可见 → 点中一个没有翻页语义的 div，白等 8s 后判失败。
+  现在只允许叶子节点。
+- **矩阵题题干取不到**：`closest` 停在控件包装层 `.field`，而题面是它的兄弟节点 ——
+  改为从命中元素**逐层往上爬**找题面；矩阵题的 `name="qN_R"` 也补进了定位候选。
+
+另外三条不是 E2E 抓的：
+
+- **矩阵行权重与填空候选词此前从不生效**（README 一直写着这两个配置项）。
+  `answering_v2.generate_answer` 只读 `question["row_weights"]` /
+  `question["options"]`，而 `detect_questions` 回来的题目**永远没有**这两个键 ——
+  于是 `--config` / GUI 表格里填的矩阵分布和候选词全部静默走内置随机。
+  现在经 `anchoring.lookup_weight_entry()` 查全局配置，并把 GUI 产出的字符串行号键
+  统一成 `int`（`row_weights.get(1)` 在 GUI 那条路上此前永远查不到）。
+- **无头模式撞验证码 = 白等 120s**：`wait_for_manual_verification` 现在一进函数就
+  在无头实例上返回 False（不挂人工介入锁、不刷新页面）。等的是一个不存在的人，
+  停止谓词也救不了"没人能点"。
+- **E2E 用例之间共享 DOM 状态**：`driver` 是 module 作用域且页面只加载一次，
+  上一个用例勾过的 checkbox 会留在页面上 —— "每行各勾 1 个"实际测的是累计值。
+  加了 autouse 的 `_fresh_page` 逐用例重载页面，用例现在可以任意换顺序跑。
+
+### 变更（门禁与口径）
+
+- `README`「六类题型」→ 八类；权重配置 schema 2.0 → 3.0；`--resume` 与 `--url-file` 互斥；
+  `--resume` 的匹配口径由"URL 字符串相等"改成"归一化问卷键相等"（README 新增一节
+  「什么算同一份问卷」，把不跨 host 合并这条取舍写在明处）。
+- 覆盖率实测 **75.6%（CI 口径）/ 75.7%（装齐可选依赖）**，`src/` 87.5~87.6%、
+  `gui/` 58.4~59.0%。地板**仍留 70**：`3.10` 那条 leg 本机量不到（这台机器只有
+  3.11/3.12/3.13），v2.8 定的"不拿没量过的环境赌门禁"照旧生效。
+- `tests/fixtures/mock_wjx.html` 11 题 → **13 题**（新增矩阵多选 Q12、排序题 Q13），
+  Q2 多选的最后一项改成**自带填空框的"其他"**；页面脚本照问卷星的做法加了必填校验
+  （勾了带框的项却没写字 → 弹 `alert` 且不给成功文案）。有了这条平台规则，
+  补文本与接管弹窗两项能力才算被真浏览器验过，而不只是替身对象上的断言。
+  新增 `tests/fixtures/mock_wjx_multipage.html`（两页问卷）。
+- `history.runs` 多一列 `survey_key`（v2→v3 迁移，含一次全表回填，只在升级那一次跑）；
+  `detection.detect_questions` 的题目字典对 single/multi 多一个可选键 `blank_options`
+  （值是 option value，不是下标）。两者都不影响 `answers` 表与 CSV 导出的既有列。
+- `history.answers.options_selected` 值域变宽：排序题写入的是 item id 序列（可能是字符串），
+  矩阵多选是各行勾中列值摊平。落库列本来就是 JSON 文本，无需迁移。
+- **明确不做**（评估过、写在这里免得反复重提）：
+  代理 / IP 池（与 README 免责声明正面冲突，且问卷星按服务端真实 IP + cookie + 智能验证
+  计数，同类项目的 XFF 做法本来就是不稳定的）；并发 worker（同时开 N 个浏览器直接稀释
+  「正态分布人类行为」这条立身点，还会让 `ManualHoldLock` 与人工介入的前提崩掉）。
+- GUI 侧**没有**跟上 v3.0 的运行形态开关（无头 / profile / 队列 / 时限都只在 CLI）：
+  GUI 是"看着窗口跑"的入口，无头对它没意义；队列与时限要的是无人值守，那是 CLI 的场景。
+
+### 已知限制（诚实记录）
+
+- 排序题与多分页的结构假设来自问卷星的公开 DOM 约定 + 自建 mock，**没有在真机分页/排序
+  问卷上验证过**。失败模式是显式的（探测不到该题 / 整份判失败），不会静默交出半份问卷。
+- `Dockerfile` 未在本仓库 CI 里构建过（没有可用的 docker runner），文件里就写着这件事。
+- `gui/controller.py` 14%、`gui/app.py` 25% 仍无离线防线，与 v2.8 同因（要真实 driver
+  或模态对话框）。本轮新起的 `src/pipeline_stages/question_stage.py` 从 29% 抬到 **63%**。
+- 问卷键**不跨 host 合并**：同一份问卷若一次走 `www.wjx.cn`、一次走 `v.wjx.cn`，
+  仍算两个批次、续传不会串起来。并过来的代价是拿别的问卷的中断计数去续传（→ 重复提交），
+  所以这条宁可留着不修；`canonical_survey_key` 的文档里写着理由。
+- "其他____"那格填的是内置短文本池（`answering_v2._OPTION_BLANK_TEXTS`），**不能按题配置**。
+  权重配置的 `options` 目前只服务填空题，扩到选项级要重新设计条目形状（一个题号下
+  既要选项权重又要"第几项写什么"），这一轮没做。
+
 ## [2.8.0] - 2026-09-21
 
 针对 v2.7.0 全面评估报告（`CODE_REVIEW_v2.7.0.md`）的整改批次。逐条复测过：

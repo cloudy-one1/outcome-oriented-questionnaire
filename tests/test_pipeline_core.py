@@ -56,6 +56,7 @@ from src.config import (  # noqa: E402
     VERIFICATION_TIMEOUT,
     VERIFY_EVERY_N_QUESTIONS,
 )
+from src.exceptions import SubmissionAborted  # noqa: E402
 from src.interactions.submit import (  # noqa: E402
     SUBMIT_FAILED,
     SUBMIT_SUCCESS,
@@ -212,7 +213,7 @@ def test_step2_verification_timeout_fails_before_any_context_reset() -> None:
     with stages(_check_verification_with_lock=False) as st:
         assert _core(driver, lock) == SUBMIT_FAILED
 
-    st._check_verification_with_lock.assert_called_once_with(driver, lock)
+    st._check_verification_with_lock.assert_called_once_with(driver, lock, None)
     st._ensure_questions_context.assert_not_called()
     assert driver.switch_to.calls == 0
 
@@ -235,7 +236,7 @@ def test_step4_questions_timeout_forwards_budget_and_lock() -> None:
         assert _core(driver, lock) == SUBMIT_FAILED
 
     st._wait_for_questions.assert_called_once_with(
-        driver, QUESTION_DETECT_TIMEOUT, hold_lock=lock,
+        driver, QUESTION_DETECT_TIMEOUT, hold_lock=lock, stop_check=None,
     )
     assert driver.switch_to.calls == 1
     st.detect_questions.assert_not_called()
@@ -387,6 +388,7 @@ def test_post_submit_captcha_waits_with_shared_lock_and_capped_timeout() -> None
 
     st.wait_for_manual_verification.assert_called_once_with(
         driver, timeout_seconds=min(VERIFICATION_TIMEOUT, 60), hold_lock=lock,
+        abort_check=None,
     )
 
 
@@ -446,6 +448,7 @@ def test_run_one_submission_never_retries_a_successful_core() -> None:
     core.assert_called_once_with(
         driver, SURVEY_URL, lock,
         history_db=None, run_id=None, submission_index=None, no_record_text=False,
+        stop_check=None,
     )
 
 
@@ -565,3 +568,218 @@ def test_answer_step_defaults_are_conservative_when_omitted() -> None:
         "history_db": None, "run_id": None, "submission_index": None,
         "no_record_text": False,
     }
+
+
+# ---------------------------------------------------------------------------
+#  v3.0：轮内停止谓词（stop_check → SubmissionAborted）
+#
+#  补的是 v2.7 CHANGELOG「已知缺口」明说留给下轮的那条：v2.6 只让**轮间**停顿可打断，
+#  逐题边界与每题之间的思考停顿（均值 ≈4.5s/题）打不断，点停止仍要等整份问卷答完
+#  并点到提交。这里锁三件事：
+#    1. 停止一定发生在**下一题之前**，且提交按钮根本不会被点；
+#    2. 停顿真的收到了 abort_check（接线，不是又算了一遍没传出去）；
+#    3. 提交成功之后才来的停止不改判这一份 —— 否则成功数会凭空少一。
+# ---------------------------------------------------------------------------
+def _stop_after_answers(answer: mock.Mock, n: int):
+    """作答满 n 题后停止信号才为真：把"何时能停"绑在真实进度上，不数轮询次数。"""
+    return lambda: answer.call_count >= n
+
+
+def test_stop_before_first_question_answers_nothing_and_never_submits() -> None:
+    driver = FakeDriver()
+    with stages() as st:
+        with pytest.raises(SubmissionAborted):
+            _core(driver, ManualHoldLock(), stop_check=lambda: True)
+
+    st._answer_one_question.assert_not_called()
+    st.find_and_click_submit.assert_not_called()
+    assert driver.switch_to.calls == 0, "抛出路径不该顺手切上下文（Step 2 的不对称契约）"
+
+
+def test_stop_mid_survey_stops_at_the_next_question_boundary() -> None:
+    """答完 Q1 时按下停止 → Q2/Q3 不作答、不提交。"""
+    answer = mock.Mock(return_value=True)
+    driver = FakeDriver()
+    with stages(_answer_one_question=answer, detect_questions=_questions(1, 2, 3)) as st:
+        with pytest.raises(SubmissionAborted):
+            _core(driver, ManualHoldLock(), stop_check=_stop_after_answers(answer, 1))
+
+    assert _answered_nums(answer) == [1]
+    st.find_and_click_submit.assert_not_called()
+
+
+def test_stop_after_all_questions_never_clicks_submit() -> None:
+    """全题答完才停：这份问卷只答不交（半份提交会真占用一次名额）。"""
+    answer = mock.Mock(return_value=True)
+    driver = FakeDriver()
+    with stages(
+        _answer_one_question=answer,
+        detect_questions=_questions(1, 2),
+        find_and_click_submit=mock.Mock(return_value=SUBMIT_SUCCESS),
+    ) as st:
+        with pytest.raises(SubmissionAborted):
+            _core(driver, ManualHoldLock(), stop_check=_stop_after_answers(answer, 2))
+
+    assert _answered_nums(answer) == [1, 2]
+    st.find_and_click_submit.assert_not_called()
+
+
+def test_per_question_pause_receives_the_stop_predicate() -> None:
+    """每题之间的思考停顿必须真的拿到 abort_check —— 否则停止只是省不了 4.5s。"""
+    def chk() -> bool:
+        return False
+
+    pause = mock.Mock(return_value=0.0)
+    driver = FakeDriver()
+    with stages(human_pause=pause):
+        assert _core(driver, ManualHoldLock(), stop_check=chk) == SUBMIT_SUCCESS
+
+    assert pause.call_args.kwargs["abort_check"] is chk
+
+
+def test_per_question_pause_gets_no_abort_check_when_not_stopping() -> None:
+    """对照组：不传 stop_check 时 abort_check 仍是 None，CLI/老调用点一字不变。"""
+    pause = mock.Mock(return_value=0.0)
+    driver = FakeDriver()
+    with stages(human_pause=pause):
+        assert _core(driver, ManualHoldLock()) == SUBMIT_SUCCESS
+
+    assert pause.call_args.kwargs["abort_check"] is None
+
+
+def test_stop_during_post_submit_captcha_wait_keeps_the_success() -> None:
+    """提交成功**之后**的验证码等待被打断：既成事实不能被抹成"未计数"。
+
+    成功份数少一，续传起点就会跟着错（count_done_submissions 按已落盘份数算）。
+    """
+    waiter = mock.Mock(side_effect=SubmissionAborted("验证码等待期间收到停止"))
+    driver = FakeDriver()
+    with stages(
+        is_smart_verification_showing=True,
+        wait_for_manual_verification=waiter,
+    ) as st:
+        result = _core(driver, ManualHoldLock(), stop_check=lambda: False)
+
+    assert result == SUBMIT_SUCCESS
+    st.find_and_click_submit.assert_called_once_with(driver)
+    assert waiter.call_args.kwargs["abort_check"] is not None
+
+
+def test_run_one_submission_does_not_retry_an_abort() -> None:
+    """停止不是 WebDriverException：既不能被清理分支吞掉，也不能触发第二次提交。"""
+    def chk() -> bool:
+        return True
+
+    core = mock.Mock(side_effect=SubmissionAborted("stop"))
+    with mock.patch.object(pipeline, "_do_one_submission_core", core):
+        with pytest.raises(SubmissionAborted):
+            pipeline.run_one_submission(
+                FakeDriver(), SURVEY_URL, ManualHoldLock(), stop_check=chk,
+            )
+
+    core.assert_called_once()
+    assert core.call_args.kwargs["stop_check"] is chk
+
+
+def test_stale_anchor_is_reported_once_across_submissions(capsys) -> None:
+    """v3.0：认不到题的锚点必须说一次，而且只说一次（17 份刷 17 行会埋掉运行信息）。
+
+    刻意不 patch ``report_unmatched_anchors`` —— 接线断在"import 了却没调用"时，
+    patch 出来的绿毫无意义（v2.4 的 --resume 就是这个形状）。
+    """
+    from src import anchoring, config
+
+    saved = dict(config.WEIGHT_CONFIG)
+    config.WEIGHT_CONFIG.clear()
+    config.WEIGHT_CONFIG[4] = {
+        "type": "single", "weights": [1, 1],
+        "anchor": {"title": "您对客服的态度满意吗", "signature": "single:5"},
+    }
+    try:
+        driver = FakeDriver()
+        with stages():
+            assert _core(driver, ManualHoldLock()) == SUBMIT_SUCCESS
+        assert "不生效" in capsys.readouterr().out
+
+        with stages():
+            assert _core(driver, ManualHoldLock()) == SUBMIT_SUCCESS
+        assert "不生效" not in capsys.readouterr().out
+    finally:
+        config.WEIGHT_CONFIG.clear()
+        config.WEIGHT_CONFIG.update(saved)
+        anchoring.reset_reported_anchors()
+
+
+# ---------------------------------------------------------------------------
+#  Step 7.5：提交前完整度自检（v3.1）
+# ---------------------------------------------------------------------------
+_REQUIRED_TWO = [
+    {"q": 1, "code": "3", "required": True},
+    {"q": 2, "code": "11", "required": True},
+]
+
+
+def test_undetected_required_question_blocks_the_submit_click() -> None:
+    """平台标了必答、整份流程却没探测到它 → 不点提交，直接判失败。
+
+    真卷上的日期题与排序题就是这个形状（探测看不见那道题）。今天的行为是白点一次
+    提交、换一句平台的"第 N 题未答"，日志里只剩一条看不出原因的失败。
+    """
+    with stages(detect_questions=_questions(1),
+                detect_platform_questions=_REQUIRED_TWO) as st:
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_FAILED
+    st.find_and_click_submit.assert_not_called()
+
+
+def test_gap_only_counts_questions_we_never_saw() -> None:
+    """逐页探测到的题号是**并集**：第 1 页答过的题不该在最后一页被判漏答。
+
+    这条是"跨页累积"的接线证明（单页 fixture 证不到它 —— 那里 detected_all
+    恰好等于最后一页的题号）。
+    """
+    pages = [_questions(1), _questions(2)]
+    nav = mock.Mock(side_effect=[("advanced", "下一页题号 [2]"), ("no_more", "到底了")])
+    with stages(
+        detect_questions=mock.Mock(side_effect=pages),
+        advance_to_next_page=nav,
+        detect_platform_questions=_REQUIRED_TWO,
+    ):
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+
+
+def test_no_platform_signal_never_blocks_submission() -> None:
+    """模板不标 topic → 拿不到平台读数 → 一律照常提交。
+
+    缺信号不是"有缺口"，拦错一次就是一单本来能交的问卷被判失败。
+    """
+    with stages(detect_questions=_questions(1),
+                detect_platform_questions=[]) as st:
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+    st.find_and_click_submit.assert_called_once()
+
+
+def test_unanswered_optional_question_does_not_block() -> None:
+    """探测不到但**没标必答**的题不拦：那是题型缺口，[对拍] 负责说。"""
+    with stages(
+        detect_questions=_questions(1),
+        detect_platform_questions=[
+            {"q": 1, "code": "3", "required": True},
+            {"q": 2, "code": "11", "required": False},
+        ],
+    ) as st:
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+    st.find_and_click_submit.assert_called_once()
+
+
+def test_gap_scan_reads_whole_survey_while_drift_scan_reads_the_page() -> None:
+    """对拍只看本页（``visible_only=True``），完整度自检必须看整卷（``False``）。"""
+    seen: list[bool] = []
+
+    def _probe(_driver: Any, _platform: Any, *, visible_only: bool = True) -> list[dict]:
+        seen.append(visible_only)
+        return [] if visible_only else _REQUIRED_TWO
+
+    with stages(detect_questions=_questions(1, 2),
+                detect_platform_questions=mock.Mock(side_effect=_probe)):
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+    assert seen[0] is True and seen[-1] is False, f"两次扫描的分页口径不对: {seen}"

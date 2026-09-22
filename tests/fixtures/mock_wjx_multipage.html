@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>问卷星 Mock - 分页问卷（v3.0）</title>
+<style>
+  body { font-family: "Microsoft YaHei", sans-serif; max-width: 720px; margin: 20px auto; padding: 0 16px; }
+  .div_question { border: 1px solid #eee; border-radius: 8px; padding: 14px 18px; margin: 12px 0; }
+  .qtitle { font-weight: 600; margin-bottom: 8px; }
+  .page-nav { text-align: center; margin: 14px 0; }
+  #btnNext { padding: 8px 24px; background: #f60; color: #fff; border: 0; border-radius: 4px; }
+  input[type="submit"] { padding: 8px 24px; background: #396; color: #fff; border: 0; border-radius: 4px; }
+</style>
+</head>
+<body>
+
+<h2 style="text-align:center;">分页问卷 Mock（两页）</h2>
+<p style="text-align:center;color:#999;font-size:12px;">
+  结构与问卷星一致：两页同在一棵 DOM 树里，只有当前页可见，翻页靠"下一页"按钮。
+</p>
+
+<!-- ============ 第 1 页 ============ -->
+<div class="page" id="page1">
+  <div id="div1" class="div_question">
+    <div class="qtitle"><span class="idx">1.</span>您的性别是？（单选）</div>
+    <div class="field">
+      <label><input type="radio" name="q1" id="q1_1" value="1">男</label>
+      <label><input type="radio" name="q1" id="q1_2" value="2">女</label>
+      <label><input type="radio" name="q1" id="q1_3" value="3">其他</label>
+    </div>
+  </div>
+
+  <div id="div2" class="div_question">
+    <div class="qtitle"><span class="idx">2.</span>您的姓名</div>
+    <div class="field">
+      <input type="text" id="q2" name="q2" placeholder="请输入姓名">
+    </div>
+  </div>
+</div>
+
+<!-- ============ 第 2 页（初始隐藏）============ -->
+<div class="page" id="page2" style="display:none">
+  <div id="div3" class="div_question">
+    <div class="qtitle"><span class="idx">3.</span>您的年龄是？（单选）</div>
+    <div class="field">
+      <label><input type="radio" name="q3" id="q3_1" value="1">18 以下</label>
+      <label><input type="radio" name="q3" id="q3_2" value="2">18~30</label>
+      <label><input type="radio" name="q3" id="q3_3" value="3">30 以上</label>
+    </div>
+  </div>
+
+  <div style="text-align:center;">
+    <input type="submit" id="submit_button" value="提交问卷">
+  </div>
+</div>
+
+<div class="page-nav">
+  <button type="button" id="btnNext">下一页</button>
+</div>
+
+<script>
+// 提交行为与主 mock 一致：URL 不变、延迟渲染成功文案、记录点击次数。
+window.__submitClicks = 0;
+(function () {
+  var btn = document.getElementById('submit_button');
+  if (btn) {
+    btn.addEventListener('click', function (ev) {
+      if (ev && ev.preventDefault) ev.preventDefault();
+      window.__submitClicks += 1;
+      window.setTimeout(function () {
+        var box = document.createElement('div');
+        box.id = 'submit_result';
+        box.className = 'submit-succ';
+        box.textContent = '提交成功，感谢您的参与！';
+        document.body.appendChild(box);
+      }, 150);
+    });
+  }
+
+  var next = document.getElementById('btnNext');
+  var p1 = document.getElementById('page1');
+  var p2 = document.getElementById('page2');
+  if (next) {
+    next.addEventListener('click', function () {
+      p1.style.display = 'none';
+      p2.style.display = '';
+      // 到了最后一页，下一页按钮必须消失 —— 否则脚本会以为还有下一页
+      next.style.display = 'none';
+    });
+  }
+})();
+</script>
+
+</body>
+</html>

@@ -55,6 +55,10 @@ PAGE_LOAD_TIMEOUT: int = 30
 # 题目探测等待超时（秒）
 QUESTION_DETECT_TIMEOUT: int = 15
 
+# v3.0 多分页问卷：翻到下一页后等新页出现的超时（秒），以及整卷最多翻页数
+PAGE_NAV_TIMEOUT: int = 8
+MAX_SURVEY_PAGES: int = 20
+
 # 验证码等待超时（秒）
 VERIFICATION_TIMEOUT: int = 120
 
