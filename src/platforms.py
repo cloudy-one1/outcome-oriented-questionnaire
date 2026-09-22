@@ -134,6 +134,17 @@ WJX = SurveyPlatform(
 
 PLATFORMS: tuple[SurveyPlatform, ...] = (WJX,)
 
+# 题号 → 题目容器的候选 id 选择器（``{num}`` 是题号占位），按优先级试到第一个命中。
+# 补漏轮要把人工该补的那道题滚进视野，而问卷星在这件事上没有统一约定：``divquestionN`` /
+# ``div_question_N`` / ``divN`` 三种形态在本仓库的探测代码里都出现过（见
+# ``detection.py`` 取题号与题干时的那串候选）。只认一种的话，另外两种模板上人工
+# 还是得自己在页面里找那道题 —— 那正好是这一步要省掉的麻烦。
+WJX_QUESTION_ANCHOR_SELECTORS: tuple[str, ...] = (
+    "#divquestion{num}",
+    "#div_question_{num}",
+    "#div{num}",
+)
+
 
 def platform_for_url(url: str) -> SurveyPlatform | None:
     """按 URL 认平台；认不出来返回 ``None``（调用方决定是否提示）。"""
@@ -211,6 +222,7 @@ __all__ = [
     "QuestionTypeCode",
     "SurveyPlatform",
     "WJX",
+    "WJX_QUESTION_ANCHOR_SELECTORS",
     "WJX_TYPE_CODES",
     "canonical_survey_key",
     "platform_for_url",

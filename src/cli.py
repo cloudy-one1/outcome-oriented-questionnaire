@@ -215,6 +215,16 @@ def parse_args(argv: list[str] | None = None) -> Namespace:
         metavar="PATH",
         help="可选：启用 logging 并把运行日志写入指定文件。",
     )
+    # ---------- v3.1 新增参数 ----------
+    parser.add_argument(
+        "--rescue-gaps",
+        dest="rescue_gaps",
+        action="store_true",
+        default=False,
+        help="[补漏轮] 提交前完整度自检拦下必答缺口题时，不直接判失败：把那道题滚进"
+             " 视野、等在场的人工在浏览器窗口里补答（最长 300s），补齐了才点提交。"
+             " 默认关（判失败、不点提交）。无头模式下不等待，与默认一致。",
+    )
     return parser.parse_args(argv)
 
 
@@ -348,6 +358,7 @@ def run_batch(
     headless: bool = False,
     user_data_dir: str | None = None,
     max_total_seconds: float | None = None,
+    rescue_gaps: bool = False,
 ) -> tuple[int, int]:
     """批量执行指定份数的问卷提交 —— **CLI 与 GUI 共用的唯一批次引擎**。
 
@@ -381,6 +392,11 @@ def run_batch(
                           同一目录不能被两个实例同时占用，所以队列是顺序跑的。
         max_total_seconds : 整批墙钟上限。到点按"优雅停止"处理：mark_interrupted
                           后结束，因此下次 --resume 能接着跑（区别于崩溃的 failed）。
+
+    v3.1 参数（同样只在 CLI 传）：
+        rescue_gaps     : 补漏轮。完整度自检拦下"平台标了必答、我们整题没探测到"的
+                          题时，先等在场的人工在浏览器窗口里补答，补齐了才点提交。
+                          默认 False —— 那时行为与 v3.0 逐位一致（判失败、不点提交）。
 
     V2 参数：
         history_db : SubmissionHistory 实例或 None；非 None 时会
@@ -579,6 +595,7 @@ def run_batch(
                     submission_index=displayed_idx,
                     no_record_text=no_record_text,
                     stop_check=stop_check,
+                    rescue_gaps=rescue_gaps,
                 )
 
             except SubmissionAborted as _ab:
@@ -891,6 +908,8 @@ def main(argv: list[str] | None = None) -> None:
         print("隐私保护 : 填空题答案不写入 SQLite（--no-record-text）")
     if resume_run_id is not None:
         print(f"断点续传 : Run #{resume_run_id}（已完成 {resume_done} 份）")
+    if args.rescue_gaps:
+        print("补漏轮   : 完整度自检拦下的必答缺口先等人工补答（--rescue-gaps）")
     print("=" * 60)
 
     # ---------- v3.0：--url-file 顺序队列 ----------
@@ -950,6 +969,7 @@ def main(argv: list[str] | None = None) -> None:
             headless=bool(args.headless),
             user_data_dir=args.profile_dir,
             max_total_seconds=args.max_total_time,
+            rescue_gaps=args.rescue_gaps,
         )
         total_success += success
         total_fail += fail

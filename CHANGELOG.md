@@ -42,6 +42,33 @@
   （含两页并集、"无信号不拦"、"非必答不拦"、对拍看本页 / 自检看整卷）+ E2E 1 项
   （真 DOM 上只读 `datebox` 探测不到、而平台标 `req=1` → 缺口正好是那一题）。
 
+- **补漏轮：完整度自检拦下之后，把人工接进来**（CLI `--rescue-gaps`，默认关；
+  `src/pipeline_stages/gap_rescue.py`，接线在 `pipeline` Step 7.5 判出缺口之后）。
+  上一条自检只做对了一半 —— 它拦住了一次注定被必填挡下的提交，却也把一种**本来还能救**
+  的提交一起判死了：必答题我们探测不到，**坐在屏幕前的人看得懂**，那道题他点两下就答完
+  了。开关打开后的顺序是：说清楚缺哪几题（原来那行 `describe_gap` 保留，不取代）→
+  把第一道缺口题滚进视野 → 挂上人工介入锁等（上限 `GAP_HOLD_TIMEOUT=300s`，每 2s 复检
+  一次，每 20s 报一行进度）→ **只有复检空了才点提交**。等不到 / 超时 / `--headless`
+  （窗口里没有可补答的人）→ 维持原判失败，**不新增第三种结果**。
+  复检为什么不能只重跑 `detect_questions`：缺口题按定义就不在我们的探测结果里，人工补完
+  再探测一遍照样看不见 —— 只重跑探测的复检永远不会变空，"等人工"就等成了形式。所以复检
+  额外把"页面上现在读得到值的题号"并进来当证据（`detect_answered_questions` 读的是提交用
+  的存储字段 `input[name=qN]`，不是我们的控件假设）。两种证据都只能让缺口**变小**，
+  `unanswered_required` 的判据一个字没改；复检自身读不到就按"没有新证据"处理。
+  三条不变量：① 停止优先于提交 —— 等待期间 `stop_check` 一置位就抛
+  `SubmissionAborted`，半补的问卷不会被交出去，锁在 `finally` 里必还（锁不还是整批挂死）；
+  ② 人工介入锁在等待期间处于 holding，外部任何超时判断照既有契约给它让路；
+  ③ 刻意**不做**"按一下回车由人宣布补好了"那种放行 —— 那等于把判定权交给一句口令，
+  而这一步要的是"我们确实看得见那道题有值"。代答更不是选项（见 README「不做」表）。
+  测试：`tests/test_gap_rescue.py` 12 项（三个出口各自出声、锁的生命周期、滚动的降级、
+  复检异常不许咽掉）+ `tests/test_pipeline_core.py` 加 9 项接线（默认关一次都不等、
+  复检空了才提交、人工没补齐维持判失败、停止不提交、无头跳过等待、复检把已答证据算进来）
+  + CLI 三处 5 项（`parse_args` 默认值、`main → run_batch`、`run_batch → run_one_submission`
+  的透传 —— "算了却没传"是这个仓库反复付过账的缺陷形态）。
+  另改一处既有断言：`test_run_one_submission_never_retries_a_successful_core` 钉的是
+  `run_one_submission → _do_one_submission_core` 的**精确关键字表**，新增参数必须进那份
+  清单，否则补漏开关又会安静地不生效（正是这条测试要防的形状）。
+
 - **README 的覆盖率口径改成生成物**（`scripts/readme_coverage.py`、`scripts/coverage_gaps.json`、
   `tests/test_doc_consistency.py`，CI 多一步 `--check`）。要补的是"口径同步"这条重复劳动本身：
   2026-09-22 一天里发过两次标题为「README / CHANGELOG / ci.yml 口径同步」的提交，只为把同一组

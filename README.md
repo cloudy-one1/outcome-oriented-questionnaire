@@ -20,7 +20,7 @@
 - **加权随机作答** — 每道题可配置选项权重：单选加权采样，多选无放回加权抽样，多选还可控制「选中几个」的分布；矩阵多选可控制每行勾几个，排序题可钉住前几名
 - **题干锚定的权重配置** — 预设除了题号还带题干 + 结构签名，问卷中间插一题不再整体错位；锚点认不到题时**该题走等权并提示**，而不是拿别人的分布静默填（v3.0）
 - **结构对拍（探测自我体检）** — 把探测结果与问卷星写在题目容器上的 `topic` / `type` 逐题比一次，判错题型、整题漏探测在**作答之前**就说明白。只提示、不拦停、不改任何作答行为；平台没标这些属性的模板完全静默（`src/crosscheck.py`）
-- **提交前完整度自检** — 平台标了必答、而我们**整题都没探测到**的那些题，注定被平台按必填拦下：那就别点提交，直接判本轮失败并说出是哪几题。判据只收这一种零歧义事实，拿不到平台结构或没标 `req` 一律照常提交（`src/completeness.py`）
+- **提交前完整度自检** — 平台标了必答、而我们**整题都没探测到**的那些题，注定被平台按必填拦下：那就别点提交，直接判本轮失败并说出是哪几题。判据只收这一种零歧义事实，拿不到平台结构或没标 `req` 一律照常提交（`src/completeness.py`）。可选的**补漏轮**（`--rescue-gaps`，默认关）把拦下来的人工接进来：滚进视野、等他在窗口里补答，补齐了才点提交 —— 答的是人，不是模型
 - **智能验证码检测** — DOM / URL 文本 / Shadow DOM 三信号并行检测；检出后弹窗提醒人工处理，人工介入锁保证等待期间不被误判为超时；无头模式下直接判本轮失败（没有可介入的人）
 - **随时可停** — 停止/关闭窗口在**逐题边界、每题思考停顿、验证码人工等待**上都以 ≈0.2s 粒度生效，被打断的那一份不提交、不计失败（v3.0）
 - **断点续填与续传** — 重试时自动跳过单次提交内已答的题；跨进程可从上次中断的批次继续（CLI `--resume` / GUI 恢复对话框），权重配置随批次快照持久化。批次匹配认的是**同一份问卷**而不是 URL 字符串：`/jq/`、`/m/`、`/vm/`、`/vj/` 几种投放形态与微信带进来的渠道参数都归一到同一个键上（v3.0）
@@ -129,6 +129,7 @@ python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 3 --profile-dir ./pro
 | `--headless` | 关 | **v3.0** 无头模式。**只建议调试**：问卷星对无头敏感，且智能验证一出现就判本轮失败（无头里没有可介入的人） |
 | `--profile-dir PATH` | 无 | **v3.0** 复用浏览器 profile 目录（登录态与磁盘痕迹）。同一目录不能同时被两个实例占用，所以队列是顺序跑的 |
 | `--max-total-time SECONDS` | 无 | **v3.0** 整批墙钟上限。到点按**优雅停止**收工（`interrupted`），下次 `--resume` 可继续 —— 与崩溃的 `failed` 不同 |
+| `--rescue-gaps` | 关 | **v3.1** 补漏轮：完整度自检拦下必答缺口题时不再直接判失败，而是把那道题滚进视野、等在场的人工补答（最长 300s），**复检空了才点提交**。默认关 = 行为与此前逐位一致；`--headless` 下不等待（窗口里没有可补答的人） |
 
 ### GUI 使用
 
@@ -211,6 +212,8 @@ python run_gui.py
   └── 有下一页 → 翻页后继续【逐页】；翻页失败 → 整份判失败，**不提交**
         ↓
 【提交前】完整度自检：平台标了必答、而整份流程没探测到它的题 → 判失败，**不点提交**
+        ↓        （--rescue-gaps：先把这几题滚进视野、等在场的人工补答，
+        ↓          复检读得到答案才往下点提交；等不到 / 无头 → 仍是那句失败）
         ↓
 （最后一页才）模拟点击提交 → 三态判定（OK / FAIL / UNKNOWN）
         ↓        非 OK 时把页面弹出的必填提示一并打进日志
@@ -378,14 +381,14 @@ pip install -r requirements-dev.txt
 # 全量测试（含依赖真实浏览器驱动的 E2E）
 python -m pytest tests/ -v
 
-# 离线套件（无浏览器环境 / CI，742 项；只装 requirements*.txt 的口径下会有若干 skip）
+# 离线套件（无浏览器环境 / CI，768 项；只装 requirements*.txt 的口径下会有若干 skip）
 python -m pytest tests/ -m "not integration" -q
 
 # 仅浏览器 E2E（需本机 Edge / Chrome + WebDriver，14 项）
 python -m pytest tests/ -m integration -q
 ```
 
-当前测试全部通过：**756 项**（离线 742 + E2E 14）。
+当前测试全部通过：**782 项**（离线 768 + E2E 14）。
 
 > **类型门禁不随环境变**：`src/` + `gui/` + 入口在两种环境下都是 **0 error
 > 0 warning**。两处可选依赖（`opencv-python`、`undetected_chromedriver`）的动态
@@ -398,7 +401,7 @@ python -m pytest tests/ -m integration -q
 >
 > | 门禁 | 装齐可选依赖（开发机） | 未装（CI / 干净 venv） |
 > |---|---|---|
-> | 离线套件 | 742 passed | 740 passed + 2 skipped（二维码解析用例） |
+> | 离线套件 | 768 passed | 765 passed + 3 skipped（二维码解析 2 项；文档口径比对 1 项 —— 它读的 `coverage.json` 是同一次运行**末尾**才产出的） |
 > | 覆盖率 | 实测比 CI 口径高 0.3pp（`src/` +0.1、`gui/` +0.6） | 见下方「已知缺口（诚实记录）」的生成块，那是门禁认的唯一口径 |
 >
 > 覆盖率数字现在只有一个来源：`scripts/readme_coverage.py` 从 `coverage.json` 生成，
@@ -458,8 +461,8 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 
 | 范围 | 离线覆盖率 |
 |---|---|
-| 全部 | **76.3%** |
-| `src/` | 88.2%（2839 条语句剩 335 行） |
+| 全部 | **76.8%** |
+| `src/` | 88.6%（2912 条语句剩 331 行） |
 | `gui/` | 58.4%（1888 条语句剩 785 行） |
 
 #### 已补齐的缺口（v2.7 那五条）
@@ -468,7 +471,7 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 |---|---|---|---|
 | `src/logging_setup.py` | 0% | **100.0%**（剩 0 行） | `tests/test_logging_setup.py` |
 | `src/browser/driver_factory.py` | 9% | **98.4%**（剩 3 行） | `tests/test_driver_factory_offline.py` |
-| `src/pipeline.py` | 26% | **96.4%**（剩 6 行，v3.0 加了分页与弹窗诊断分支） | `tests/test_pipeline_core.py`、`tests/test_pipeline_waits.py` |
+| `src/pipeline.py` | 26% | **96.8%**（剩 6 行，v3.0 加了分页与弹窗诊断分支） | `tests/test_pipeline_core.py`、`tests/test_pipeline_waits.py` |
 | `src/verification.py` | 34% | **97.0%**（剩 3 行，非 Windows 降级桩本机不可达） | `tests/test_verification_flow.py` |
 | `gui/`（9 个文件合计） | 15% | **58.4%**（`log_view`、`theme` 已 100%） | `tests/test_gui_panels.py`、`tests/test_gui_proxies.py`、`tests/test_gui_run_loop.py` |
 
@@ -479,7 +482,7 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 | `gui/controller.py` | 13.5% | 探测题目 / 二维码解码 / 配置导入都要真实 driver 或模态对话框 |
 | `gui/app.py` | 25.0% | `SurveyGUI.__init__` 一建就打开真实 `data/history.db` 并启动动画 `after` 循环，测试里无法安全实例化；`_run_loop` 与几个面板薄代理已有契约测试（`tests/test_gui_proxies.py`） |
 | `src/pipeline_stages/question_stage.py` | 62.6% | 逐题 DOM 交互主干：等待、「哪道题调哪个填充器」的分发、带框选项只勾不填的降级都已有离线测试（`tests/test_question_stage_dispatch.py`），真实点击仍靠 E2E |
-| `src/cli.py` | 72.1% | `run_batch` 主干已测，剩余是 `--save-config` / 统计打印一类输出分支 |
+| `src/cli.py` | 72.3% | `run_batch` 主干已测，剩余是 `--save-config` / 统计打印一类输出分支 |
 | `src/browser/__init__.py` | 52.2% | `create_driver` 的 edge/chrome 分发与 `cleanup_browser_state` 整段 Cookie/Storage 清理没有离线替身（缺的正是那 11 行）—— `driver_factory` 有替身 driver，这层薄门面反而没人走一遍 |
 | `src/interactions/choices.py` | 58.8% | 三个 `@js_execute_retry` 包装函数的函数体一次都没在离线测试里执行（缺 21/31/42-46 行）—— 分发测到「该调哪个填充器」就停了，填充器自身的 `execute_script` 只有 E2E 覆盖 |
 

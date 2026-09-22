@@ -50,6 +50,19 @@ def test_max_total_time_rejects_non_positive() -> None:
 
 
 # ===========================================================================
+#  v3.1 --rescue-gaps
+# ===========================================================================
+def test_rescue_gaps_defaults_off() -> None:
+    """默认关：不写这个开关时，完整度自检判出的缺口维持"判失败、不点提交"。"""
+    assert cli.parse_args(["-u", "https://www.wjx.cn/vm/x.aspx"]).rescue_gaps is False
+
+
+def test_rescue_gaps_parses_on() -> None:
+    args = cli.parse_args(["-u", "https://www.wjx.cn/vm/x.aspx", "--rescue-gaps"])
+    assert args.rescue_gaps is True
+
+
+# ===========================================================================
 #  run_batch 的透传（"算了却没传"是这个仓库反复付过账的缺陷形态）
 # ===========================================================================
 class _StubDriver:

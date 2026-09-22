@@ -17,6 +17,8 @@ from .page_loader import (
 )
 # 验证码检查阶段
 from .verification_stage import _check_verification_with_lock
+# 补漏轮（v3.1 --rescue-gaps）：完整度自检拦下后接人工补答
+from .gap_rescue import GAP_HOLD_TIMEOUT, hold_for_manual_fill, scroll_question_into_view
 # 题目等待 + 答题分发阶段
 from .question_stage import _answer_one_question, _wait_for_questions
 # 分页问卷翻页阶段（v3.0）
@@ -34,6 +36,10 @@ __all__ = [
     "install_alert_recorder",
     # verification
     "_check_verification_with_lock",
+    # 补漏轮
+    "GAP_HOLD_TIMEOUT",
+    "hold_for_manual_fill",
+    "scroll_question_into_view",
     # question
     "_wait_for_questions",
     "_answer_one_question",
