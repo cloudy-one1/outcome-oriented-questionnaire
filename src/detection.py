@@ -28,7 +28,8 @@ import json
 from typing import Any
 
 from .interactions._scripts import option_blank_helper_script
-from .platforms import SurveyPlatform
+from .exceptions import TRANSIENT_DOM_EXCEPTIONS, raise_non_recoverable
+from .platforms import SurveyPlatform, WJX_MOBILE_LAYOUT_SELECTORS
 
 
 # 两处 execute_script 脚本体共用的 JS 函数声明（见 option_blank_helper_script）：
@@ -725,3 +726,72 @@ return (function() {
         return set(int(x) for x in json.loads(raw))
     except (json.JSONDecodeError, TypeError, ValueError):
         return set()
+
+
+# ============================================================================
+#  整页形态诊断：一道题都没探测到时，先分清"这页没题"与"题在另一套 DOM 约定里"
+# ============================================================================
+
+# jQM 控件标记的计数。候选选择器按参数传进来（与 detect_platform_questions 同一写法），
+# 免得 DOM 事实散在 JS 字符串字面量里，改一处漏一处。
+_MOBILE_LAYOUT_JS = """
+var sels = arguments[0], n = 0;
+for (var i = 0; i < sels.length; i++) {
+    try { n += document.querySelectorAll(sels[i]).length; } catch (_) {}
+}
+return n;
+"""
+
+# 至少要看到这么多处才出声。一两个 ``ui-*`` 在别的模板里也可能只是装饰，而真是移动端
+# 投放的页面是几十处这个量级 —— 这条判据要的是"不误报"，不是"不漏报"。
+_MOBILE_LAYOUT_MIN: int = 3
+
+_mobile_layout_notice_sent = False
+
+
+def mobile_layout_notice(driver: Any) -> str | None:
+    """整页是移动端投放形态时的一行说明；不像 / 读不到 / 本进程已经说过 → ``None``。
+
+    形状与 ``platforms.unsupported_url_notice`` 同一家族：**只提示、不拦停**。
+    本工具的题目探测与作答注入按电脑端 DOM 约定写（``#fieldset1`` / ``input[name=qN]``），
+    移动端投放（jQuery-Mobile 形态的模板）会一路走到"探测不到题目 → 整批失败"，而那句话
+    把责任指向我们自己的适配质量和用户的网络 —— 两种原因的处置方式完全不同：一种要等
+    改版，一种只要换一个链接。所以说出来。
+
+    刻意**不**顺手去答它，也不给作答路径加第二套选择器：那等于把"本工具只跑 PC 形态"
+    这条边界悄悄挪掉，而它现在是写在 README 里的。
+    """
+    global _mobile_layout_notice_sent
+    if _mobile_layout_notice_sent:
+        return None
+    try:
+        hits: Any = driver.execute_script(
+            _MOBILE_LAYOUT_JS, list(WJX_MOBILE_LAYOUT_SELECTORS)
+        )
+    except TRANSIENT_DOM_EXCEPTIONS:
+        return None
+    except Exception as _e:
+        raise_non_recoverable(_e)
+        # 这只是"多说一句话"：它自己出问题绝不改变本轮判定
+        return None
+    try:
+        # Selenium 把 JS 的 null / '' 翻成 None / ''，把 bool 翻成 0/1 —— 读不出整数
+        # 就是"没有这个信号"，不猜
+        count = int(hits)
+    except (TypeError, ValueError):
+        return None
+    if count < _MOBILE_LAYOUT_MIN:
+        return None
+    _mobile_layout_notice_sent = True
+    return (
+        f"[布局] 一道题都没探测到，但不是页面没加载、也不是网络问题：这一页是**移动端投放形态**"
+        f"（jQuery-Mobile 那一套 —— .ui-radio / .ui-checkbox / .ui-input-text 命中 {count} 处），"
+        "本工具只适配了电脑端 DOM，没有适配它 —— "
+        "换 PC 版链接（/jq/ 那种，或分享里的「电脑端地址」）再跑一次就有了"
+    )
+
+
+def reset_mobile_layout_notice() -> None:
+    """清空"已提示过"标记（仅测试用，与 ``crosscheck.reset_reported_drift`` 同角色）。"""
+    global _mobile_layout_notice_sent
+    _mobile_layout_notice_sent = False

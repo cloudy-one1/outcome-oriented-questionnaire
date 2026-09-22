@@ -20,6 +20,7 @@
 - **加权随机作答** — 每道题可配置选项权重：单选加权采样，多选无放回加权抽样，多选还可控制「选中几个」的分布；矩阵多选可控制每行勾几个，排序题可钉住前几名
 - **题干锚定的权重配置** — 预设除了题号还带题干 + 结构签名，问卷中间插一题不再整体错位；锚点认不到题时**该题走等权并提示**，而不是拿别人的分布静默填（v3.0）
 - **结构对拍（探测自我体检）** — 把探测结果与问卷星写在题目容器上的 `topic` / `type` 逐题比一次，判错题型、整题漏探测在**作答之前**就说明白。只提示、不拦停、不改任何作答行为；平台没标这些属性的模板完全静默（`src/crosscheck.py`）
+- **整页形态诊断（探测不到题目时先分清原因）** — 移动端投放（jQuery-Mobile 那一套 `.ui-radio` / `.ui-input-text`）的问卷交进来，本工具一道题都认不出，而「探测不到题目」那句话把责任指向了我们的适配质量和你自己的网络。现在这种页面会明说：这是移动端形态，本工具**未适配**它，换 PC 版链接（`/jq/` 那种或桌面端分享地址）再来一次。只在**一道题都没探测到**且 jQM 控件成规模命中时出声，跑得正常的 PC 页面永远看不到这行（`detection.mobile_layout_notice`）
 - **提交前完整度自检** — 平台标了必答、而我们**整题都没探测到**的那些题，注定被平台按必填拦下：那就别点提交，直接判本轮失败并说出是哪几题。判据只收这一种零歧义事实，拿不到平台结构或没标 `req` 一律照常提交（`src/completeness.py`）。可选的**补漏轮**（`--rescue-gaps`，默认关）把拦下来的人工接进来：滚进视野、等他在窗口里补答，补齐了才点提交 —— 答的是人，不是模型
 - **智能验证码检测** — DOM / URL 文本 / Shadow DOM 三信号并行检测；检出后弹窗提醒人工处理，人工介入锁保证等待期间不被误判为超时；无头模式下直接判本轮失败（没有可介入的人）
 - **随时可停** — 停止/关闭窗口在**逐题边界、每题思考停顿、验证码人工等待**上都以 ≈0.2s 粒度生效，被打断的那一份不提交、不计失败（v3.0）
@@ -391,14 +392,14 @@ pip install -r requirements-dev.txt
 # 全量测试（含依赖真实浏览器驱动的 E2E）
 python -m pytest tests/ -v
 
-# 离线套件（无浏览器环境 / CI，791 项；只装 requirements*.txt 的口径下会有若干 skip）
+# 离线套件（无浏览器环境 / CI，811 项；只装 requirements*.txt 的口径下会有若干 skip）
 python -m pytest tests/ -m "not integration" -q
 
 # 仅浏览器 E2E（需本机 Edge / Chrome + WebDriver，14 项）
 python -m pytest tests/ -m integration -q
 ```
 
-当前测试全部通过：**805 项**（离线 791 + E2E 14）。
+当前测试全部通过：**825 项**（离线 811 + E2E 14）。
 
 > **类型门禁不随环境变**：`src/` + `gui/` + 入口在两种环境下都是 **0 error
 > 0 warning**。两处可选依赖（`opencv-python`、`undetected_chromedriver`）的动态
@@ -411,7 +412,7 @@ python -m pytest tests/ -m integration -q
 >
 > | 门禁 | 装齐可选依赖（开发机） | 未装（CI / 干净 venv） |
 > |---|---|---|
-> | 离线套件 | 791 passed | 788 passed + 3 skipped（二维码解析 2 项；文档口径比对 1 项 —— 它读的 `coverage.json` 是同一次运行**末尾**才产出的） |
+> | 离线套件 | 811 passed | 808 passed + 3 skipped（二维码解析 2 项；文档口径比对 1 项 —— 它读的 `coverage.json` 是同一次运行**末尾**才产出的） |
 > | 覆盖率 | 实测比 CI 口径高 0.3pp（`src/` +0.1、`gui/` +0.6） | 见下方「已知缺口（诚实记录）」的生成块，那是门禁认的唯一口径 |
 >
 > 覆盖率数字现在只有一个来源：`scripts/readme_coverage.py` 从 `coverage.json` 生成，
@@ -471,8 +472,8 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 
 | 范围 | 离线覆盖率 |
 |---|---|
-| 全部 | **77.0%** |
-| `src/` | 88.8%（2959 条语句剩 331 行） |
+| 全部 | **77.1%** |
+| `src/` | 88.9%（2987 条语句剩 331 行） |
 | `gui/` | 58.4%（1888 条语句剩 785 行） |
 
 #### 已补齐的缺口（v2.7 那五条）
@@ -481,7 +482,7 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 |---|---|---|---|
 | `src/logging_setup.py` | 0% | **100.0%**（剩 0 行） | `tests/test_logging_setup.py` |
 | `src/browser/driver_factory.py` | 9% | **98.4%**（剩 3 行） | `tests/test_driver_factory_offline.py` |
-| `src/pipeline.py` | 26% | **96.8%**（剩 6 行，v3.0 加了分页与弹窗诊断分支） | `tests/test_pipeline_core.py`、`tests/test_pipeline_waits.py` |
+| `src/pipeline.py` | 26% | **96.9%**（剩 6 行，v3.0 加了分页与弹窗诊断分支） | `tests/test_pipeline_core.py`、`tests/test_pipeline_waits.py` |
 | `src/verification.py` | 34% | **97.0%**（剩 3 行，非 Windows 降级桩本机不可达） | `tests/test_verification_flow.py` |
 | `gui/`（9 个文件合计） | 15% | **58.4%**（`log_view`、`theme` 已 100%） | `tests/test_gui_panels.py`、`tests/test_gui_proxies.py`、`tests/test_gui_run_loop.py` |
 
@@ -537,6 +538,7 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 | 代理 / IP 池 / 伪造 `X-Forwarded-For` | 与下面的免责声明正面冲突；且问卷星的计数走服务端真实 IP + cookie + 智能验证，XFF 只在特定反代配置下被采信 —— 效果不可靠，代价却是对方的风控 |
 | 并发 worker（同时开 N 个浏览器） | 本工具的立身点是「正态分布的人类行为 + 可靠的提交语义」。N 个实例同时提交会直接稀释前者，并让「人工介入验证码」这个单实例前提失效 |
 | 自动识别验证码 | 只检测、只请人帮忙。绕过验证码不是本项目要解决的问题 |
+| 移动端投放形态的作答 | 判据与注入要换一整套（jQuery-Mobile 的 `.field` / `.ui-radio` / `.ui-input-text` 语义），而 **PC 版链接是现成的替代品** —— 给作答路径加第二套选择器，等于把"本工具只跑 PC 形态"这条写在 README 里的边界悄悄挪掉。现在只诊断并说清「换链接」（`detection.mobile_layout_notice`），一行代码都不往注入侧加 |
 | GUI 的无头 / 队列 / 时限 / 预约开关 | GUI 是"看着窗口跑"的入口；无头对它没有意义，队列、时限与 `--start-at` 要的是无人值守，那是 CLI 的场景 |
 
 第二个平台（腾讯问卷 / 金数据 / Google Forms）也**没有**支持：`src/platforms.py` 只是把

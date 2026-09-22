@@ -201,6 +201,18 @@ def _query_ident(query: str) -> str:
     return ""
 
 
+# 移动端投放形态（jQuery-Mobile 那一套模板）的控件标记。它们**只用来做诊断**：
+# 这类页面本工具答不了（探测入口是 ``#fieldset1`` / ``input[name=qN]`` 的 PC 约定），
+# 而症状与"我们 DOM 适配没做好"一模一样，所以要说清楚是哪一种。
+#
+# 刻意**不含** ``.field``：问卷星电脑端模板的题目容器就写着 ``class="field"``
+# （真卷实测 ``<div id="divN" class="field" topic="N">``），拿它当触发条件会到处
+# 误报，而假警的代价是这句提示从此没人看。``ui-*`` 才是 jQM 独有的形状。
+WJX_MOBILE_LAYOUT_SELECTORS: tuple[str, ...] = (
+    ".ui-input-text", ".ui-radio", ".ui-checkbox",
+)
+
+
 def unsupported_url_notice(url: str) -> str | None:
     """非受支持平台的一行提示；认得出平台时返回 ``None``。
 
@@ -222,6 +234,7 @@ __all__ = [
     "QuestionTypeCode",
     "SurveyPlatform",
     "WJX",
+    "WJX_MOBILE_LAYOUT_SELECTORS",
     "WJX_QUESTION_ANCHOR_SELECTORS",
     "WJX_TYPE_CODES",
     "canonical_survey_key",

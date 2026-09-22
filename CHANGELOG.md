@@ -95,6 +95,28 @@
   等待、等待中被中断不跑批次）。顺手抓到一个真缺陷：`strptime("%H:%M")` 把日期填成
   **1900-01-01**，不换成今天的话任何"裸时刻"都判成已经过去。
 
+- **整页形态诊断：一道题都没探测到时先分清原因**（`detection.mobile_layout_notice`，
+  接线在 `pipeline._answer_current_page` 的 Step 5 空结果分支）。
+  要补的是"一句话把责任指错地方"：一份移动端投放（jQuery-Mobile 模板）的问卷交进来，
+  `detect_questions` 认不出任何题（探测入口是 `#fieldset1` / `input[name=qN]` 那套 PC 约定），
+  日志只有「探测不到题目 → 整批失败」。这句话把矛头指向我们自己的适配质量与用户的网络，
+  而真正的原因只是**链接给错了** —— 换 PC 版地址立刻有解，等改版没有解。同一个形状此前已由
+  `platforms.unsupported_url_notice`（认不出域名）说过一次，所以这是同一个家族：
+  **只提示、不拦停、判定一字不改**。
+  判据收到最窄才敢说：只在 (a) 本页一道题都没探测到 **且** (b) jQM 独有的控件类
+  （`.ui-input-text` / `.ui-radio` / `.ui-checkbox`，常量在
+  `platforms.WJX_MOBILE_LAYOUT_SELECTORS`）成规模命中（≥3 处）时出声。
+  **`.field` 被刻意排除在触发条件之外** —— 问卷星 PC 端模板的题目容器就写着 `class="field"`
+  （真卷实测 `<div id="divN" class="field" topic="N">`），拿它判断会在本来跑得好的问卷上
+  到处误报，而假警的代价是这句真话从此没人看。读数拿不到（None / 空串 / 被页面改写）同样
+  沉默：没有信号不等于有缺口。同一句话每进程只印一次（一批 17 份每份都会走到这里）。
+  明确**不做**的两件事写进了 README「不在本工具范围内」：不实现移动端作答，也不给作答路径
+  加第二套选择器 —— 那等于把"本工具只跑 PC 形态"这条边界悄悄挪掉，而它是写在 README 里的承诺。
+  测试：`tests/test_mobile_layout.py` 17 项（触发条件只有 `ui-*`、`.field` 不许进那张表、
+  门槛边界 2/3、九种读不到或不够规模的读数各自沉默、探针异常退化成"没说"、Ctrl+C 仍上抛、进程级去重）
+  + `tests/test_pipeline_core.py` 加 3 项接线（空结果时出声且判定不变、有题时根本不调探针、
+  用**真**探针跑一遍恒真页面要求一字不说 —— "只提示"的另一半就是"不许瞎报"）。
+
 - **README 的覆盖率口径改成生成物**（`scripts/readme_coverage.py`、`scripts/coverage_gaps.json`、
   `tests/test_doc_consistency.py`，CI 多一步 `--check`）。要补的是"口径同步"这条重复劳动本身：
   2026-09-22 一天里发过两次标题为「README / CHANGELOG / ci.yml 口径同步」的提交，只为把同一组

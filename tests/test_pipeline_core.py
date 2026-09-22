@@ -252,6 +252,49 @@ def test_step5_empty_question_structure_resets_context() -> None:
 
 
 # ---------------------------------------------------------------------------
+#  Step 5 的另一半：一道题都没有时先问一句"是不是整页形态不对"（v3.1）
+#
+#  只提示、不拦停 —— 判定必须仍是 SUBMIT_FAILED（不能因为"知道是移动端形态"就
+#  放行，也不能因此改成第三种结果）。探针本身的形状判据在 tests/test_mobile_layout.py。
+# ---------------------------------------------------------------------------
+def test_layout_notice_is_printed_when_nothing_was_detected(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    notice = mock.Mock(name="mobile_layout_notice", return_value="[布局] 移动端投放形态")
+    with stages(detect_questions=[], mobile_layout_notice=notice):
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_FAILED
+
+    assert "[布局]" in capsys.readouterr().out
+    notice.assert_called_once()
+
+
+def test_layout_notice_is_quiet_when_questions_were_detected() -> None:
+    """探测到题了就别去问形态：那是纯噪声，外加一次没必要的 JS 往返。"""
+    notice = mock.Mock(name="mobile_layout_notice",
+                       side_effect=AssertionError("有题就不该问形态"))
+    with stages(mobile_layout_notice=notice):
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+
+
+def test_no_signal_page_still_fails_without_any_notice(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """接线用**真**探针跑一遍空页面：读不出整数（FakeDriver 恒真）就必须一字不说。
+
+    刻意不 patch 掉它 —— "import 了却没调用"与"没信号还瞎报"都是这条接线会坏的形状。
+    """
+    from src import detection
+
+    detection.reset_mobile_layout_notice()
+    try:
+        with stages(detect_questions=[]):
+            assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_FAILED
+        assert "[布局]" not in capsys.readouterr().out
+    finally:
+        detection.reset_mobile_layout_notice()
+
+
+# ---------------------------------------------------------------------------
 #  Step 5.5：断点续填 —— 已填题不重答，扫描抖动不影响本轮
 # ---------------------------------------------------------------------------
 def test_resume_skips_already_answered_questions(capsys: pytest.CaptureFixture[str]) -> None:

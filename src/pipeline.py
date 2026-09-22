@@ -62,6 +62,7 @@ from .detection import (
     detect_answered_questions,
     detect_platform_questions,
     detect_questions,
+    mobile_layout_notice,
 )
 # 无头判定：补漏轮等的是"坐在窗口前的人"，无头下没有这个人
 from .browser.driver_factory import driver_is_headless
@@ -159,6 +160,13 @@ def _answer_current_page(
     # Step 5 探测题目结构
     questions = detect_questions(driver)
     if not questions:
+        # v3.1 整页形态诊断：一道题都没有有两种完全不同的原因 —— 我们的适配问题，
+        # 或者这一页根本就是移动端投放形态（本工具只适配 PC）。症状一模一样，
+        # 处置方式完全不同（等改版 vs 换 PC 链接），所以在这里说一句。只提示，
+        # 判定不变、不拦停、更不因此去加第二套选择器。
+        _layout = mobile_layout_notice(driver)
+        if _layout:
+            print("  " + _layout)
         return "failed", set(), 0
 
     # v3.0 权重锚定：带了 anchor 却认不到题的条目**不会**退回答题号（见 anchoring 契约 1），
