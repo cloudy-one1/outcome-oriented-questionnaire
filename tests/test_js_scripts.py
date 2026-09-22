@@ -171,6 +171,24 @@ def test_fill_matrix_injects_rowmap_via_json_dumps() -> None:
     )
 
 
+def test_fill_matrix_multi_selects_checkboxes_per_row() -> None:
+    """矩阵多选与单选共用一个生成器：两者都得能定位 checkbox，且多选不 break。
+
+    锁的是"共用不漂移"：单选那份若被改回只查 radio，矩阵多选题就会一格都点不上；
+    而多选一 break 就变成"每行只勾一个"，与题型语义相反。
+    """
+    row_map = {1: [2, 4], 2: ["北京"]}
+    out = S.fill_matrix_multi_script(q=9, row_selections=row_map)
+    assert json.dumps(row_map, ensure_ascii=False, default=str) in out
+    assert 'input[type="checkbox"]' in out, "多选路径没查 checkbox"
+    assert "Array.isArray(raw)" in out, "行值是否为数组必须在 JS 侧当场判定"
+    assert "if (!isMulti) break;" in out, "只有单选才允许命中后立刻 break"
+    # 单选那份仍走同一定位约定
+    single_out = S.fill_matrix_single_script(q=9, row_selections={1: 2})
+    assert 'input[type="checkbox"]' in single_out
+    assert "'q' + q + '_' + rowKey" in single_out
+
+
 # ---------------------------------------------------------------------------
 #  submit 模块小片段
 # ---------------------------------------------------------------------------
@@ -233,6 +251,11 @@ def _script_cases() -> dict[str, str]:
         "fill_matrix_single_script__basic": S.fill_matrix_single_script(
             q=9, row_selections={1: 2, 2: "北京"}
         ),
+        "fill_matrix_multi_script__basic": S.fill_matrix_multi_script(
+            q=9, row_selections={1: [2, 4], 2: ["北京"]}
+        ),
+        "fill_sort_script__basic": S.fill_sort_script(q=13, order=["3", "1", "2"]),
+        "fill_sort_script__empty": S.fill_sort_script(q=13, order=[]),
         "submit_button_fallback_script__noargs": S.submit_button_fallback_script(),
         "submit_success_detect_script__noargs": S.submit_success_detect_script(),
     }

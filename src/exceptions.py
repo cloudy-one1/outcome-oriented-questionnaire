@@ -14,6 +14,7 @@
 关键导出:
     - ``TRANSIENT_DOM_EXCEPTIONS``: 浏览器/DOM 瞬态异常（可期望、可恢复的交互失败）
     - ``NON_RECOVERABLE_BASE_EXCEPTIONS``: 永不吞咽的基础异常（Interrupt/Exit/内存）
+    - ``SubmissionAborted``: 用户在单次提交中途请求停止（穿透 ``except Exception``）
     - ``format_exc_log``: 统一异常消息格式化（建议 5.2）
     - ``raise_non_recoverable``: 若异常在 NON_RECOVERABLE 则重新抛出（给下游"兜底 except"用）
 """
@@ -97,6 +98,22 @@ TRANSIENT_DOM_EXCEPTIONS: tuple[type[BaseException], ...] = (
 # ============================================================================
 #  5.3 统一：永不吞咽的基础异常
 # ============================================================================
+class SubmissionAborted(BaseException):
+    """用户在一次提交的中途请求停止（GUI 停止按钮 / CLI 将来的一致性中断）。
+
+    刻意继承 ``BaseException``：提交路径上有十几处 ``except Exception`` 降级分支
+    （逐题交互、history 落盘、验证码探测），它们都是为"浏览器偶发异常"写的。
+    停止信号若继承 Exception，就会被这些分支就地吞掉并"计本题失败、继续下一题"，
+    最后仍然点到提交按钮 —— 半份问卷被真提交出去，正是要避免的后果。
+    它同时**不进** ``retry_with_backoff`` 的 ``retry_on=(WebDriverException,)``，
+    所以不会被重试成第二次尝试。
+    """
+
+    def __init__(self, reason: str, *, question: int | None = None) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.question = question
+
 #
 # 任何"兜底 except Exception"都必须先检查是否命中本集合；命中则重新抛出。
 # 原因：这些异常属于进程/线程/运行时级别的终止信号，如果被业务代码的
@@ -107,6 +124,8 @@ NON_RECOVERABLE_BASE_EXCEPTIONS: tuple[type[BaseException], ...] = (
     SystemExit,          # sys.exit()
     MemoryError,         # 内存耗尽（继续执行只会产出不可预期的结果）
     # GeneratorExit 不列入：生成器内部特殊，不属于业务场景
+    # SubmissionAborted 也不列入：它继承 BaseException，本身就穿得过
+    # `except Exception`，列进来只会是一行永不命中的分支。
 )
 
 

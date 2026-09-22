@@ -1304,7 +1304,7 @@ class SurveyGUI:
         self.stop_flag = True
         self.stop_btn.configure(state=tk.DISABLED)
         self._set_status("正在停止...", COLORS["warning"])
-        self._log("用户请求停止，等待当前轮次完成...", "WARN")
+        self._log("用户请求停止：当前轮次会在下一个题目边界收尾（不再提交该份）", "WARN")
 
     def _run_loop(
         self,
@@ -1330,6 +1330,7 @@ class SurveyGUI:
                 "unknown": "FAIL",
                 "error": "FAIL",
                 "browser_dead": "WARN",
+                "aborted": "WARN",
             }.get(res.outcome, "INFO")
             self._log(
                 f"[{res.index}/{state.total_target}] {res.message}"
@@ -1444,6 +1445,11 @@ class SurveyGUI:
     def run(self) -> None:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.mainloop()
+
+
+def main() -> None:
+    """控制台入口（``wjx-gui``，见 pyproject 的 [project.scripts]）。"""
+    SurveyGUI().run()
 
 
 if __name__ == "__main__":

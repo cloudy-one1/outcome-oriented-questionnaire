@@ -40,7 +40,9 @@ def detect_questions(driver: Any) -> list[dict]:
       driver : Selenium WebDriver 实例
 
     返回：
-      list[dict]，每个元素至少包含 ``q`` 和 ``type``；各题型的额外字段如下：
+      list[dict]，每个元素至少包含 ``q`` 和 ``type``；识别到题面元素时附带
+      ``title``（题干文本，去掉多余空白、最长 120 字，v3.0 权重锚定用）。
+      各题型的额外字段如下：
 
       **V1 兼容（单选 / 多选）** ::
 
@@ -74,12 +76,36 @@ return (function() {
         return map[qi];
     }
 
+    // ---------- 工具：跳过"被分页容器隐藏"的控件（v3.0 多分页问卷） ----------
+    // 问卷星把每一页渲染成同一棵 DOM 树里的 div.page，只有当前页可见。
+    // 不做这层过滤，探测会把后面几页的题也算成"本页题"—— 于是在第 1 页就去点
+    // 第 3 页的选项，平台只收当前页的输入，结果是"整卷答完"仍被判未答。
+    // 刻意只认分页容器这一层：量表那些 display:none 的隐藏 radio 不在其列，
+    // 那是它们的正常形态（v2.6 靠那些 radio 读量表边界）。
+    function pageHidden(el) {
+        var n = el;
+        while (n && n !== document.body) {
+            var cl = (n.className || '').toString();
+            var isPage = /(^|\s)(page|paging|pDiv|question-page|ui-page)(\s|$)/.test(cl)
+                      || (n.dataset && n.dataset.page !== undefined);
+            if (isPage) {
+                if (n.hidden) return true;
+                if (n.style && n.style.display === 'none') return true;
+                if (window.getComputedStyle
+                        && window.getComputedStyle(n).display === 'none') return true;
+            }
+            n = n.parentElement;
+        }
+        return false;
+    }
+
     // ---------- 1. 单选 / 多选（v1 逻辑，保持完全一致） ----------
     (function() {
         var inputs = document.querySelectorAll(
             'input[type="radio"], input[type="checkbox"]'
         );
         inputs.forEach(function(el) {
+            if (pageHidden(el)) return;
             var m = (el.name || '').match(/q(\d+)/);
             if (!m) m = (el.id || '').match(/q(\d+)/);
             if (!m) return;
@@ -99,6 +125,7 @@ return (function() {
     (function() {
         var selects = document.querySelectorAll('select');
         selects.forEach(function(sel) {
+            if (pageHidden(sel)) return;
             var nm = sel.name || '';
             var id = sel.id || '';
             var m = nm.match(/q(\d+)/) || id.match(/q(\d+)/) || id.match(/selectq(\d+)/);
@@ -129,6 +156,7 @@ return (function() {
         var areas = document.querySelectorAll(sel);
         var seen = new Set();
         areas.forEach(function(area) {
+            if (pageHidden(area)) return;
             // 找最近的题目容器，取其题号
             var host = area.closest ? area.closest(
                 '.field,.div_question,.q-item,li,.question,div[id^="div"]'
@@ -201,6 +229,7 @@ return (function() {
         );
         fillables.forEach(function(el) {
             if (el.disabled || el.readOnly) return;
+            if (pageHidden(el)) return;
             var id = el.id || '';
             var name = el.name || '';
             var m = id.match(/^q(\d+)$/) || id.match(/^answerq(\d+)$/) ||
@@ -241,18 +270,25 @@ return (function() {
         });
     })();
 
-    // ---------- 5. 矩阵单选（每行一组 radio，同题不同行 name 可能是 qN_1, qN_2） ----------
+    // ---------- 5. 矩阵（每行一组控件，同题不同行 name 是 qN_1 / qN_2 ...） ----------
     (function() {
-        // 找所有 name 形如 qN_R 的 radio → N 是题号，R 是行号
-        var allRadios = document.querySelectorAll('input[type="radio"]');
-        var matrixMap = {};  // qN -> { rows: Set(R), cols: Set(values) }
-        allRadios.forEach(function(r) {
+        // radio → matrix_single，checkbox → matrix_multi。v3.0 之前这里只看 radio，
+        // 于是矩阵多选题被整题识别成"没有题目"或降级成单选，答出来的形状还不对。
+        var allBoxes = document.querySelectorAll(
+            'input[type="radio"], input[type="checkbox"]'
+        );
+        var matrixMap = {};  // qN -> { rows: Set(R), cols: Set(values), kind: 'radio'|'checkbox' }
+        allBoxes.forEach(function(r) {
+            if (pageHidden(r)) return;
             var m = (r.name || '').match(/^q(\d+)_(\d+)$/);
             if (!m) return;
             var qN = parseInt(m[1]);
             var rowN = parseInt(m[2]);
-            if (!matrixMap[qN]) matrixMap[qN] = { rows: new Set(), cols: new Set() };
+            if (!matrixMap[qN]) {
+                matrixMap[qN] = { rows: new Set(), cols: new Set(), kinds: new Set() };
+            }
             matrixMap[qN].rows.add(rowN);
+            matrixMap[qN].kinds.add(r.type);
             var v = parseInt(r.value);
             if (!isNaN(v)) matrixMap[qN].cols.add(v);
         });
@@ -260,24 +296,111 @@ return (function() {
         Object.keys(matrixMap).forEach(function(qN) {
             var qi = parseInt(qN);
             var s = slot(qi);
+            var entry = matrixMap[qN];
             // 如果该题已被识别为 single/multi，且 matrix 的 row 只有 1 条 → 保留 single
             if (s.type === 'single' || s.type === 'multi') {
-                if (matrixMap[qN].rows.size <= 1) return;
+                if (entry.rows.size <= 1) return;
             }
-            var rowsArr = Array.from(matrixMap[qN].rows).sort(function(a, b) { return a - b; });
-            var colsArr = Array.from(matrixMap[qN].cols).sort(function(a, b) { return a - b; });
-            if (rowsArr.length >= 2 && colsArr.length >= 2) {
-                s.type = 'matrix_single';
-                s.rows = rowsArr;
-                s.cols = colsArr;
+            var rowsArr = Array.from(entry.rows).sort(function(a, b) { return a - b; });
+            var colsArr = Array.from(entry.cols).sort(function(a, b) { return a - b; });
+            if (rowsArr.length < 2 || colsArr.length < 2) return;
+            // 混合类型（既有 radio 又有 checkbox）按 radio 处理：行内单选是更强的约束
+            var isMulti = entry.kinds.has('checkbox') && !entry.kinds.has('radio');
+            s.type = isMulti ? 'matrix_multi' : 'matrix_single';
+            s.rows = rowsArr;
+            s.cols = colsArr;
+        });
+    })();
+
+    // ---------- 5b. 排序题（v3.0：ul/ol 带 sort 类名，li 逐个可拖） ----------
+    // 结构前提：容器 class 含 "sort"（问卷星实际是 ul.lisort），且里面 ≥2 个 li；
+    // 题号按 隐藏 input 的 name → 容器自身 id → 分页/题目容器 id 的顺序找。
+    // 三条都找不到就不认这题 —— 认错了比认不到更糟（会去重排别人的列表）。
+    (function() {
+        var lists = document.querySelectorAll('ul, ol');
+        lists.forEach(function(ul) {
+            if (pageHidden(ul)) return;
+            var cls = (ul.className || '').toString();
+            if (!/sort/i.test(cls)) return;
+            var lis = [];
+            for (var i = 0; i < ul.children.length; i++) {
+                if (ul.children[i].tagName === 'LI') lis.push(ul.children[i]);
             }
+            if (lis.length < 2) return;
+
+            var items = lis.map(function(li, idx) {
+                var v = li.getAttribute('value')
+                     || li.getAttribute('data-value')
+                     || li.getAttribute('data-id');
+                return v !== null && v !== '' ? v : String(idx + 1);
+            });
+
+            var q = null;
+            // ① 容器自身 id：问卷星常用 q13_list / sortq13 这类带题号前缀的 id
+            var um = (ul.id || '').match(/^q(\d+)(?:$|[^0-9])/);
+            if (um) q = parseInt(um[1]);
+            // ② 同域的隐藏 input（提交值就装在这里）—— 刻意不用 closest('[id]')，
+            //    那会先匹配到 ul 自己，把 scope 缩成一个查不到任何东西的节点
+            var scope = (ul.closest && ul.closest('.field, .div_question, .question'))
+                     || ul.parentNode;
+            var hidden = scope ? scope.querySelectorAll('input[type="hidden"]') : [];
+            for (var h = 0; h < hidden.length && q === null; h++) {
+                var hm = (hidden[h].name || hidden[h].id || '').match(/^q(\d+)$/);
+                if (hm) q = parseInt(hm[1]);
+            }
+            // ③ 题目容器 id（div13 / divquestion13）
+            if (q === null && scope && scope.id) {
+                var cm = scope.id.match(/(?:div|q)(\d+)$/);
+                if (cm) q = parseInt(cm[1]);
+            }
+            if (q === null) return;
+
+            var s = slot(q);
+            if (s.type && s.type !== 'sort') return;   // 已被别的题型占用 → 不覆盖
+            s.type = 'sort';
+            s.items = items;
+        });
+    })();
+
+    // ---------- 6. 题干文本（v3.0 权重锚定用） ----------
+    // 只取题面元素自己的文字，绝不退回到"整个容器 textContent" ——
+    // 那样会把选项文案一起吸进来，作者改一个选项就换一道题，锚点比题号更脆。
+    (function() {
+        var TITLE_SEL = '.topichtml, h2.t, .field-label, .quetitle,'
+                      + ' .question-title, .field-label-text, .qtitle,'
+                      + ' [class*="topichtml"]';
+        Object.keys(map).forEach(function(q) {
+            var s = map[q];
+            if (s.title) return;
+            var host = document.getElementById('divquestion' + q)
+                    || document.getElementById('div_question_' + q);
+            if (!host) {
+                // 矩阵题的控件 name 是 qN_R（N 题号、R 行号），只查 [name="qN"] 会漏整道题
+                host = document.querySelector(
+                    '[id="q' + q + '"], [name="q' + q + '"],'
+                    + ' [id^="q' + q + '_"], [name^="q' + q + '_"]'
+                );
+            }
+            if (!host) return;
+            // 从命中的控件**往上爬**，逐层找题面：closest('.field') 只会停在
+            // 控件包装层，而题面是它的兄弟节点（真页面与 mock 都是这个结构）。
+            var text = '';
+            for (var node = host; node && node !== document.body; node = node.parentElement) {
+                if (!node.querySelector) break;
+                var t = node.querySelector(TITLE_SEL);
+                if (t) { text = t.textContent || ''; break; }
+            }
+            text = text.replace(/\s+/g, ' ').trim();
+            if (!text) return;
+            s.title = text.substring(0, 120);
         });
     })();
 
     // ---------- 后处理：single/multi 的 choices 排序；清理 scale/text/matrix 的顶层脏字段；按题号升序输出 ----------
     Object.keys(map).forEach(function(q) {
         var it = map[q];
-        if (it.type === 'scale' || it.type === 'text' || it.type === 'matrix_single') {
+        if (it.type === 'scale' || it.type === 'text'
+                || it.type === 'matrix_single' || it.type === 'matrix_multi') {
             delete it.choices;
         }
         if (it.choices && typeof it.choices.sort === 'function') {
@@ -405,9 +528,9 @@ return (function() {
         }
     });
 
-    // ---------- 5. 矩阵单选：每行都有 :checked 才算整题已答 ----------
+    // ---------- 5. 矩阵（单选/多选）：每行都有 :checked 才算整题已答 ----------
     var matrixMap = {};  // qN -> { total: Set(rows), answered: Set(rows) }
-    document.querySelectorAll('input[type="radio"]').forEach(function(r) {
+    document.querySelectorAll('input[type="radio"], input[type="checkbox"]').forEach(function(r) {
         var m = (r.name || '').match(/^q(\d+)_(\d+)$/);
         if (!m) return;
         var qN = parseInt(m[1]);

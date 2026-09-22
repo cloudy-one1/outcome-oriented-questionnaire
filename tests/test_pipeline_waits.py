@@ -16,8 +16,11 @@ import sys
 import threading
 import time
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.exceptions import SubmissionAborted  # noqa: E402
 from src.pipeline_stages.question_stage import _wait_for_questions  # noqa: E402
 from src.utils import ManualHoldLock  # noqa: E402
 
@@ -97,3 +100,26 @@ def test_released_lock_does_not_extend_budget() -> None:
     t0 = time.perf_counter()
     assert _wait_for_questions(d, timeout=0.5, hold_lock=lock) is False
     assert time.perf_counter() - t0 < 2.0
+
+
+# ---------------------------------------------------------------------------
+#  v3.0：轮内停止谓词
+# ---------------------------------------------------------------------------
+def test_stop_check_short_circuits_the_wait() -> None:
+    """用户已经点了停止 → 不再轮询、不再耗预算，直接抛 SubmissionAborted。
+
+    这条是「点了停止仍要等完整份问卷」的上半个洞：等题目渲染最长
+    QUESTION_DETECT_TIMEOUT 秒，期间停止按钮完全没反应。
+    刻意断言 ``calls == 0`` —— 停止必须在第一次探测**之前**就被问到，
+    否则"每片轮询问一次"的接线就是假的。
+    """
+    d = ProbeDriver(appear_after=999.0)
+    with pytest.raises(SubmissionAborted):
+        _wait_for_questions(d, timeout=999.0, stop_check=lambda: True)
+    assert d.calls == 0
+
+
+def test_stop_check_absent_keeps_the_old_timeout_path() -> None:
+    """不传 stop_check（CLI 之外的老调用点）→ 行为与 v2.8 逐位一致：返回 False 而非抛。"""
+    d = ProbeDriver(appear_after=999.0)
+    assert _wait_for_questions(d, timeout=0.3, stop_check=None) is False

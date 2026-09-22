@@ -27,6 +27,8 @@ from .theme import COLORS, FONT_PRESETS, GRAD_SUCCESS, _lerp_color
 from .widgets import _make_card as _default_make_card
 # V2.4：题型别名单一真相（models.normalize_question_type 统一归一化）
 from src.models import normalize_question_type  # noqa: E402
+# v3.0：导出配置时带上题干锚点（src/anchoring.py）
+from src import anchoring  # noqa: E402
 
 # V2.4 整改：别名键（radio/checkbox/rating/input/textarea/fillblank/matrix_single）
 # 收敛到 models.normalize_question_type 统一归一化，本表只保留 6 个存储名的样式
@@ -37,6 +39,10 @@ _QTYPE_BADGE_MAP: dict[str, tuple[str, str]] = {
     "scale":    (COLORS["primary_2"],   "量表"),
     "text":     ("#64748b",             "填空"),
     "matrix":   (COLORS["danger_dim"],  "矩阵"),
+    # v3.0 矩阵多选：同色系，靠"矩多"与单选的"矩阵"区分
+    "matrix_multi": (COLORS["danger_dim"], "矩多"),
+    # v3.0 排序题：权重格里写 "3,1,2" 是固定顺序，留空 = 按权重随机排
+    "sort":     (COLORS["primary_2"], "排序"),
 }
 
 _FIELD_LABEL_MAP: dict[str, str] = {
@@ -252,11 +258,16 @@ class WeightPanel:
                     # `or ""`：题面没给 field 时 fld 是 None，不是合法的 str 键，
                     # 落到默认值"自由文本"，与原本 None 查不到键的行为一致。
                 }.get(fld or "", "自由文本")
-            elif qtype in ("matrix_single", "matrix"):
+            elif qtype in ("matrix_single", "matrix", "matrix_multi"):
                 rs = q.get("rows", [])
                 cs = q.get("cols", [])
                 default_weights = ""
                 n_label = f"{len(rs)}行 × {len(cs)}列"
+            elif qtype == "sort":
+                # 留空 = 随机排序（预设里写死顺序的情况很少，预填满反而会让每次
+                # 另存都变成"固定顺序"）；要定序就按 item id 逗号串填
+                default_weights = ""
+                n_label = f"{len(q.get('items', []))} 项可排"
             else:
                 n_opts = len(q.get("choices", []))
                 default_weights = ",".join(["1"] * n_opts) if n_opts > 0 else ""
@@ -495,8 +506,8 @@ class WeightPanel:
                 config[qi] = cfg
                 continue
 
-            # matrix / matrix_single
-            if qtype in ("matrix_single", "matrix"):
+            # matrix / matrix_single / matrix_multi
+            if qtype in ("matrix_single", "matrix", "matrix_multi"):
                 cfg: dict[str, Any] = {"type": qtype}
                 rows = q.get("rows", [])
                 cols = q.get("cols", [])
@@ -540,6 +551,24 @@ class WeightPanel:
                 config[qi] = cfg
                 continue
 
+            # sort（v3.0 排序题）
+            if qtype == "sort":
+                cfg = {"type": "sort"}
+                items_str = [str(x) for x in (q.get("items") or [])]
+                if raw:
+                    wanted = [s0.strip() for s0 in raw.split(",") if s0.strip()]
+                    unknown = [x for x in wanted if x not in items_str]
+                    if unknown:
+                        self.log(
+                            f"Q{qi} 排序项 {unknown} 不在探测到的 {items_str} 里，"
+                            "已忽略整个顺序（留空即随机排序）",
+                            "WARN",
+                        )
+                    else:
+                        cfg["order"] = wanted
+                config[qi] = cfg
+                continue
+
             # 未知类型兜底
             if raw:
                 try:
@@ -548,6 +577,15 @@ class WeightPanel:
                     self.log(f"Q{qi} 权重格式错误，已跳过：{raw}", "WARN")
                     continue
                 config[qi] = {"type": qtype, "weights": weights}
+
+        # v3.0：给每条配置附上题干锚点 —— 题号只是"保存时这道题在第几格"的遗迹，
+        # 问卷中间插一题就会让整份预设错位，而错位是静默的（选项数恰好还来得及）。
+        # 探测不到题干的题目（detection 没拿到 title）跳过，行为等同 v2.8。
+        by_num = {q.get("q"): q for q in self.questions}
+        for qi, entry in config.items():
+            anchor = anchoring.make_anchor(by_num.get(qi) or {})
+            if anchor:
+                entry["anchor"] = anchor
         return config
 
     # ==================================================================
@@ -598,7 +636,7 @@ class WeightPanel:
             elif qtype in ("text", "input", "textarea", "fillblank"):
                 q["field"] = cfg.get("field")
                 q["choices"] = []
-            elif qtype in ("matrix_single", "matrix"):
+            elif qtype in ("matrix_single", "matrix", "matrix_multi"):
                 rows = cfg.get("rows") or [1, 2]
                 cols = cfg.get("cols") or [1, 2]
                 row_weights = cfg.get("row_weights") or {}

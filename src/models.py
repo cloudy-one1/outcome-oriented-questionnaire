@@ -70,6 +70,8 @@ class QuestionType(str, enum.Enum):
     SCALE = "scale"                  # 量表/评分
     TEXT = "text"                    # 填空/textarea
     MATRIX_SINGLE = "matrix_single"  # 矩阵单选
+    MATRIX_MULTI = "matrix_multi"    # 矩阵多选（v3.0）
+    SORT = "sort"                    # 排序题（v3.0）
 
     @property
     def storage_name(self) -> str:
@@ -112,6 +114,10 @@ _STORAGE_NAMES: dict[QuestionType, str] = {
     QuestionType.SCALE: "scale",
     QuestionType.TEXT: "text",
     QuestionType.MATRIX_SINGLE: "matrix",
+    # 矩阵多选必须与 matrix 区分：两者 answers 表里 options_selected 的形状不同
+    # （标量 vs 每行一个列表），共用短名会让历史明细无法判别是哪种。
+    QuestionType.MATRIX_MULTI: "matrix_multi",
+    QuestionType.SORT: "sort",
 }
 
 # 每个题型接受的别名（不含自己的 value，value 由 _build_tables 自动登记）
@@ -119,9 +125,13 @@ _ALIASES: dict[QuestionType, tuple[str, ...]] = {
     QuestionType.SINGLE: ("radio",),
     QuestionType.MULTI: ("checkbox",),
     QuestionType.DROPDOWN: (),
-    QuestionType.SCALE: ("rating",),
+    # nps = 0~10 十一级量表，DOM 与作答方式完全同 scale，只是题面语义不同；
+    # 单列一个题型会把 scale 的分支复制一遍，收益只有"配置里写得好看"。
+    QuestionType.SCALE: ("rating", "nps"),
     QuestionType.TEXT: ("textarea", "input", "fillblank"),
     QuestionType.MATRIX_SINGLE: ("matrix",),
+    QuestionType.MATRIX_MULTI: ("matrix_checkbox", "multi_matrix"),
+    QuestionType.SORT: ("ordering", "rank"),
 }
 
 

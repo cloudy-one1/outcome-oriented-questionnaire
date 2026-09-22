@@ -58,6 +58,7 @@ def create_driver(
     user_agent: str | None = None,
     headless: bool = False,
     use_uc: bool = False,
+    user_data_dir: str | None = None,
 ) -> Any:
     """通用浏览器驱动工厂。
 
@@ -66,6 +67,7 @@ def create_driver(
       user_agent : 可选，自定义 UA；未指定时从对应浏览器 UA 池随机
       headless   : 是否无头模式（问卷星敏感，仅建议调试）
       use_uc     : 仅 Chrome 生效，是否优先用 undetected-chromedriver
+      user_data_dir : 浏览器 profile 目录（v3.0 --profile-dir），见 driver_factory
 
     返回：
       selenium.webdriver 实例（或 uc.Chrome 实例，行为一致）
@@ -75,12 +77,17 @@ def create_driver(
     """
     b = (browser or "edge").lower()
     if b == "edge":
-        return create_edge_driver(user_agent=user_agent, headless=headless)
+        return create_edge_driver(
+            user_agent=user_agent,
+            headless=headless,
+            user_data_dir=user_data_dir,
+        )
     if b == "chrome":
         return create_chrome_driver(
             user_agent=user_agent,
             headless=headless,
             use_uc=use_uc,
+            user_data_dir=user_data_dir,
         )
     raise ValueError(
         f"不支持的浏览器类型：{browser!r}，可选值：{BROWSER_TYPES}"

@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from ..config import VERIFICATION_TIMEOUT
 from ..utils import ManualHoldLock
 from ..verification import is_smart_verification_showing, wait_for_manual_verification
 
 
-def _check_verification_with_lock(driver: Any, lock: ManualHoldLock) -> bool:
+def _check_verification_with_lock(
+    driver: Any,
+    lock: ManualHoldLock,
+    stop_check: Callable[[], bool] | None = None,
+) -> bool:
     """检查是否弹出了验证，如果是 → 进入 hold 等待人工处理。
 
     返回 True ：验证已解决（或根本没弹）
     返回 False：验证超时
+
+    :param stop_check: 透传给 wait_for_manual_verification 的 abort_check，
+        使「用户点了停止」能在 ≈2s 内打断最长 VERIFICATION_TIMEOUT 的人工等待
+        （以 SubmissionAborted 上抛，不占用返回值）。
     """
     if not is_smart_verification_showing(driver):
         return True
@@ -21,6 +29,7 @@ def _check_verification_with_lock(driver: Any, lock: ManualHoldLock) -> bool:
         driver,
         timeout_seconds=VERIFICATION_TIMEOUT,
         hold_lock=lock,
+        abort_check=stop_check,
     )
 
 

@@ -13,6 +13,7 @@ from typing import Any
 from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.support.ui import WebDriverWait
 
+from ..platforms import WJX
 from ..config import PAGE_LOAD_INITIAL_DELAY, PAGE_LOAD_MAX_ATTEMPTS
 from ..exceptions import TRANSIENT_DOM_EXCEPTIONS, raise_non_recoverable
 from ..utils import retry_with_backoff
@@ -21,10 +22,9 @@ from ..utils import retry_with_backoff
 # ============================================================================
 #  题目控件 selector（多个函数复用，集中一处可全局调整）
 # ============================================================================
-QUESTION_CONTROL_SELECTOR: str = (
-    'input[type="radio"], input[type="checkbox"], select, textarea,'
-    ' input[type="text"], input[type="tel"], input[type="number"]'
-)
+# v3.0：选择器本体已收进平台层（src/platforms.py 的 SurveyPlatform），这里保留
+# 这个名字是因为 question_stage 等调用点按它 import；换平台改 WJX 那份常量。
+QUESTION_CONTROL_SELECTOR: str = WJX.question_control_selector
 
 
 # ============================================================================

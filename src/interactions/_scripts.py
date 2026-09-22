@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import json
 
+from ..platforms import WJX
+
 
 # ============================================================================
 #  choices 模块：单选 / 多选题
@@ -360,11 +362,25 @@ def select_dropdown_script(q: int, choice_value) -> str:
 
 
 # ============================================================================
-#  matrix 模块：矩阵单选
+#  matrix 模块：矩阵单选 / 矩阵多选
 # ============================================================================
 
 def fill_matrix_single_script(q: int, row_selections: dict) -> str:
     """js_fill_matrix_single 的 JS：name="qN_rowIdx" 约定 → 整题区域行定位兜底。"""
+    return _fill_matrix_script(q, row_selections)
+
+
+def fill_matrix_multi_script(q: int, row_selections: dict) -> str:
+    """矩阵多选的 JS：``row_selections`` 每行的值是**列表**（该行要勾的几个列值）。
+
+    与单选共用一个生成器而不是抄一份 60 行 JS：两者的定位逻辑一模一样，
+    只有"命中后是否 break / 是否清掉同行兄弟的选中态"两处不同 ——
+    那两处在 JS 里由"这一行的值是不是数组"当场决定。
+    """
+    return _fill_matrix_script(q, row_selections)
+
+
+def _fill_matrix_script(q: int, row_selections: dict) -> str:
     mapping_json = json.dumps(row_selections, ensure_ascii=False, default=str)
     return f"""
         var q = {q};
@@ -372,13 +388,17 @@ def fill_matrix_single_script(q: int, row_selections: dict) -> str:
         var anyHit = false;
 
         Object.keys(rowMap).forEach(function(rowKey) {{
-            var col = rowMap[rowKey];
+            var raw = rowMap[rowKey];
+            var isMulti = Array.isArray(raw);
+            var wanted = isMulti ? raw : [raw];
             // 先假设 name 约定是 "qN_rowIdx"
             var name = 'q' + q + '_' + rowKey;
-            var radios = document.querySelectorAll('input[type="radio"][name="' + name + '"]');
+            var boxes = document.querySelectorAll(
+                'input[type="radio"][name="' + name + '"],'
+                + ' input[type="checkbox"][name="' + name + '"]');
 
             // 兜底：整题区域内按行定位
-            if (radios.length === 0) {{
+            if (boxes.length === 0) {{
                 var host = document.getElementById('div' + q) ||
                            document.getElementById('q' + q + '_table') ||
                            document.querySelector('.matrix, .mulitytitle, [data-q="' + q + '"]');
@@ -387,42 +407,142 @@ def fill_matrix_single_script(q: int, row_selections: dict) -> str:
                     var rowIdx = parseInt(rowKey);
                     if (!isNaN(rowIdx) && rows.length >= rowIdx) {{
                         var tgtRow = rows[rowIdx - 1];
-                        if (tgtRow) radios = tgtRow.querySelectorAll('input[type="radio"]');
+                        if (tgtRow) {{
+                            boxes = tgtRow.querySelectorAll(
+                                'input[type="radio"], input[type="checkbox"]');
+                        }}
                     }}
                 }}
             }}
 
-            for (var i = 0; i < radios.length; i++) {{
-                var r = radios[i];
+            for (var i = 0; i < boxes.length; i++) {{
+                var r = boxes[i];
                 var rv = parseInt(r.value);
-                var colStr = String(col);
-                if (
-                    (!isNaN(rv) && rv === col) ||
-                    String(r.value) === colStr ||
-                    (r.getAttribute('data-value') || '') === colStr
-                ) {{
-                    var wrap = r.closest('label, td, span, li, div') || r;
-                    wrap.scrollIntoView({{behavior:'instant', block:'center'}});
-                    try {{ r.dispatchEvent(new MouseEvent('mousedown',{{bubbles:true,button:0}})); }} catch(_) {{}}
+                var hit = false;
+                for (var w = 0; w < wanted.length; w++) {{
+                    var colStr = String(wanted[w]);
+                    if ((!isNaN(rv) && rv === parseInt(colStr))
+                            || String(r.value) === colStr
+                            || (r.getAttribute('data-value') || '') === colStr) {{
+                        hit = true;
+                        break;
+                    }}
+                }}
+                if (!hit) continue;
+
+                var wrap = r.closest('label, td, span, li, div') || r;
+                wrap.scrollIntoView({{behavior:'instant', block:'center'}});
+                try {{ r.dispatchEvent(new MouseEvent('mousedown',{{bubbles:true,button:0}})); }} catch(_) {{}}
+                if (r.type === 'checkbox') {{
+                    // 复选框绝不能"先置 checked 再补一个合成 click" —— 那次 click
+                    // 会把它**再翻回未选中**，于是脚本报告成功、页面上一格都没勾。
+                    // radio 没这个问题（click 只会把它置为选中），所以旧序列原样保留。
+                    if (!r.checked) {{ r.click(); }}
+                    try {{ r.dispatchEvent(new Event('input', {{bubbles:true}})); }} catch(_) {{}}
+                    try {{ r.dispatchEvent(new Event('change', {{bubbles:true}})); }} catch(_) {{}}
+                }} else {{
                     r.checked = true;
                     try {{ r.dispatchEvent(new Event('input', {{bubbles:true}})); }} catch(_) {{}}
                     try {{ r.dispatchEvent(new Event('change', {{bubbles:true}})); }} catch(_) {{}}
                     try {{ r.dispatchEvent(new MouseEvent('click', {{bubbles:true,button:0}})); }} catch(_) {{}}
-                    // 装饰样式
-                    var a = wrap.querySelector ? wrap.querySelector('a, .jqradio, .radio-label') : null;
-                    if (a) {{
-                        a.classList.add('jqchecked', 'checked', 'active');
-                        // 兄弟移除选中态
+                }}
+                // 装饰样式
+                var a = wrap.querySelector ? wrap.querySelector('a, .jqradio, .radio-label') : null;
+                if (a) {{
+                    a.classList.add('jqchecked', 'checked', 'active');
+                    if (!isMulti) {{
+                        // 行内单选才需要互斥；多选同行要能共存
                         var sibs = wrap.parentNode ? wrap.parentNode.querySelectorAll('a,.jqradio,.radio-label') : [];
                         sibs.forEach(function(s){{ if(s !== a) s.classList.remove('jqchecked','checked','active'); }});
                     }}
-                    anyHit = true;
-                    break;
                 }}
+                anyHit = true;
+                if (!isMulti) break;
             }}
         }});
 
         return anyHit;
+    """
+
+
+# ============================================================================
+#  sort 模块：排序题（v3.0）
+# ============================================================================
+
+def fill_sort_script(q: int, order: list) -> str:
+    """排序题的 JS：把列表按 ``order`` 重排，并写回承载提交值的隐藏 input。
+
+    两条腿一起走：
+      * 重排 DOM（``li`` 顺序）—— 页面的排序控件与"可见顺序"就靠它；
+      * 写 ``input[name=qN]`` 的逗号串 —— 问卷星提交的是这个隐藏域的值。
+    只重排 DOM 不写值，平台收到的是空序；只写值不重排，页面自己的校验脚本会把它
+    按界面上的顺序覆盖回去。所以两条都做才返回 True —— 任一条做不到就 False，
+    让上层把这题记成失败，而不是交一份"看起来答了"的排序题。
+    """
+    order_json = json.dumps(order, ensure_ascii=False, default=str)
+    return f"""
+        var q = {q};
+        var order = {order_json};
+
+        function sortIdOf(li, idx) {{
+            var v = li.getAttribute('value') || li.getAttribute('data-value')
+                 || li.getAttribute('data-id');
+            return (v === null || v === '') ? String(idx + 1) : String(v);
+        }}
+
+        // ---- 1. 定位排序容器：题号能归上的那个 sort 列表 ----
+        var ul = null;
+        var byId = document.getElementById('q' + q);
+        if (byId && /sort/i.test(byId.className || '')) {{
+            ul = byId;
+        }} else {{
+            var scope = document.getElementById('div' + q)
+                     || document.getElementById('divquestion' + q)
+                     || document.querySelector('[data-q="' + q + '"]')
+                     || document.querySelector('[id="q' + q + '"]');
+            scope = scope ? scope.parentNode : null;
+            var lists = scope ? scope.querySelectorAll('ul, ol') : [];
+            for (var i = 0; i < lists.length; i++) {{
+                if (/sort/i.test(lists[i].className || '')) {{ ul = lists[i]; break; }}
+            }}
+        }}
+        if (!ul) return false;
+
+        // ---- 2. 按 order 重排 li ----
+        var lis = [];
+        for (var c = 0; c < ul.children.length; c++) {{
+            if (ul.children[c].tagName === 'LI') lis.push(ul.children[c]);
+        }}
+        if (lis.length < 2) return false;
+        var byId2 = {{}};
+        lis.forEach(function(li, idx) {{ byId2[sortIdOf(li, idx)] = li; }});
+
+        var wanted = [];
+        order.forEach(function(v) {{
+            var li = byId2[String(v)];
+            if (li && wanted.indexOf(li) === -1) wanted.push(li);
+        }});
+        lis.forEach(function(li) {{ if (wanted.indexOf(li) === -1) wanted.push(li); }});
+        if (wanted.length !== lis.length) return false;   // 顺序里有认不出的项
+        wanted.forEach(function(li) {{ ul.appendChild(li); }});
+
+        // ---- 3. 写回提交值（隐藏 input 若存在） ----
+        var inp = document.querySelector('input[name="q' + q + '"]');
+        if (!inp) inp = ul.parentNode
+            ? ul.parentNode.querySelector('input[type="hidden"]') : null;
+        if (!inp) return false;
+        inp.value = wanted.map(function(li, idx) {{
+            return li.getAttribute('value') || li.getAttribute('data-value')
+                || li.getAttribute('data-id') || String(idx + 1);
+        }}).join(',');
+        try {{ inp.dispatchEvent(new Event('input', {{bubbles:true}})); }} catch(_) {{}}
+        try {{ inp.dispatchEvent(new Event('change', {{bubbles:true}})); }} catch(_) {{}}
+        // jQuery UI sortable 的监听点在 sortstop 上，补一发让页面同步内部状态
+        try {{
+            ul.dispatchEvent(new Event('sortstop', {{bubbles:true}}));
+            if (window.jQuery) {{ window.jQuery(ul).trigger('sortstop'); }}
+        }} catch(_) {{}}
+        return true;
     """
 
 
@@ -433,12 +553,9 @@ def fill_matrix_single_script(q: int, row_selections: dict) -> str:
 # V2.4 整改：提交按钮选择器的"单一真相"——原先 submit.py 的 SELECTORS 与
 # 这里的数组字面量各维护一份，存在漂移隐患；现在 Python 侧（submit.SELECTORS）
 # 与 JS 兜底脚本都从这一个列表派生。
-SUBMIT_SELECTORS: list[str] = [
-    "#divSubmit", "#submit_button", "#ctlNext",
-    "button[type='submit']", "input[type='submit']",
-    ".submitbtn", "#submitBtn", "#submitDiv", ".btn-submit",
-    ".submitbtn.clickable", "#ctl00_ContentPlaceHolder1_ctlSubmit",
-]
+# v3.0：常量本体搬进平台层（src/platforms.py 的 SurveyPlatform.submit_selectors），
+# 这里只留一个同名派生视图 —— Python 侧循环与 JS 兜底脚本仍共用同一份真相。
+SUBMIT_SELECTORS: list[str] = list(WJX.submit_selectors)
 
 
 def submit_button_fallback_script() -> str:

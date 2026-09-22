@@ -18,9 +18,11 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from .config import VERIFICATION_TIMEOUT
+from .browser.driver_factory import driver_is_headless
+from .exceptions import SubmissionAborted
 from .utils import ManualHoldLock
 
 logger = logging.getLogger(__name__)
@@ -224,6 +226,7 @@ def wait_for_manual_verification(
     driver: Any,
     timeout_seconds: int = VERIFICATION_TIMEOUT,
     hold_lock: ManualHoldLock | None = None,
+    abort_check: Callable[[], bool] | None = None,
 ) -> bool:
     """等待用户手动完成验证码（接入人工介入锁，避免误判超时刷新）。
 
@@ -240,7 +243,19 @@ def wait_for_manual_verification(
       driver           : Selenium WebDriver 实例
       timeout_seconds  : 最长等待秒数，默认 VERIFICATION_TIMEOUT (120s)
       hold_lock        : 可选 ManualHoldLock 实例，外部共享
+      abort_check      : 每轮轮询（≈2s）问一次；返回 True → 抛 ``SubmissionAborted``。
+                         给 GUI 停止按钮用：此前一次验证码等待最长能把一批任务
+                         挂住 ``timeout_seconds``（默认 120s），期间点停止没反应。
+                         抛出前会走完 ``finally``，人工介入锁一定被释放。
     """
+    # v3.0 无头模式：这里等的是一个不存在的人。停止谓词也救不了"没人能点"，
+    # 所以直接判本轮失败让批次往前走，而不是白挂 VERIFICATION_TIMEOUT 秒。
+    # 刻意在 acquire 锁**之前**返回：挂了锁反而要让外部超时逻辑跟着让路。
+    if driver_is_headless(driver):
+        print("    [验证] 无头模式下无法人工完成验证 → 本轮判失败"
+              "（要去掉 --headless 才能过智能验证）")
+        return False
+
     print("")
     print("    " + "=" * 50)
     print("    !!  检测到智能验证，请在浏览器中手动完成验证  !!")
@@ -260,6 +275,12 @@ def wait_for_manual_verification(
         while waited < timeout_seconds:
             time.sleep(2)
             waited += 2
+
+            # 用户请求停止：立刻结束等待并上抛控制流信号。
+            # 刻意不刷新页面 —— 都已经被要求停了，再发一次请求毫无意义。
+            if abort_check is not None and abort_check():
+                print("    收到停止请求，结束验证码等待（本轮不会提交）")
+                raise SubmissionAborted("用户在验证码等待期间请求停止")
 
             # 三态判定：只有"确认页面上没有验证"才放行。
             # 探测本身抛异常时继续等（上限仍是 timeout_seconds），因为此刻

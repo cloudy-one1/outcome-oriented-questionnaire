@@ -108,4 +108,4 @@ v2.0 模块变更日志：
 from .config import WEIGHT_CONFIG
 
 __all__ = ["WEIGHT_CONFIG"]
-__version__ = "2.8.0"
+__version__ = "3.0.0"

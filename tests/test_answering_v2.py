@@ -202,5 +202,91 @@ class TestNewQuestionTypes(unittest.TestCase):
             self.assertEqual(ans["rows"][2], 1)
 
 
+class TestWeightsFromConfigApply(unittest.TestCase):
+    """v3.0：填空题候选词与矩阵行权重**真的**能从权重配置里生效。
+
+    这两条此前是"文档承诺了但代码从不读"：``generate_answer`` 只看
+    ``question["options"]`` / ``question["row_weights"]``，而 ``detect_questions``
+    回来的题目永远没有这两个键 —— 于是 README 权重配置表里写的
+    ``text.options`` 与 ``matrix_single.row_weights`` 一路静默走内置随机。
+    GUI 表格敲的候选词/矩阵行权重同理（探测→表格→另存→运行 整条链路看着都对）。
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from src import answering_v2  # type: ignore
+        cls.mod: Any = answering_v2
+
+    def setUp(self) -> None:
+        from src import config
+        self.config = config
+        self._saved = dict(config.WEIGHT_CONFIG)
+        config.WEIGHT_CONFIG.clear()
+
+    def tearDown(self) -> None:
+        self.config.WEIGHT_CONFIG.clear()
+        self.config.WEIGHT_CONFIG.update(self._saved)
+
+    # -------------------------------------------------------------- 填空
+    def test_text_options_come_from_weight_config(self) -> None:
+        self.config.WEIGHT_CONFIG[5] = {
+            "type": "text", "field": "name", "options": ["张三", "李四"],
+        }
+        q = {"q": 5, "type": "text", "field": "name"}
+        for _ in range(30):
+            self.assertIn(self.mod.generate_answer(q)["text"], {"张三", "李四"})
+
+    def test_text_options_reach_through_an_anchor(self) -> None:
+        """候选词 + 锚点：插题之后照样只从这份池子里取。"""
+        self.config.WEIGHT_CONFIG[5] = {
+            "type": "text", "field": "name", "options": ["张三", "李四"],
+            "anchor": {"title": "请填写您的姓名", "signature": "text"},
+        }
+        q = {"q": 9, "type": "text", "field": "name", "title": "请填写您的姓名"}
+        for _ in range(10):
+            self.assertIn(self.mod.generate_answer(q)["text"], {"张三", "李四"})
+
+    def test_no_options_keeps_builtin_generation(self) -> None:
+        """对照组：没给候选词时仍走内置姓名生成，不能被改成"返回空串"。"""
+        self.config.WEIGHT_CONFIG[5] = {"type": "text", "field": "name"}
+        text = self.mod.generate_answer({"q": 5, "type": "text", "field": "name"})["text"]
+        self.assertRegex(text, r"^[一-龥]{2,4}$")
+
+    # -------------------------------------------------------------- 矩阵
+    def test_matrix_row_weights_come_from_weight_config(self) -> None:
+        self.config.WEIGHT_CONFIG[10] = {
+            "type": "matrix_single", "rows": [1, 2], "cols": [1, 2, 3],
+            "row_weights": {1: [1, 0, 0], 2: [0, 0, 1]},
+        }
+        q = {"q": 10, "type": "matrix_single", "rows": [1, 2], "cols": [1, 2, 3]}
+        for _ in range(20):
+            rows = self.mod.generate_answer(q)["rows"]
+            self.assertEqual(rows[1], 1)
+            self.assertEqual(rows[2], 3)
+
+    def test_matrix_row_weights_with_string_keys(self) -> None:
+        """GUI 权重表产出的是 ``"1": [...]`` 字符串键 —— 必须照样命中。
+
+        行号键不统一类型的话 ``row_weights.get(1)`` 永远查不到，
+        而"配了没生效"在这里同样一声不响。
+        """
+        self.config.WEIGHT_CONFIG[10] = {
+            "type": "matrix_single", "rows": [1, 2], "cols": [1, 2, 3],
+            "row_weights": {"1": [1, 0, 0], "2": [0, 0, 1]},
+        }
+        q = {"q": 10, "type": "matrix_single", "rows": [1, 2], "cols": [1, 2, 3]}
+        rows = self.mod.generate_answer(q)["rows"]
+        self.assertEqual((rows[1], rows[2]), (1, 3))
+
+    def test_question_level_row_weights_still_win(self) -> None:
+        """题目自带的 row_weights 优先于全局配置（v2.0 既有行为不变）。"""
+        self.config.WEIGHT_CONFIG[10] = {
+            "type": "matrix_single", "row_weights": {1: [1, 0, 0]},
+        }
+        q = {"q": 10, "type": "matrix_single", "rows": [1], "cols": [1, 2, 3],
+             "row_weights": {1: [0, 0, 1]}}
+        self.assertEqual(self.mod.generate_answer(q)["rows"][1], 3)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

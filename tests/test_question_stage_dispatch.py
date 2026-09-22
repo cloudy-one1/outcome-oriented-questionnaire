@@ -1,0 +1,117 @@
+"""``_answer_one_question`` 的题型分发契约（v3.0 新增矩阵多选时补）。
+
+README「已知缺口」里 ``src/pipeline_stages/question_stage.py`` 只有 29%，
+备注是"真实点击仍靠 E2E"。但**分发**本身（哪道题该调哪个 js_* 函数、
+落库的 options_selected 是什么形状）是纯 Python 逻辑，不需要浏览器就能钉住 ——
+新增一个题型时，最容易忘的恰好就是这条接线：JS 与生成器各自都对，
+中间那个 ``elif ans_type == ...`` 漏了，题目就一路静默走"兜底当单选"分支。
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from typing import Any
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src import config  # noqa: E402
+from src.pipeline_stages.question_stage import _answer_one_question  # noqa: E402
+
+
+class RecordingDriver:
+    """只记录被注入的脚本，永远返回"成功"。"""
+
+    def __init__(self) -> None:
+        self.scripts: list[str] = []
+
+    def execute_script(self, script: str, *_args: Any, **_kw: Any) -> Any:
+        self.scripts.append(script)
+        return True
+
+
+@pytest.fixture(autouse=True)
+def _clean_weight_config():
+    saved = dict(config.WEIGHT_CONFIG)
+    config.WEIGHT_CONFIG.clear()
+    yield
+    config.WEIGHT_CONFIG.clear()
+    config.WEIGHT_CONFIG.update(saved)
+
+
+def test_matrix_multi_dispatches_to_the_multi_filler(monkeypatch) -> None:
+    """矩阵多选必须调 js_fill_matrix_multi，且每行勾中的列值摊平进 options_selected。"""
+    calls: list[tuple[int, dict]] = []
+
+    def fake_multi(driver: Any, q: int, row_selections: dict) -> bool:
+        calls.append((q, row_selections))
+        return True
+
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.js_fill_matrix_multi", fake_multi
+    )
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.js_fill_matrix_single",
+        lambda *a, **k: pytest.fail("矩阵多选不该走单选填充器"),
+    )
+
+    q = {"q": 12, "type": "matrix_multi", "rows": [1, 2], "cols": [1, 2, 3],
+         "row_weights": {1: [1, 0, 0], 2: [0, 0, 1]}, "pick_options": [2],
+         "pick_weights": [1]}
+    assert _answer_one_question(RecordingDriver(), q) is True
+
+    assert len(calls) == 1
+    answered_q, row_map = calls[0]
+    assert answered_q == 12
+    # 行 1 权重集中在列 1、行 2 集中在列 3，各勾 2 个 → 次选按等权补齐
+    assert sorted(row_map[1]) == sorted(set(row_map[1]))
+    assert 1 in row_map[1] and 3 in row_map[2]
+
+
+def test_matrix_multi_history_row_is_flattened(monkeypatch) -> None:
+    """落库形状：options_selected 是一维列值列表，与 multi 的明细口径一致。"""
+    recorded: dict[str, Any] = {}
+
+    class FakeHistory:
+        def record_answer(self, **kw: Any) -> None:
+            recorded.update(kw)
+
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.js_fill_matrix_multi",
+        lambda driver, q, row_map: True,
+    )
+    # question_stage 是 `from ..answering_v2 import generate_answer as generate_answer_v2`
+    # —— 名字已绑进本模块命名空间，必须打在这里才生效
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.generate_answer_v2",
+        lambda q: {"type": "matrix_multi", "rows": {1: [2, 4], 2: [1]}},
+    )
+
+    ok = _answer_one_question(
+        RecordingDriver(),
+        {"q": 12, "type": "matrix_multi", "rows": [1, 2], "cols": [1, 2, 3, 4]},
+        history_db=FakeHistory(), run_id=1, submission_index=1,
+    )
+    assert ok is True
+    assert recorded["question_type"] == "matrix_multi"
+    assert recorded["options_selected"] == [2, 4, 1]
+
+
+def test_matrix_single_still_dispatches_to_the_single_filler(monkeypatch) -> None:
+    """对照组：单选的既有分发不能被新分支带偏。"""
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.js_fill_matrix_multi",
+        lambda *a, **k: pytest.fail("单选不该走多选填充器"),
+    )
+    seen: list[Any] = []
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.js_fill_matrix_single",
+        lambda driver, q, row_map: seen.append(row_map) or True,
+    )
+    assert _answer_one_question(
+        RecordingDriver(),
+        {"q": 10, "type": "matrix_single", "rows": [1], "cols": [1, 2, 3]},
+    ) is True
+    assert len(seen) == 1

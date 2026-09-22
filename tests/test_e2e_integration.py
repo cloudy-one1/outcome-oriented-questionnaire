@@ -48,6 +48,7 @@ pytestmark = [
 
 PROJ = Path(__file__).resolve().parent.parent
 FIXTURE_HTML = PROJ / "tests" / "fixtures" / "mock_wjx.html"
+MP_FIXTURE_HTML = PROJ / "tests" / "fixtures" / "mock_wjx_multipage.html"
 
 sys.path.insert(0, str(PROJ))
 
@@ -105,6 +106,20 @@ def driver():
         pass
 
 
+@pytest.fixture(autouse=True)
+def _fresh_page(driver):
+    """每个用例重新加载一次 mock 页面。
+
+    ``driver`` 是 module 作用域（整个文件只开一次浏览器），于是 DOM 状态在用例之间
+    是共享的：上一个用例勾过的 checkbox 会留在页面上，"每行各勾 1 个"这种断言
+    实际测的是累计值（v3.0 加矩阵多选时就是这么红的）。file:// 重新加载只要几十毫秒，
+    换来的是用例可以任意换顺序跑。
+    """
+    driver.get("file:///" + FIXTURE_HTML.as_posix())
+    driver.switch_to.default_content()
+    yield
+
+
 @pytest.fixture()
 def history_db(tmp_path):
     """临时 SQLite history DB。"""
@@ -117,14 +132,14 @@ def history_db(tmp_path):
 
 # ------------------------------ 测试主体 ------------------------------
 
-def test_detection_discovers_all_11_questions(driver):
-    """detection 必须识别出 mock HTML 的全部 11 道题，类型/参数正确。"""
+def test_detection_discovers_all_13_questions(driver):
+    """detection 必须识别出 mock HTML 的全部 13 道题，类型/参数正确。"""
     from src.detection import detect_questions
 
     qs = detect_questions(driver)
-    # 按题号升序，q1..q11 必须都在
+    # 按题号升序，q1..q13 必须都在
     qnums = [q["q"] for q in qs]
-    assert qnums == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], (
+    assert qnums == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13], (
         f"题号集不匹配: {qnums}"
     )
 
@@ -180,6 +195,112 @@ def test_detection_discovers_all_11_questions(driver):
     assert by_q[11]["scale"] == 10, by_q[11]
     assert by_q[11]["scale_min"] == 2, by_q[11]
 
+    # 12. matrix_multi —— 行内是 checkbox 的矩阵（v3.0 新增题型）
+    # 只看 radio 的旧逻辑会把它判成"没有矩阵"，或干脆被 section 1 留在 multi：
+    # 于是每题答的是"一个列值"，形状与页面要求不符，提交被平台拒。
+    assert by_q[12]["type"] == "matrix_multi", by_q[12]
+    assert by_q[12]["rows"] == [1, 2, 3], by_q[12]
+    assert by_q[12]["cols"] == [1, 2, 3, 4], by_q[12]
+    assert "choices" not in by_q[12], "矩阵题的顶层 choices 必须清掉（与单选同规则）"
+
+    # 13. sort —— 排序题（v3.0 新增题型）
+    assert by_q[13]["type"] == "sort", by_q[13]
+    assert by_q[13]["items"] == ["1", "2", "3", "4"], by_q[13]
+
+
+def test_matrix_multi_actually_gets_checked_in_the_dom(driver):
+    """矩阵多选要真的把 checkbox 勾上，而不是"JS 生成了但一行都没命中"。
+
+    ``anyHit`` 返回 True 只说明脚本跑完了；这里直接读 DOM 的 checked 状态，
+    并且确认**每行至少一个** —— 少一行就会触发平台的"每行必选"校验。
+    """
+    import json
+
+    from src.answering_v2 import generate_answer
+    from src.detection import detect_questions
+    from src.interactions.matrix import js_fill_matrix_multi
+
+    q = next(x for x in detect_questions(driver) if x["q"] == 12)
+    ans = generate_answer(q)
+    assert ans["type"] == "matrix_multi"
+    assert js_fill_matrix_multi(driver, 12, ans["rows"]) is True
+
+    states = driver.execute_script(
+        "return JSON.stringify([1,2,3].map(function(r) {"
+        "  var box = document.querySelectorAll('input[name=q12_' + r + ']');"
+        "  var hit = 0;"
+        "  box.forEach(function(b) { if (b.checked) hit += 1; });"
+        "  return hit;"
+        "}));"
+    )
+    hits = json.loads(states)
+    assert hits == [1, 1, 1], f"每行应各勾中 1 个（默认 pick_options=[1]），实际 {hits}"
+
+
+def test_sort_question_writes_order_into_dom_and_hidden_input(driver):
+    """排序题必须**同时**重排 DOM 与写隐藏 input，缺一条就是"看起来答了"。
+
+    只重排不写值 → 平台收到空序；只写值不重排 → 页面的 sortable 监听会按
+    界面上的顺序把值覆盖回去。这两条在真 DOM 里都测不出来，Python 侧全绿。
+    """
+    import json as _json
+
+    from src.answering_v2 import generate_answer
+    from src.detection import detect_questions
+    from src.interactions.sort import js_fill_sort
+
+    q = next(x for x in detect_questions(driver) if x["q"] == 13)
+    order = generate_answer(q)["order"]
+    assert sorted(order) == ["1", "2", "3", "4"], f"每项都得有一个位置: {order}"
+
+    assert js_fill_sort(driver, 13, order) is True
+
+    dom_order = driver.execute_script(
+        "return JSON.stringify(Array.prototype.map.call("
+        "  document.querySelectorAll('#q13_list li'),"
+        "  function(li) { return li.getAttribute('value'); }));"
+    )
+    hidden_val = driver.execute_script(
+        "return document.querySelector('input[name=q13]').value;"
+    )
+    assert _json.loads(dom_order) == order, f"DOM 顺序没跟着答案走: {dom_order}"
+    assert hidden_val == ",".join(order), f"提交值没写进隐藏域: {hidden_val!r}"
+
+    # 结构对不上时必须 False（宁可该题判失败，也不交一份假答好的排序题）
+    assert js_fill_sort(driver, 99, ["1", "2"]) is False
+
+
+def test_detection_extracts_question_titles_for_anchoring(driver):
+    """v3.0 权重锚定的前提：探测能把**题干**带回来（只有真 DOM 抓得住这条）。
+
+    Python 侧的单测全部喂手工 dict，锚点匹配、序号剥离都只算"逻辑成立"；
+    题面元素的选择器写错（或只取到整个容器的 textContent），
+    离线一律绿，实际保存出去的 anchor 却是空的或一串选项文字 —— 锚定静默失效。
+    """
+    from src import anchoring
+    from src.detection import detect_questions
+
+    by_q = {q["q"]: q for q in detect_questions(driver)}
+
+    # 1) 题面被识别到，且不含选项文案
+    title1 = by_q[1].get("title", "")
+    assert "您的性别" in title1, f"题干没取到: {by_q[1]!r}"
+    assert "男" not in title1, f"题干把选项文案吸进来了: {title1!r}"
+
+    # 2) 归一化后能剥掉 <span class="idx">1.</span> 这层序号
+    norm = anchoring.normalize_title(title1)
+    assert norm.startswith("您的性别"), f"题号前缀没剥掉: {title1!r} → {norm!r}"
+
+    # 3) 每题都该有题面；缺一个就意味着 anchor 会静默不写
+    missing = [n for n, q in by_q.items() if not str(q.get("title") or "").strip()]
+    assert not missing, f"以下题目没取到题干: {missing}"
+
+    # 4) 锚点闭环：由探测结果造锚点 → 放回同一题必须认领，且结构签名对得上
+    anchor = anchoring.make_anchor(by_q[2])
+    assert anchor is not None
+    assert anchoring.anchor_matches_question(anchor, by_q[2]) is True
+    assert anchoring.anchor_matches_question(anchor, by_q[1]) is False
+
 
 def test_full_pipeline_fill_and_history(driver, history_db):
     """端到端：检测 → 生成答案 → 填写 DOM → 落 history → 断言 DOM/DB。"""
@@ -192,6 +313,7 @@ def test_full_pipeline_fill_and_history(driver, history_db):
         js_select_dropdown,
         js_fill_matrix_single,
     )
+    from src.interactions.matrix import js_fill_matrix_multi
 
     qs = detect_questions(driver)
     by_q = {q["q"]: q for q in qs}
@@ -276,6 +398,33 @@ def test_full_pipeline_fill_and_history(driver, history_db):
     )
     answers_record[10] = a10
 
+    # ============ Q12: matrix_multi（v3.0 新题型）============
+    a12 = generate_answer(by_q[12])
+    assert a12["type"] == "matrix_multi"
+    rows12 = a12["rows"]
+    assert set(rows12.keys()) == set(by_q[12]["rows"])
+    for picked in rows12.values():
+        assert isinstance(picked, list) and 1 <= len(picked) <= len(by_q[12]["cols"])
+        assert len(set(picked)) == len(picked), "同一行不能勾出重复列"
+        assert all(int(c) in by_q[12]["cols"] for c in picked)
+    assert js_fill_matrix_multi(driver, 12, rows12) is True
+    flat12 = [int(c) for vals in rows12.values() for c in vals]
+    history_db.record_answer(
+        run_id, submission_index, 12, "matrix_multi",
+        options_selected=flat12,
+    )
+    answers_record[12] = a12
+
+    q12_hits = driver.execute_script(
+        "return JSON.stringify([1,2,3].map(function(r) {"
+        "  return document.querySelectorAll("
+        "    'input[name=q12_' + r + ']:checked').length;"
+        "}));"
+    )
+    assert json.loads(q12_hits) == [len(x) for x in rows12.values()], (
+        f"矩阵多选的 DOM 实际勾选数与答案不符: {q12_hits} vs {rows12}"
+    )
+
     # ---------- finish run ----------
     history_db.finish_run(
         run_id, success_count=1, fail_count=0,
@@ -340,8 +489,8 @@ def test_full_pipeline_fill_and_history(driver, history_db):
     assert r0["use_uc"] == 0
 
     ans = history_db.query_answers(run_id=run_id)
-    # 10 道题 → 10 条 answer 记录
-    assert len(ans) == 10, f"期望 10 条 answer，实际 {len(ans)}"
+    # 11 道题 → 11 条 answer 记录
+    assert len(ans) == 11, f"期望 11 条 answer，实际 {len(ans)}"
     ans_by_q = {a["question_number"]: a for a in ans}
 
     # Q1 single
@@ -441,6 +590,55 @@ def test_submit_does_not_reclick_when_page_is_busy(driver):
     assert after - before == 1, (
         f"URL 读取抖动导致重复提交：本轮实际点击 {after - before} 次"
     )
+
+
+def test_multipage_survey_answers_both_pages_then_submits_once(driver, history_db):
+    """v3.0 分页问卷：两页都要答完，且**只在最后一页**点提交。
+
+    这是分页支持真正的验收点，三条都只能在真浏览器里查：
+      1. 探测必须只看当前可见页 —— 否则会在第 1 页去点第 3 题（第 2 页的控件），
+         平台只收当前页的输入，结果是"整卷答完"仍被判未答；
+      2. 翻页后必须继续答第二页，而不是把第一页当整卷交上去；
+      3. 提交按钮只能点一次（``#ctlNext`` 一类歧义键误点会提前翻页/提交）。
+    """
+    from src.detection import detect_questions
+    from src.pipeline import run_one_submission
+    from src.utils import ManualHoldLock
+
+    url = "file:///" + MP_FIXTURE_HTML.as_posix()
+    driver.get(url)
+
+    page1 = detect_questions(driver)
+    assert [q["q"] for q in page1] == [1, 2], (
+        f"第 1 页不该看到第 2 页的题: {[q['q'] for q in page1]}"
+    )
+
+    run_id = history_db.start_run(url, 1, "edge", False)
+    outcome = run_one_submission(
+        driver, url, ManualHoldLock(),
+        history_db=history_db, run_id=run_id, submission_index=1,
+    )
+    history_db.finish_run(
+        run_id,
+        success_count=1 if outcome == "success" else 0,
+        fail_count=0 if outcome == "success" else 1,
+        total_elapsed_seconds=1.0, status="finished",
+    )
+
+    assert outcome == "success", f"分页 mock 应能答完两页并提交，实际 {outcome!r}"
+    assert driver.execute_script("return window.__submitClicks;") == 1, "只能提交一次"
+
+    # 两页各自的题都被真的勾/填上了
+    for name in ("q1", "q3"):
+        assert driver.execute_script(
+            f"return document.querySelectorAll('input[name={name}]:checked').length;"
+        ) == 1, f"{name} 没被答上"
+    assert driver.execute_script(
+        "return (document.getElementById('q2').value || '').trim().length > 0;"
+    ) is True, "第 1 页的填空没写进去"
+
+    qnums = sorted({int(a["question_number"]) for a in history_db.query_answers(run_id=run_id)})
+    assert qnums == [1, 2, 3], f"逐题明细应覆盖两页的全部题目，实际 {qnums}"
 
 
 def test_full_submission_roundtrip_through_pipeline(driver, history_db):

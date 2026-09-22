@@ -27,7 +27,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from src import answering
+from src import answering, config
 from src.config_io import load_weight_config, validate_weight_config
 
 EXAMPLE_PATH = os.path.join(ROOT, "examples", "weight_config.example.json")
@@ -46,11 +46,11 @@ def _shipped_weight_config_keys() -> list[int]:
 class TestShippedDefaults(unittest.TestCase):
     def setUp(self) -> None:
         # 本文件的用例必须在**未被改写的**全局配置上跑，先断言再测行为。
-        self._saved = dict(answering.WEIGHT_CONFIG)
+        self._saved = dict(config.WEIGHT_CONFIG)
 
     def tearDown(self) -> None:
-        answering.WEIGHT_CONFIG.clear()
-        answering.WEIGHT_CONFIG.update(self._saved)
+        config.WEIGHT_CONFIG.clear()
+        config.WEIGHT_CONFIG.update(self._saved)
 
     # ------------------------------------------------------------------
     #  1. 出厂默认为空
@@ -74,7 +74,7 @@ class TestShippedDefaults(unittest.TestCase):
     #  2. 空配置 → 等权（README「方式一」的承诺）
     # ------------------------------------------------------------------
     def test_single_choice_without_config_is_uniform(self) -> None:
-        answering.WEIGHT_CONFIG.clear()
+        config.WEIGHT_CONFIG.clear()
         random.seed(20260921)
         q = {"q": 1, "type": "single", "choices": [1, 2, 3, 4]}
         n = 20000
@@ -93,7 +93,7 @@ class TestShippedDefaults(unittest.TestCase):
         旧实现里 Q5 的实测分布是 0.01/0.05/0.10/0.64/0.20 —— 单看某一道题
         很容易当成"随机数本来就这样"，所以这里按题号逐个卡住。
         """
-        answering.WEIGHT_CONFIG.clear()
+        config.WEIGHT_CONFIG.clear()
         random.seed(20260922)
         for qi in (1, 5, 14, 22):
             n_opts = {1: 4, 5: 5, 14: 5, 22: 5}[qi]

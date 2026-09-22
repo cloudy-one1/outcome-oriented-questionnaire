@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from argparse import Namespace
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -33,10 +34,12 @@ from .config import (
 )
 from .exceptions import (
     TRANSIENT_DOM_EXCEPTIONS,
+    SubmissionAborted,
     format_exc_log,
     raise_non_recoverable,
 )
 from .models import RunState, SubmitOutcome
+from .platforms import unsupported_url_notice
 
 from . import __version__
 
@@ -88,6 +91,34 @@ def parse_args(argv: list[str] | None = None) -> Namespace:
         type=str,
         default=None,
         help="问卷星问卷的完整 URL（必填；出于合规考虑不再内置默认线上问卷）",
+    )
+    parser.add_argument(
+        "--url-file",
+        dest="url_file",
+        type=str,
+        default=None,
+        help="v3.0 顺序队列：每行一条 'URL[,份数]'，与 -u 同时给出时 -u 先跑。"
+             "共用同一份 --config 与 --history（不做断点续传，--resume 与此项互斥）。",
+    )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="v3.0 无头模式（仅调试：问卷星对无头敏感，且智能验证一出现就判本轮失败）",
+    )
+    parser.add_argument(
+        "--profile-dir",
+        dest="profile_dir",
+        type=str,
+        default=None,
+        help="v3.0 复用浏览器 profile 目录（登录态/磁盘痕迹）；同一目录不能同时开两个实例",
+    )
+    parser.add_argument(
+        "--max-total-time",
+        dest="max_total_time",
+        type=_positive_int,
+        default=None,
+        metavar="SECONDS",
+        help="v3.0 整批墙钟上限（秒）：到点按优雅停止收工，下次 --resume 可继续",
     )
     parser.add_argument(
         "-n", "--count",
@@ -250,7 +281,8 @@ class RoundOutcome:
 
     index: int                 # 绝对第几份（续传时从 resume_start_idx 起算）
     outcome: SubmitOutcome | str
-    """三态之一，或引擎内部标记：'error'（本轮抛异常）、'browser_dead'（浏览器重建）"""
+    """三态之一，或引擎内部标记：'error'（本轮抛异常）、'browser_dead'（浏览器重建）、
+    'aborted'（用户在轮内请求停止，该份未提交、不计入成功也不计入失败）"""
     message: str = ""          # 一行人类可读摘要（GUI 直接显示）
     state: "RunState | None" = None   # 实时状态引用（计数器已更新）
 
@@ -313,6 +345,9 @@ def run_batch(
     log: "Callable[[str], None] | None" = None,
     stop_check: "Callable[[], bool] | None" = None,
     error_suffix: str = "",
+    headless: bool = False,
+    user_data_dir: str | None = None,
+    max_total_seconds: float | None = None,
 ) -> tuple[int, int]:
     """批量执行指定份数的问卷提交 —— **CLI 与 GUI 共用的唯一批次引擎**。
 
@@ -331,11 +366,21 @@ def run_batch(
                    为 None 时按 resume_* 新建（CLI 路径）。
         on_round   : 每完成一份回调一次 ``RoundOutcome``，供 UI 刷日志与进度条。
         log        : 文本输出目的地，默认 ``print``。GUI 传自己的日志面板方法。
-        stop_check : 每轮开始前询问一次是否应优雅停止（GUI 的停止按钮）。
+        stop_check : 返回 True → 优雅停止。三个生效点（v3.0 起）：
+                     ① 每轮开始前（v2.6 起）；② 轮内逐题边界与每题之间的思考停顿
+                     （v3.0 起，见 SubmissionAborted —— 该份不提交、不计失败，
+                     以 'aborted' 回调后结束批次）；③ 轮间 human_pause 的 abort_check。
                      返回 True → mark_interrupted 并结束批次。
-                     同时透传给 human_pause 的 abort_check，使轮间停顿可被打断。
         error_suffix : 追加到 runs.error_message 尾部的备注（GUI 用它标注
                      "GUI · browser=edge uc=False"）。CLI 不传，保持原样。
+
+    v3.0 运行形态参数（都只在 CLI 传）：
+        headless        : 无头浏览器。问卷星对无头敏感，且**智能验证一出现就判
+                          本轮失败**（无头里没有"抬手就能拉滑块的那个人"）。
+        user_data_dir   : 浏览器 profile 目录，跨批次复用登录态与磁盘痕迹。
+                          同一目录不能被两个实例同时占用，所以队列是顺序跑的。
+        max_total_seconds : 整批墙钟上限。到点按"优雅停止"处理：mark_interrupted
+                          后结束，因此下次 --resume 能接着跑（区别于崩溃的 failed）。
 
     V2 参数：
         history_db : SubmissionHistory 实例或 None；非 None 时会
@@ -391,8 +436,16 @@ def run_batch(
     def _log(msg: str) -> None:
         (log or print)(msg)
 
+    # v3.0 平台层：域名对不上已适配平台时，批次一定会失败在"探测题目结构"，
+    # 而日志看上去像"DOM 适配出了问题"。提前一行说清楚，不拦停（分享域名变体多）。
+    _notice = unsupported_url_notice(survey_url)
+    if _notice:
+        _log(_notice)
+
     # 首次创建浏览器实例
-    driver = create_driver(browser, use_uc=use_uc)
+    driver_kwargs = {"use_uc": use_uc, "headless": headless,
+                     "user_data_dir": user_data_dir}
+    driver = create_driver(browser, **driver_kwargs)
 
     # V2.4 修复：人工介入锁贯穿整轮批次（验证码等待期间 pipeline 依赖它避免误判超时）。
     # 此前 v2.3 重构后本函数从未创建 lock 也未传入 run_one_submission，
@@ -462,6 +515,9 @@ def run_batch(
         )
         state.total_elapsed_start = _t.perf_counter()
 
+    if not state.total_elapsed_start:
+        state.total_elapsed_start = time.perf_counter()
+
     def _emit(res: RoundOutcome) -> None:
         """回调 on_round（若给了）—— 计数器已在 state 上更新完毕。"""
         if on_round is not None:
@@ -484,6 +540,15 @@ def run_batch(
             if stop_check is not None and stop_check():
                 state.mark_interrupted()
                 _log("已停止运行（已成功份数可下次恢复）")
+                break
+
+            # v3.0 --max-total-time：到点按优雅停止处理（不是崩溃），因此可续传
+            if max_total_seconds is not None and (
+                time.perf_counter() - state.total_elapsed_start >= float(max_total_seconds)
+            ):
+                state.mark_interrupted()
+                _log(f"[时限] 已达 --max-total-time={max_total_seconds:.0f}s，"
+                     "停止运行（下次 --resume 可继续）")
                 break
 
             # target_success 模式：达成目标成功数即可提前结束
@@ -513,13 +578,27 @@ def run_batch(
                     run_id=state.run_id,
                     submission_index=displayed_idx,
                     no_record_text=no_record_text,
+                    stop_check=stop_check,
                 )
+
+            except SubmissionAborted as _ab:
+                # 用户在这份问卷答到一半时点了停止：这一份**从未被提交**，
+                # 所以既不计成功也不计失败（计失败会把成功率人为压低）。
+                # 批次以 interrupted 闭合，下次 --resume 从这一份重来。
+                # v3.0：此前该谓词只在轮间生效，答到一半必须等完整份（≈4.5s/题）。
+                _log(f"{prefix} ABORT · {_ab.reason}")
+                state.mark_interrupted()
+                _emit(RoundOutcome(
+                    index=displayed_idx, outcome="aborted",
+                    message=f"已停止：{_ab.reason}", state=state,
+                ))
+                break
 
             except (InvalidSessionIdException, NoSuchWindowException):
                 # 浏览器窗口被用户手动关闭，或进程崩溃 —— 重建 driver 后继续
                 _log(f"{prefix} BROWSER_DEAD")
                 _quit_quietly(driver)
-                driver = create_driver(browser, use_uc=use_uc)  # 重新创建浏览器
+                driver = create_driver(browser, **driver_kwargs)  # 重新创建浏览器
                 state.mark_failure()
                 _emit(RoundOutcome(
                     index=displayed_idx, outcome="browser_dead",
@@ -573,7 +652,7 @@ def run_batch(
             if state.current_attempt % RESTART_BROWSER_EVERY == 0:
                 _log(f"{prefix} RESTART")
                 _quit_quietly(driver)
-                driver = create_driver(browser, use_uc=use_uc)
+                driver = create_driver(browser, **driver_kwargs)
 
             # --- 轮次间隔：正态分布 + 5% 概率真的去"看手机/喝水" ---
             # V2.6：传入 stop_check，用户点停止时不必等满整段高斯停顿
@@ -655,11 +734,12 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
 
     # V2.4：URL 必填（合规——不再内置真实线上问卷作为默认值）
-    if not args.url or not str(args.url).strip():
-        print("[error] 必须通过 -u/--url 指定问卷 URL")
+    # v3.0：--url-file 也算给了 URL
+    if not (args.url and str(args.url).strip()) and not args.url_file:
+        print("[error] 必须通过 -u/--url 或 --url-file 指定问卷 URL")
         sys.exit(2)
 
-    SURVEY_URL = args.url
+    SURVEY_URL = (args.url or "").strip()
     TOTAL_SUBMISSIONS = args.count
     BROWSER = args.browser
     USE_UC = args.use_uc
@@ -813,21 +893,68 @@ def main(argv: list[str] | None = None) -> None:
         print(f"断点续传 : Run #{resume_run_id}（已完成 {resume_done} 份）")
     print("=" * 60)
 
-    success, fail = run_batch(
-        SURVEY_URL,
-        TOTAL_SUBMISSIONS,
-        browser=BROWSER,
-        use_uc=USE_UC,
-        history_db=history_db,
-        weight_config=dict(WEIGHT_CONFIG) if WEIGHT_CONFIG else None,
-        no_record_text=args.no_record_text,
-        target_success=args.target_success,
-        max_attempts=args.max_attempts,
-        resume_run_id=resume_run_id,
-        resume_done=resume_done,
-        resume_fail=resume_fail,
-    )
-    print(f"运行结束 — 成功 {success}, 失败 {fail}")
+    # ---------- v3.0：--url-file 顺序队列 ----------
+    # 队列是**顺序**跑的，而且刻意不做并发：同时开多个浏览器会直接稀释
+    # 「正态分布人类行为」这条立身点（README「明确不做」里记着）。
+    targets: list[tuple[str, int]] = []
+    if SURVEY_URL:
+        targets.append((SURVEY_URL, TOTAL_SUBMISSIONS))
+    if args.url_file:
+        try:
+            with open(args.url_file, "r", encoding="utf-8-sig") as _qf:
+                _lines = _qf.read().splitlines()
+        except OSError as _qe:
+            print(f"[queue] 读取 --url-file 失败: {type(_qe).__name__}: {_qe}")
+            sys.exit(2)
+        for _ln in _lines:
+            _line = _ln.strip()
+            if not _line or _line.startswith("#"):
+                continue
+            _u, _sep, _n = _line.partition(",")
+            _u = _u.strip()
+            if not _u:
+                continue
+            _count = TOTAL_SUBMISSIONS
+            if _n.strip():
+                try:
+                    _count = _positive_int(_n.strip())
+                except argparse.ArgumentTypeError as _ce:
+                    print(f"[queue] 跳过非法行 {_line!r}: {_ce}")
+                    continue
+            targets.append((_u, _count))
+        if not targets:
+            print("[error] --url-file 里没有任何有效 URL")
+            sys.exit(2)
+    if len(targets) > 1 and args.resume:
+        print("[error] --resume 只对一份问卷有意义，不能与 --url-file 队列同用")
+        sys.exit(2)
+
+    total_success = 0
+    total_fail = 0
+    for _ti, (_url, _count) in enumerate(targets, 1):
+        if len(targets) > 1:
+            print(f"\n[{_ti}/{len(targets)}] {_url[:70]}（{_count} 份）")
+        success, fail = run_batch(
+            _url,
+            _count,
+            browser=BROWSER,
+            use_uc=USE_UC,
+            history_db=history_db,
+            weight_config=dict(WEIGHT_CONFIG) if WEIGHT_CONFIG else None,
+            no_record_text=args.no_record_text,
+            target_success=args.target_success,
+            max_attempts=args.max_attempts,
+            resume_run_id=resume_run_id,
+            resume_done=resume_done,
+            resume_fail=resume_fail,
+            headless=bool(args.headless),
+            user_data_dir=args.profile_dir,
+            max_total_seconds=args.max_total_time,
+        )
+        total_success += success
+        total_fail += fail
+    print(f"运行结束 — 成功 {total_success}, 失败 {total_fail}"
+          + (f"（共 {len(targets)} 份问卷）" if len(targets) > 1 else ""))
 
     # ---------- V2：--save-config 保存当前配置模板 ----------
     if args.save_config:

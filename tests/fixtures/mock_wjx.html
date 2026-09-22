@@ -198,6 +198,57 @@
   <input type="submit" id="submit_button" value="提交问卷">
 </div>
 
+<!-- Q12: 矩阵多选（3 行 × 4 列，v3.0 新增题型）-->
+<!-- 刻意放在提交按钮之后：与 Q11 一样，题目在 DOM 里的位置不影响探测按题号升序输出，
+     顺带钉住"探测顺序 ≠ 文档顺序"这一前提 -->
+<div id="div12" class="div_question">
+  <div class="qtitle"><span class="idx">12.</span>请为每项功能勾选您在用的端（矩阵多选）</div>
+  <div class="field">
+    <table class="matrix">
+      <thead>
+        <tr><th>功能</th><th>网页</th><th>App</th><th>小程序</th><th>桌面端</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="row-label">数据看板</td>
+          <td><input type="checkbox" name="q12_1" value="1"></td>
+          <td><input type="checkbox" name="q12_1" value="2"></td>
+          <td><input type="checkbox" name="q12_1" value="3"></td>
+          <td><input type="checkbox" name="q12_1" value="4"></td>
+        </tr>
+        <tr>
+          <td class="row-label">批量导出</td>
+          <td><input type="checkbox" name="q12_2" value="1"></td>
+          <td><input type="checkbox" name="q12_2" value="2"></td>
+          <td><input type="checkbox" name="q12_2" value="3"></td>
+          <td><input type="checkbox" name="q12_2" value="4"></td>
+        </tr>
+        <tr>
+          <td class="row-label">权限管理</td>
+          <td><input type="checkbox" name="q12_3" value="1"></td>
+          <td><input type="checkbox" name="q12_3" value="2"></td>
+          <td><input type="checkbox" name="q12_3" value="3"></td>
+          <td><input type="checkbox" name="q12_3" value="4"></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Q13: 排序题（v3.0）—— ul.lisort + 隐藏 input 承载 "3,1,2" 提交值 -->
+<div id="div13" class="div_question">
+  <div class="qtitle"><span class="idx">13.</span>请把下列渠道按使用频率从高到低排序</div>
+  <div class="field">
+    <ul class="lisort" id="q13_list">
+      <li value="1">微信公众号</li>
+      <li value="2">微博</li>
+      <li value="3">B站</li>
+      <li value="4">小红书</li>
+    </ul>
+    <input type="hidden" name="q13" id="q13" value="">
+  </div>
+</div>
+
 <div id="q11_block" class="div_question">
   <div class="qtitle"><span class="idx">11.</span>满意度打分（<b>2~10 分</b>量表，注意起点不是 1）</div>
   <div class="field rate" id="div11">
@@ -246,6 +297,22 @@ window.__lastCheckedValue = function (name) {
       document.body.appendChild(box);
     }, 150);
   });
+  // Q13 排序题：点击某个 li 就把它挪到最前（真实页面是拖拽，这里给 E2E 一个可断言的顺序变化）
+  Array.prototype.forEach.call(
+    document.querySelectorAll('#q13_list li'),
+    function (li) {
+      li.addEventListener('click', function () {
+        var ul = li.parentNode;
+        if (ul.firstChild !== li) ul.insertBefore(li, ul.firstChild);
+        var hidden = document.querySelector('input[name="q13"]');
+        if (hidden) {
+          hidden.value = Array.prototype.map.call(ul.children, function (x) {
+            return x.getAttribute('value');
+          }).join(',');
+        }
+      });
+    }
+  );
   // Q11 的星块点击只负责高亮，真实选中状态由隐藏 radio 承载（与问卷星一致）
   Array.prototype.forEach.call(
     document.querySelectorAll('#div11 .star-item'),

@@ -13,10 +13,10 @@
     validate_weight_config(cfg) -> list[str]
         结构合法性校验，返回发现的错误/警告列表（空列表 = 完全合法）。
 
-JSON 文件格式::
+JSON 文件格式（schema 3.0）::
 
     {
-      "schema_version": "2.0",
+      "schema_version": "3.0",
       "saved_at": "2026-07-04T20:50:00",
       "meta": {
         "name": "预设名称",
@@ -25,13 +25,19 @@ JSON 文件格式::
         "survey_url": "..."
       },
       "config": {
-        "1":  {"type": "single", "weights": [0.2, 0.5, 0.3]},
+        "1":  {"type": "single", "weights": [0.2, 0.5, 0.3],
+               "anchor": {"title": "您的性别", "signature": "single:2"}},
         "7":  {"type": "multi",  "weights": [0.1, 0.2, ...], "count_options": [2,3]},
         "10": {"type": "scale",  "scale": 5, "weights": [0,0,0,0,1]},
         "12": {"type": "text",   "field": "name"},
         "20": {"type": "matrix_single", "row_weights": {"1": [1,2,3,2,1]}}
       }
     }
+
+``anchor`` 是 v3.0 新增的**可选**字段（``src/anchoring.py``）：题号只是"保存时这道题
+在第几格"的遗迹，问卷中间插一题就会让整份预设错位；anchor 让条目按题干 + 结构签名
+认领题目。GUI「探测题目 → 另存」会自动写；手写 JSON 不写 = 完全保持 v2.8 行为，
+因此 schema 2.0 的老文件照旧可读（只是没有锚点保护）。
 """
 
 from __future__ import annotations
@@ -42,11 +48,12 @@ import math
 import os
 from typing import Any
 
+from . import anchoring
 from . import config as _config_module
 from .models import QUESTION_TYPE_ALIASES
 
 
-SCHEMA_VERSION = "2.0"
+SCHEMA_VERSION = "3.0"
 
 # v2.0 支持的合法题型（V2.4 整改：从 models.QUESTION_TYPE_ALIASES 派生，
 # 与 question_stage / GUI 的别名归一化共用同一份"单一真相"）
@@ -142,9 +149,10 @@ def load_weight_config(path: str) -> tuple[dict[int, dict], dict]:
         if not isinstance(qcfg, dict):
             raise ValueError(f"Q{qnum_int} 配置必须是 dict，实际 {type(qcfg).__name__}")
 
-        # matrix_single 的 row_weights：JSON 里 key 是 str，转回 int
+        # 矩阵题（单选/多选）的 row_weights：JSON 里 key 是 str，转回 int
         fixed_cfg: dict = dict(qcfg)
-        if fixed_cfg.get("type") in {"matrix_single", "matrix"} and "row_weights" in fixed_cfg:
+        if (fixed_cfg.get("type") in {"matrix_single", "matrix", "matrix_multi"}
+                and "row_weights" in fixed_cfg):
             rw = fixed_cfg["row_weights"]
             if isinstance(rw, dict):
                 fixed_rw: dict = {}
@@ -227,7 +235,8 @@ def validate_weight_config(
             )
 
         # 4. 特定题型的 weights 检查
-        needs_weights = {"single", "radio", "multi", "checkbox", "dropdown", "scale", "rating"}
+        needs_weights = {"single", "radio", "multi", "checkbox", "dropdown",
+                         "scale", "rating", "nps"}
         if qtype_lc in needs_weights and "weights" in qcfg:
             errors.extend(_validate_weights_array(qi, qcfg, qtype_lc))
 
@@ -236,12 +245,18 @@ def validate_weight_config(
             errors.extend(_validate_count_options(qi, qcfg))
 
         # 6. scale 题：weights 长度必须匹配 scale 范围
-        if qtype_lc in {"scale", "rating"} and "weights" in qcfg:
+        if qtype_lc in {"scale", "rating", "nps"} and "weights" in qcfg:
             errors.extend(_validate_scale_length(qi, qcfg))
 
-        # 7. matrix：row_weights 必须是 dict 且每行长度匹配 cols 数量
-        if qtype_lc in {"matrix_single", "matrix"}:
+        # 7. matrix（单选/多选）：row_weights 必须是 dict 且每行长度匹配 cols 数量
+        if qtype_lc in {"matrix_single", "matrix", "matrix_multi"}:
             errors.extend(_validate_matrix_row_weights(qi, qcfg))
+
+        # 7b. 矩阵多选：每行勾几个的分布（与 multi 的 count_* 同形）
+        if qtype_lc == "matrix_multi":
+            errors.extend(_validate_count_options(
+                qi, qcfg, opts_key="pick_options", wts_key="pick_weights",
+            ))
 
         # 8. text：field 必须是字符串（如果给的话）
         if qtype_lc in {"text", "input", "textarea", "fillblank"}:
@@ -249,7 +264,39 @@ def validate_weight_config(
             if field is not None and not isinstance(field, str):
                 errors.append(f"Q{qi} text 型的 field 必须是 str 或 None")
 
+        # 9. v3.0：anchor 可选，但给了就必须是能用来认题的形状
+        #    （静默吞掉一个畸形 anchor 等于把这道题退回题号兜底，正是要防的错位）
+        if "anchor" in qcfg:
+            errors.extend(anchoring.validate_anchor(qcfg["anchor"], f"Q{qi}"))
+
+        # 10. v3.0 排序题：order（固定顺序）与 weights（每项靠前的概率）
+        if qtype_lc in {"sort", "ordering", "rank"}:
+            errors.extend(_validate_sort_order(qi, qcfg))
+
     return errors
+
+
+def _validate_sort_order(qi: int, qcfg: dict) -> list[str]:
+    """排序题：``order`` 是 item id 的固定前缀序列，``weights`` 与项数一一对应。"""
+    errs: list[str] = []
+    order = qcfg.get("order")
+    if order is not None:
+        if not isinstance(order, (list, tuple)):
+            errs.append(
+                f"Q{qi} sort 的 'order' 必须是 list/tuple，实际 {type(order).__name__}"
+            )
+        else:
+            if len(order) == 0:
+                errs.append(
+                    f"Q{qi} sort 的 'order' 是空列表 —— 想随机排序就别写这个键，"
+                    f"写空列表通常意味着粘贴时被截断了"
+                )
+            if len({str(x) for x in order}) != len(order):
+                errs.append(f"Q{qi} sort 的 'order' 有重复项，一项不可能占两个位置")
+    w = qcfg.get("weights")
+    if w is not None and not isinstance(w, (list, tuple)):
+        errs.append(f"Q{qi} sort 的 'weights' 必须是 list/tuple")
+    return errs
 
 
 # ============================================================================
@@ -315,20 +362,30 @@ def _validate_weights_array(qi: int, qcfg: dict, qtype_lc: str) -> list[str]:
     return errs
 
 
-def _validate_count_options(qi: int, qcfg: dict) -> list[str]:
-    """multi 题：count_options / count_weights 长度一致性 + 值合法性。"""
+def _validate_count_options(
+    qi: int,
+    qcfg: dict,
+    *,
+    opts_key: str = "count_options",
+    wts_key: str = "count_weights",
+) -> list[str]:
+    """「选几个」分布校验：opts_key / wts_key 长度一致性 + 值合法性。
+
+    字段名做成参数是因为矩阵多选用的是同一套语义、不同的键
+    （``pick_options`` / ``pick_weights``），复制一份校验迟早一边改一边忘。
+    """
     errs: list[str] = []
-    co = qcfg.get("count_options")
-    cw = qcfg.get("count_weights")
+    co = qcfg.get(opts_key)
+    cw = qcfg.get(wts_key)
 
     if co is None and cw is None:
         return errs  # 都没配 → 走默认均匀分布，合法
 
     if co is not None and not isinstance(co, (list, tuple)):
-        errs.append(f"Q{qi} multi 的 'count_options' 必须是 list/tuple")
+        errs.append(f"Q{qi} multi 的 '{opts_key}' 必须是 list/tuple")
         return errs
     if cw is not None and not isinstance(cw, (list, tuple)):
-        errs.append(f"Q{qi} multi 的 'count_weights' 必须是 list/tuple")
+        errs.append(f"Q{qi} multi 的 '{wts_key}' 必须是 list/tuple")
         return errs
 
     # count_options 必须都是 >= 1 的正整数
@@ -337,7 +394,7 @@ def _validate_count_options(qi: int, qcfg: dict) -> list[str]:
             ok, fv = _is_finite_number(v)
             if not ok or fv < 1 or int(fv) != fv:
                 errs.append(
-                    f"Q{qi} multi 的 count_options[{i}]={v!r} 必须是 >= 1 的正整数"
+                    f"Q{qi} multi 的 {opts_key}[{i}]={v!r} 必须是 >= 1 的正整数"
                 )
 
     # count_weights 必须非负且有限
@@ -346,18 +403,18 @@ def _validate_count_options(qi: int, qcfg: dict) -> list[str]:
             ok, fv = _is_finite_number(v)
             if not ok:
                 errs.append(
-                    f"Q{qi} multi 的 count_weights[{i}]={v!r} 是 NaN/Inf 或非数值"
+                    f"Q{qi} multi 的 {wts_key}[{i}]={v!r} 是 NaN/Inf 或非数值"
                 )
                 continue
             if fv < 0:
                 errs.append(
-                    f"Q{qi} multi 的 count_weights[{i}]={fv} < 0，不能为负数"
+                    f"Q{qi} multi 的 {wts_key}[{i}]={fv} < 0，不能为负数"
                 )
 
     # 长度必须一致（如果两者都给了）
     if co is not None and cw is not None and len(co) != len(cw):
         errs.append(
-            f"Q{qi} multi 的 count_options 长度 {len(co)} 与 count_weights 长度 {len(cw)} 不一致"
+            f"Q{qi} multi 的 {opts_key} 长度 {len(co)} 与 {wts_key} 长度 {len(cw)} 不一致"
             f"（每个选项数对应一个权重，必须一一对应）"
         )
     elif co is not None and cw is not None:
@@ -365,7 +422,7 @@ def _validate_count_options(qi: int, qcfg: dict) -> list[str]:
         positive_sum = sum(float(v) for v in cw if _is_finite_number(v)[0] and float(v) > 0)
         if positive_sum <= 0:
             errs.append(
-                f"Q{qi} multi 的 count_weights 总和 = {positive_sum}，必须 > 0"
+                f"Q{qi} multi 的 {wts_key} 总和 = {positive_sum}，必须 > 0"
             )
 
     return errs

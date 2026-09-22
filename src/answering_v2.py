@@ -29,7 +29,7 @@ from __future__ import annotations
 import random
 from typing import Any, Optional
 
-from .config import WEIGHT_CONFIG
+from . import anchoring
 from .utils import (
     sanitize_weights,
     weighted_sample_no_replace,
@@ -191,16 +191,63 @@ def _weighted_multi(
     return weighted_sample_no_replace(list(indices), weights, k)
 
 
+def _weighted_permutation(
+    items: list[Any],
+    weights: Optional[list[float]],
+) -> list[Any]:
+    """按权重无放回地逐个取出 → 得到一个**保持取出顺序**的排列（v3.0 排序题）。
+
+    不能复用 ``utils.weighted_sample_no_replace``：那个函数刻意返回升序结果
+    （多选题的选项序号要稳定），而排序题要的正是"谁被先抽中谁排第一"。
+    权重全非法（长度不符 / NaN / 总和 0）时退化成均匀洗牌。
+    """
+    pool = list(items)
+    if weights is None or not weights_are_usable(weights, len(pool)):
+        random.shuffle(pool)
+        return pool
+
+    w = [float(x) for x in weights]
+    out: list[Any] = []
+    while pool:
+        if sum(v for v in w if v > 0) <= 0:
+            idx = random.randrange(len(pool))
+        else:
+            idx = random.choices(range(len(pool)), weights=w, k=1)[0]
+        out.append(pool.pop(idx))
+        w.pop(idx)
+    return out
+
+
+def _cfg_entry(q: dict) -> dict:
+    """该题生效的配置条目（v3.0：锚点优先、题号兜底；没配置则空 dict）。"""
+    return anchoring.lookup_weight_entry(q) or {}
+
+
 def _cfg_weights(q: dict) -> Optional[list[float]]:
-    """优先从 q['weights'] 取，其次从全局 WEIGHT_CONFIG 取。"""
+    """优先从 q['weights'] 取，其次按「锚点 → 题号」查全局配置（v3.0 见 anchoring）。"""
     if "weights" in q and q["weights"]:
         return list(q["weights"])
-    qi = q.get("q")
-    if qi is not None and isinstance(qi, int):
-        cfg = WEIGHT_CONFIG.get(qi)
-        if cfg and "weights" in cfg:
-            return list(cfg["weights"])
+    cfg = _cfg_entry(q)
+    if cfg and "weights" in cfg:
+        return list(cfg["weights"])
     return None
+
+
+def _row_weight_map(raw: Any) -> dict:
+    """把 row_weights 的行号键统一成 int。
+
+    两条来源的键类型天然不同：GUI 权重表里敲出来的是 ``"1"``，
+    而 ``load_weight_config`` 会转成 ``1``，探测到的 rows 又一定是 int。
+    不统一的话 ``row_weights.get(1)`` 在 GUI 那条路上永远查不到 → 静默等权。
+    """
+    out: dict = {}
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            try:
+                out[int(k)] = v
+            except (TypeError, ValueError):
+                out[k] = v
+    return out
 
 
 # ============================================================================
@@ -226,7 +273,7 @@ def generate_answer(question: dict) -> dict[str, Any]:
         indices = list(range(len(choices)))
         # 决定选几个
         qi = question.get("q")
-        cfg = WEIGHT_CONFIG.get(qi) if isinstance(qi, int) else None
+        cfg = _cfg_entry(question)
         n = len(indices)
         if cfg and "count_options" in cfg:
             count_opts = list(cfg["count_options"])
@@ -272,8 +319,11 @@ def generate_answer(question: dict) -> dict[str, Any]:
     if qtype in ("text", "input", "textarea", "fillblank"):
         field = str(question.get("field", "")).lower() or None
 
-        # 如果给出显式选项池 → 从池中随机
-        explicit_options = question.get("options")
+        # 如果给出显式选项池 → 从池中随机。
+        # v3.0：候选词也能只写在权重配置里（GUI 表格 / JSON 的 "options"）——
+        # 此前只看 question["options"]，而探测回来的题目**永远没有**这个键，
+        # 于是用户填的候选词全部静默失效、每次都走内置随机生成。
+        explicit_options = question.get("options") or _cfg_entry(question).get("options")
         if isinstance(explicit_options, (list, tuple)) and len(explicit_options) > 0:
             picked = random.choice(list(explicit_options))
             return {"type": "text", "text": str(picked), "field": field}
@@ -303,13 +353,61 @@ def generate_answer(question: dict) -> dict[str, Any]:
         rows = list(question.get("rows", []))
         cols = list(question.get("cols", []))
         col_indices = list(range(len(cols)))
-        row_weights = question.get("row_weights") or {}
+        # v3.0：行权重同样要能从权重配置里取到 —— 探测回来的题目没有 row_weights，
+        # 此前矩阵题的权重只能显示、不能生效（README 的 matrix 配置项形同虚设）。
+        row_weights = _row_weight_map(
+            question.get("row_weights") or _cfg_entry(question).get("row_weights")
+        )
         result: dict[int, Any] = {}
         for r in rows:
             w = row_weights.get(r) if isinstance(row_weights, dict) else None
             idx = _weighted_or_equal_choice(col_indices, list(w) if w else None)
             result[r] = cols[idx]
         return {"type": "matrix_single", "rows": result}
+
+    # --- 5b. 矩阵多选（v3.0）--------------------------------------------
+    if qtype == "matrix_multi":
+        rows = list(question.get("rows", []))
+        cols = list(question.get("cols", []))
+        entry = _cfg_entry(question)
+        row_weights = _row_weight_map(
+            question.get("row_weights") or entry.get("row_weights")
+        )
+        # 每行勾几个：默认 1。平台的矩阵多选常带"每行至多选 N 个"，而 1 永远同时
+        # 满足"至少一个"和"至多 N 个"；要多勾就配 pick_options / pick_weights
+        # （与多选的 count_options 同形）。k 超过列数时由抽样函数夹到 len(cols)。
+        pick_opts = question.get("pick_options") or entry.get("pick_options") or [1]
+        pick_opts = [int(x) for x in pick_opts]
+        pick_wts = question.get("pick_weights") or entry.get("pick_weights")
+        col_indices = list(range(len(cols)))
+        result_multi: dict[int, list] = {}
+        for r in rows:
+            w = row_weights.get(r)
+            k = (
+                random.choices(pick_opts, weights=pick_wts, k=1)[0]
+                if weights_are_usable(pick_wts, len(pick_opts))
+                else random.choice(pick_opts)
+            )
+            picked = _weighted_multi(col_indices, list(w) if w else None, k)
+            result_multi[r] = [cols[i] for i in picked]
+        return {"type": "matrix_multi", "rows": result_multi}
+
+    # --- 6. 排序题（v3.0）-----------------------------------------------
+    if qtype == "sort":
+        items = [str(x) for x in (question.get("items") or [])]
+        entry = _cfg_entry(question)
+        fixed = question.get("order") or entry.get("order")
+        if fixed:
+            head = [str(x) for x in fixed if str(x) in items]
+            # 用户只写了前几项 → 其余随机补在后面，而不是丢掉：
+            # 排序题要求每一项都有一个位置，漏一项就是整题无效。
+            rest = _weighted_permutation(
+                [x for x in items if x not in set(head)], None
+            )
+            order = head + rest
+        else:
+            order = _weighted_permutation(items, _cfg_weights(question))
+        return {"type": "sort", "order": order, "items": items}
 
     # --- 兜底：当作单选题处理（保守） ----------------------------------
     if "choices" in question:
