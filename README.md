@@ -15,15 +15,15 @@
 
 - **浏览器反检测** — CDP 注入 Stealth JS 隐藏 `navigator.webdriver`，随机化 UA / 屏幕分辨率 / 硬件指纹，可选 `undetected-chromedriver` 增强模式
 - **人类行为模拟** — 所有点击与停顿均为「正态分布 + 区间截断」采样，完整鼠标事件链，偶发长停顿，周期性重启浏览器释放内存
-- **八类题型全覆盖** — 单选 / 多选 / 下拉 / 量表（含 NPS）/ 填空 / 矩阵单选 / **矩阵多选** / **排序题**，填空题自动识别姓名、手机、邮箱、年龄、地址、公司等字段并按类型生成
+- **八类题型全覆盖** — 单选 / 多选 / 下拉 / 量表（含 NPS）/ 填空 / 矩阵单选 / **矩阵多选** / **排序题**，填空题自动识别姓名、手机、邮箱、年龄、地址、公司等字段并按类型生成；**选项自带填空框（"其他____"）时，勾中它就同时把那一格写上文本**（v3.0）
 - **多分页问卷** — 按页探测、按页作答、**只在最后一页点提交**；翻页失败时整份判失败，绝不把只答了第一页的问卷交上去（v3.0）
 - **加权随机作答** — 每道题可配置选项权重：单选加权采样，多选无放回加权抽样，多选还可控制「选中几个」的分布；矩阵多选可控制每行勾几个，排序题可钉住前几名
 - **题干锚定的权重配置** — 预设除了题号还带题干 + 结构签名，问卷中间插一题不再整体错位；锚点认不到题时**该题走等权并提示**，而不是拿别人的分布静默填（v3.0）
 - **智能验证码检测** — DOM / URL 文本 / Shadow DOM 三信号并行检测；检出后弹窗提醒人工处理，人工介入锁保证等待期间不被误判为超时；无头模式下直接判本轮失败（没有可介入的人）
 - **随时可停** — 停止/关闭窗口在**逐题边界、每题思考停顿、验证码人工等待**上都以 ≈0.2s 粒度生效，被打断的那一份不提交、不计失败（v3.0）
-- **断点续填与续传** — 重试时自动跳过单次提交内已答的题；跨进程可从上次中断的批次继续（CLI `--resume` / GUI 恢复对话框），权重配置随批次快照持久化
+- **断点续填与续传** — 重试时自动跳过单次提交内已答的题；跨进程可从上次中断的批次继续（CLI `--resume` / GUI 恢复对话框），权重配置随批次快照持久化。批次匹配认的是**同一份问卷**而不是 URL 字符串：`/jq/`、`/m/`、`/vm/`、`/vj/` 几种投放形态与微信带进来的渠道参数都归一到同一个键上（v3.0）
 - **运行历史与统计** — SQLite 记录每次批次的元信息与逐题答案明细，GUI 可视化查询、CSV 导出、过期清理
-- **可靠的提交语义** — 提交结果三态（成功 / 失败 / 未知），答案明细幂等写入，指数退避重试，异常分层（瞬态 DOM 异常可重试、程序错误直接暴露）
+- **可靠的提交语义** — 提交结果三态（成功 / 失败 / 未知），答案明细幂等写入，指数退避重试，异常分层（瞬态 DOM 异常可重试、程序错误直接暴露）；页面的 `alert` 被接管成记录器，**必填校验那句话会变成日志里的失败原因**，而不是把整轮噎成 `UnexpectedAlertPresentException`（v3.0）
 - **CLI / GUI 双入口 + 可部署** — CLI 适合脚本与定时批量运行，GUI（Tkinter）适合可视化配置与实时监控；`--url-file` 顺序队列 + `--max-total-time` 时限 + `--profile-dir` 复用浏览器 profile，`pip install -e .` 后可用 `wjx-fill` / `wjx-gui`（v3.0）
 
 ---
@@ -121,7 +121,7 @@ python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 3 --profile-dir ./pro
 | `--no-record-text` | 关 | 隐私保护：填空题答案不写入 SQLite（DOM 仍需填入真实文本） |
 | `--target-success` | 关 | 把 `-n` 解释为「目标成功份数」，达成即提前结束 |
 | `--max-attempts N` | `2×n` | 仅 `--target-success` 时生效：最大尝试次数上限。`--resume` 时按**已尝试次数**扣减（上次成功数 + 失败数），所以续传后总尝试数不会超过 N |
-| `--resume` | 关 | 断点续传：复用同 URL 最近一次未完成批次的 run_id、计数与权重快照，并沿用其计划总份数（需配合 `--history`） |
+| `--resume` | 关 | 断点续传：复用**同一份问卷**最近一次未完成批次的 run_id、计数与权重快照，并沿用其计划总份数（需配合 `--history`）。同一份问卷的不同 URL 形态算同一个批次 |
 | `--log-file PATH` | 关 | 启用 logging 并把运行日志写入指定文件 |
 | `--url-file PATH` | 关 | **v3.0** 顺序队列：每行一条 `URL[,份数]`（`#` 开头为注释）。与 `-u` 同给时 `-u` 先跑；共用同一份 `--config` 与 `--history`；与 `--resume` 互斥（退出码 2） |
 | `--headless` | 关 | **v3.0** 无头模式。**只建议调试**：问卷星对无头敏感，且智能验证一出现就判本轮失败（无头里没有可介入的人） |
@@ -151,19 +151,35 @@ python run_gui.py
 
 工具在两个层面处理中断，避免重复作答或从头重跑：
 
-**单次提交内（续填）** — 每次打开问卷后先扫描 DOM 已填状态，重试时跳过已答的题，避免重复点击触发反检测。
+**单次提交内（续填）** — 每次打开问卷后先扫描 DOM 已填状态，重试时跳过已答的题，避免重复点击触发反检测。勾中了自带填空框的选项（"其他____"）却没写字，**不算已答** —— 那种状态交上去只会被平台拒收。
 
 **跨进程（续传）** — 每个批次在 SQLite 中有一条状态记录（`running / finished / failed / interrupted`）：
 
 - 用户主动停止（GUI 停止按钮 / CLI Ctrl+C / `--max-total-time` 到点）→ 状态记为 `interrupted`，已成功份数保留
   - **v3.0**：停止在轮内也生效 —— 逐题边界、每题思考停顿、等题轮询、验证码人工等待都以 ≈0.2s 粒度问一次。
     被打断的那一份**从未被提交**，所以既不计成功也不计失败，下一份的位置就是它（`--resume` 会重做这一份）
-- 下次对同一 URL 启动时：
+- 下次对**同一份问卷**启动时（v3.0 起按归一化键匹配，不再是 URL 字符串相等）：
   - **CLI**：加 `--resume` 自动查找 24 小时内最近的未完成批次，复用其批次号与计数、接续答案编号，从第 K+1 份继续
   - **GUI**：自动弹出对话框「Run #N · 已成功 K/M 份 · 是否从第 K+1 份继续？」
 - 续传同时会从该批次的权重快照（`weight_config_json`）自动恢复上次使用的权重配置，确保「最后使用的权重就是用户设置的」
 - 续传默认**沿用上次的计划总份数**（不是 `-n` 的默认 17）；显式给 `-n` 时以你输入的为准
 - 显式给了 `--config` 时以文件为准，不再从快照恢复权重
+
+### 什么算"同一份问卷"
+
+同一份问卷的答卷链接至少有 `jq`（电脑端）/ `m`（移动端）/ `vm`、`vj`（短码分享）/
+`hj` 几种投放形态，微信与渠道参数还会往 query 上挂 `kd`、`source` 一类可变字段 ——
+二维码解出来的链接和手输的链接常常字符串就是不一样的。归一化规则是
+**host（去 `www.`、转小写）+ 路径最后一段（去 `.aspx`，大小写原样保留）**，
+函数在 `src/platforms.py::canonical_survey_key`。
+
+两件刻意**没做**的事，都是"误并批次"比"少并批次"贵：
+
+- **不跨 host 合并** — `www.wjx.cn` 与 `v.wjx.cn` 可能是同一问卷的不同投放渠道，
+  也可能真是两件事。并错了会把另一份问卷的中断计数拿来续传 → 重复提交。
+- **短码大小写不归一** — `/vj/Pq8k2A` 与 `/vj/pq8k2a` 判成两份问卷。
+
+少并的后果只是"这次没续上传，重跑一次"；误并的后果是交出去的数据不可用。
 
 异常崩溃的批次记为 `failed`（不可恢复）；只有主动中断的批次可续传。
 
@@ -178,17 +194,20 @@ python run_gui.py
         ↓
 打开问卷页面 → JS 注入探测 8 类题型结构（只看当前可见页 + 题干）
         ↓
-（启用续传时）查找同 URL 未完成批次 → 复用批次号与权重快照
+（启用续传时）按归一化键查找同一问卷的未完成批次 → 复用批次号与权重快照
         ↓
 循环提交：
+  ├── 【每份】接管 window.alert（原生弹窗会噎住 WebDriver，且藏着失败原因）
   ├── 【逐页】扫描已填题集合，跳过已答题（续填）
-  ├── 【逐页】逐题按权重随机生成答案（填空题按字段类型生成文本）
+  ├── 【逐页】逐题按权重随机生成答案（填空题按字段类型生成文本；
+  │            勾中自带填空框的选项时同时写上那一格）
   ├── 【逐页】JS 注入模拟人类操作（事件链 + 正态分布停顿）
   ├── 【逐页】每题答案幂等写入 SQLite
   ├── 【逐页】定期检查验证码 → 弹窗等待人工介入（无头则直接判失败）
   └── 有下一页 → 翻页后继续【逐页】；翻页失败 → 整份判失败，**不提交**
         ↓
 （最后一页才）模拟点击提交 → 三态判定（OK / FAIL / UNKNOWN）
+        ↓        非 OK 时把页面弹出的必填提示一并打进日志
         ↓
 结束落盘：finished（完成）/ interrupted（可恢复中断）/ failed（崩溃）
 ```
@@ -300,7 +319,7 @@ WEIGHT_CONFIG = {
 
 启用 `--history`（GUI 默认启用）后，每次运行写入 `data/history.db`：
 
-- **runs 表** — 批次元信息：`id, survey_url, total_submissions, browser, use_uc, status(running/finished/failed/interrupted), success_count, fail_count, total_elapsed_seconds, error_message, weight_config_json, started_at, finished_at`
+- **runs 表** — 批次元信息：`id, survey_url, survey_key, total_submissions, browser, use_uc, status(running/finished/failed/interrupted), success_count, fail_count, total_elapsed_seconds, error_message, weight_config_json, started_at, finished_at`
 - **answers 表** — 逐题明细：`run_id, submission_index, question_number, question_type, options_selected(JSON), text_answer, elapsed_ms, created_at`，`(run_id, submission_index, question_number)` 唯一，重试不会产生重复行
 
 三种使用方式：
@@ -310,12 +329,14 @@ WEIGHT_CONFIG = {
 3. **导出分析** — GUI「📤 导出 CSV」生成 `history_runs.csv` + `history_runs_answers.csv`，可直接用 Pandas 分析
 
 老数据库文件会被自动迁移（补充新列、去重并建立唯一索引），多次打开幂等无损。
+v3 的迁移还会**回填** `survey_key` —— 留着 NULL 等于没修：续传是按这个键匹配的，
+升级前建的批次没键就永远续不上，而那正是这次要消灭的"安静地不弹续传提示"。
 
 续传相关 API（`src/history.py`）：
 
 | API | 用途 |
 |---|---|
-| `find_resumable_run(survey_url, max_age_hours=24)` | 找同 URL 最近一次 `interrupted` / `running` 的批次 |
+| `find_resumable_run(survey_url, max_age_hours=24)` | 找**同一份问卷**最近一次 `interrupted` / `running` 的批次（内部按 `canonical_survey_key` 归一化后匹配） |
 | `mark_interrupted(run_id, ...)` | 主动停止时把状态写为 `interrupted` |
 | `count_done_submissions(run_id)` | 读取已完成份数，决定从第几份继续 |
 | `start_run(..., weight_config=...)` | 启动批次时持久化权重快照 |
@@ -328,6 +349,7 @@ WEIGHT_CONFIG = {
 | 术语 | 含义 |
 |---|---|
 | **run**（批次） | 一次「从启动到退出」的批量提交任务，对应 `runs` 表一行 |
+| **survey_key**（问卷键） | 同一份问卷各种 URL 投放形态的归一化键（`host:标识`），续传按它匹配而不是按 URL 字符串相等 |
 | **submission**（提交） | 一次完整的「打开问卷 → 答题 → 提交」流程，批次内的子单元 |
 | **attempt**（尝试） | 目标成功模式下的一次尝试；失败的尝试不占用成功数 |
 | **anchor**（锚点） | 权重条目携带的题干 + 结构签名，用来在题号漂移后把预设认领回原题 |
@@ -350,14 +372,14 @@ pip install -r requirements-dev.txt
 # 全量测试（含依赖真实浏览器驱动的 E2E）
 python -m pytest tests/ -v
 
-# 离线套件（无浏览器环境 / CI，626 项；CI 口径 624 passed + 2 skipped）
+# 离线套件（无浏览器环境 / CI，676 项；CI 口径 674 passed + 2 skipped）
 python -m pytest tests/ -m "not integration" -q
 
-# 仅浏览器 E2E（需本机 Edge / Chrome + WebDriver，5 项）
+# 仅浏览器 E2E（需本机 Edge / Chrome + WebDriver，12 项）
 python -m pytest tests/ -m integration -q
 ```
 
-当前测试全部通过：**635 项**（离线 626 + E2E 9）。
+当前测试全部通过：**688 项**（离线 676 + E2E 12）。
 
 > **类型门禁不随环境变**：`src/` + `gui/` + 入口在两种环境下都是 **0 error
 > 0 warning**。两处可选依赖（`opencv-python`、`undetected_chromedriver`）的动态
@@ -370,8 +392,8 @@ python -m pytest tests/ -m integration -q
 >
 > | 门禁 | 装齐可选依赖（开发机） | 未装（CI / 干净 venv） |
 > |---|---|---|
-> | 离线套件 | 626 passed | 624 passed + 2 skipped（二维码解析用例） |
-> | 覆盖率 TOTAL | 75.3%（`src/` 87.2%、`gui/` 59.0%） | 75.0%（`src/` 87.0%、`gui/` 58.4%） |
+> | 离线套件 | 676 passed | 674 passed + 2 skipped（二维码解析用例） |
+> | 覆盖率 TOTAL | 75.7%（`src/` 87.5%、`gui/` 59.0%） | 75.6%（`src/` 87.6%、`gui/` 58.4%） |
 >
 > 覆盖率请写一位小数，别写整数：`--cov-report=term` 会把两者都四舍五入成 **75%**，
 > 而 README 与 `ci.yml` 曾因此互相指对方口径不对。
@@ -383,7 +405,7 @@ python -m pytest tests/ -m integration -q
 |---|---|---|
 | 静态检查 | `python -m ruff check .` | 通过 |
 | 类型检查 | `npx pyright` | `src/` + `gui/` + 入口 **0 error 0 warning**（不设 baseline、不豁免，两种依赖口径下都一样） |
-| 覆盖率 | `pytest --cov=src --cov=gui --cov-fail-under=70` | 实测 **75.0%**（CI 口径）/ **75.3%**（装齐可选依赖），`src/` 87.0~87.2%、`gui/` 58.4~59.0%；地板 70% 只许上调——**v3.0 仍不动它**：`3.10` 那条 leg 本机量不到（这台机器只有 3.11/3.12/3.13），不拿没量过的环境赌门禁 |
+| 覆盖率 | `pytest --cov=src --cov=gui --cov-fail-under=70` | 实测 **75.6%**（CI 口径）/ **75.7%**（装齐可选依赖），`src/` 87.5~87.6%、`gui/` 58.4~59.0%；地板 70% 只许上调——**v3.0 仍不动它**：`3.10` 那条 leg 本机量不到（这台机器只有 3.11/3.12/3.13），不拿没量过的环境赌门禁 |
 
 - **`ruff.toml`** 启用 `E9/F63/F7/F82` + `F401/F841/F541`。后三条是刻意加的零误报
   「接线断链」防线：v2.4 的 `--resume` 静默失效（`main()` 算出 `resume_fail`
@@ -406,27 +428,32 @@ python -m pytest tests/ -m integration -q
 ### E2E 覆盖范围
 
 `tests/fixtures/mock_wjx.html` 是一份 **13 题**的离线 mock 问卷（8 类题型 +
-一道 2~10 分的非 1 起量表 + 矩阵多选 + 排序题），页面内用 JS 模拟问卷星的 AJAX 提交
-（URL 不变、延迟渲染「提交成功」文案，并记录提交按钮被点的次数）。
+一道 2~10 分的非 1 起量表 + 矩阵多选 + 排序题 + 一个**自带填空框的多选项**），
+页面内用 JS 模拟问卷星的 AJAX 提交（URL 不变、延迟渲染「提交成功」文案，并记录
+提交按钮被点的次数）。它同时模拟了平台的必填校验：**勾了"其他____"却没写字就
+提交 → 弹原生 `alert` 并且不给成功文案** —— 上面那两条 v3.0 能力（补文本、
+接管弹窗）因此有了真浏览器证据，而不是只有一堆替身对象。
 `tests/fixtures/mock_wjx_multipage.html` 是两页版：第 2 页初始 `display:none`，
 靠"下一页"按钮切换。
 
 E2E 因此覆盖到 `run_one_submission` 的完整链路、提交只点一次的保证、量表边界识别、
-**题干探测**、矩阵多选真的勾上、排序题同时改 DOM 与写隐藏域、以及分页问卷
-"两页都答完且只在最后一页提交"。v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），
-离线 mock 对它们一律绿。
+**题干探测**、矩阵多选真的勾上、排序题同时改 DOM 与写隐藏域、分页问卷
+"两页都答完且只在最后一页提交"、带框选项写上文本（含 `maxlength` 截断）、
+以及"页面弹 alert 时 WebDriver 不被噎住且文案能被读回 Python 侧"。
+v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock 对它们一律绿。
 
 ### 已知缺口（诚实记录）
 
-上一版列的五条缺口已在 v2.7 全部补齐：
+上一版列的五条缺口已在 v2.7 全部补齐（"现在"一列按本轮实测重量，v3.0 新增的
+代码把那几条从 100% 拉下来了一点，**没有再掉回缺口区**）：
 
 | 模块 | 补齐前 | 现在 |
 |---|---|---|
 | `src/logging_setup.py` | 0% | **100%** |
-| `src/browser/driver_factory.py` | 9% | **100%** |
-| `src/pipeline.py` | 26% | **100%** |
+| `src/browser/driver_factory.py` | 9% | **98%**（剩 3 行） |
+| `src/pipeline.py` | 26% | **95%**（剩 8 行，v3.0 加了分页与弹窗诊断分支） |
 | `src/verification.py` | 34% | **97%**（剩 3 行非 Windows 降级桩，本机不可达） |
-| `gui/`（8 个文件合计） | 15% | **58.0~58.6%**（`theme`/`log_view` 100%、`history_panel` 96%、`weight_panel` 92%；区间取决于装没装可选 opencv，见上面的环境对照表） |
+| `gui/`（8 个文件合计） | 15% | **58.4~59.0%**（`theme`/`log_view` 100%、`history_panel` 96%、`weight_panel` 93%；区间取决于装没装可选 opencv，见上面的环境对照表） |
 
 仍然没有防线的地方：
 
@@ -434,8 +461,8 @@ E2E 因此覆盖到 `run_one_submission` 的完整链路、提交只点一次的
 |---|---|---|
 | `gui/controller.py` | 14% | 探测题目 / 二维码解码 / 配置导入都要真实 driver 或模态对话框 |
 | `gui/app.py` | 25% | `SurveyGUI.__init__` 一建就打开真实 `data/history.db` 并启动动画 `after` 循环，测试里无法安全实例化；`_run_loop` 与几个面板薄代理已有契约测试（`tests/test_gui_proxies.py`） |
-| `src/pipeline_stages/question_stage.py` | 55%（v3.0 补齐分发） | 逐题 DOM 交互主干：等待与「哪道题调哪个填充器」的分发已有离线契约（`test_question_stage_dispatch.py`），真实点击仍靠 E2E |
-| `src/cli.py` | 69% | `run_batch` 主干已测，剩余是 `--save-config` / 统计打印一类输出分支 |
+| `src/pipeline_stages/question_stage.py` | 63%（v3.0 分发 + 选项填空已补离线契约） | 逐题 DOM 交互主干：等待、「哪道题调哪个填充器」的分发、带框选项只勾不填的降级都已有离线测试（`test_question_stage_dispatch.py`），真实点击仍靠 E2E |
+| `src/cli.py` | 72% | `run_batch` 主干已测，剩余是 `--save-config` / 统计打印一类输出分支 |
 
 > **覆盖率不等于验证过。** 上面的 100% / 97% 是拿替身对象跑出来的 —— 它证明
 > 「指纹参数拼装、异常回收、锁必然释放」这些**逻辑**成立；但真实浏览器能否启动、

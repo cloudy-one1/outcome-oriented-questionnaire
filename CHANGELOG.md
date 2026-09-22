@@ -47,9 +47,30 @@ v3 主线：**从"只能本机开着窗口跑"往可部署、可停、可维护�
 - **运行形态**：`pyproject.toml` + `wjx-fill` / `wjx-gui` 控制台入口 + `Dockerfile`；
   CLI 新增 `--headless`、`--profile-dir`、`--url-file`（顺序队列，每行 `URL[,份数]`，
   与 `--resume` 互斥）、`--max-total-time`（到点按优雅停止收工，可续传）。
-- **测试**：离线 **509 → 626 项**（CI 口径 624 + 2 skipped），E2E **5 → 9 项**。
-  新文件 `tests/test_anchoring.py`(46) `test_page_nav_and_sort.py`(18)
-  `test_runtime_forms.py`(13) `test_packaging.py`(7) `test_question_stage_dispatch.py`(3)。
+- **同一份问卷的批次身份**（`platforms.canonical_survey_key` + `runs.survey_key` 新列）。
+  同一份问卷的答卷链接有 `jq`（电脑）/ `m`（移动）/ `vm`、`vj`（短码）/ `hj` 几种投放形态，
+  微信还会往 query 上挂 `kd`、`source` 一类可变字段 —— 而 `find_resumable_run` 此前是
+  `WHERE survey_url = ?` 字符串相等。对不上时的样子不是报错，是**安静地不弹续传提示**、
+  权重快照找不回来、统计被拆成几行。现在批次匹配走归一化键，v2→v3 迁移会把老库全部回填
+  （留 NULL 等于没修）。刻意**不**跨 host 合并、短码大小写**不**归一：误并批次的后果是
+  拿另一份问卷的中断计数去续传 → 重复提交，比少并（重跑一次）贵得多。
+- **选项自带填空框（"其他____"）**。`detect_questions` 标出 `blank_options`，判据是结构性的
+  （选项自己的 `label`/`li`/`td` 里住着一个文本框），不是 `class="underline"` 那类模板产物；
+  勾中这些项时同时写入短文本并按 `maxlength` 截断（程序赋值不会被浏览器裁，服务端却按超长拒），
+  没写成功就把本题记为失败。已答扫描同步收紧：**勾了却没写字不算已答**，续填才会重做它 ——
+  此前那种状态会被跳过，交上去只剩一个看不出原因的 unknown。探测与作答共用同一段定位 JS
+  （`option_blank_helper_script`），两边各写一份必然漂移。
+- **接管 `window.alert`**：切到题目 frame 后把 alert 换成记录器，提交非成功时把攒下的文案
+  作为失败原因打进日志。两件事一起解决：原生弹窗不再让下一条命令抛
+  `UnexpectedAlertPresentException`（整轮被当成瞬态异常重跑，重跑之后原因早就没了），
+  而问卷星必填校验那句"您第 N 题未填写"本来是页面自己说出来的。**只接管 `alert`**：
+  `confirm`/`prompt` 的返回值是页面控制流的一部分，替用户回答"是"就是替用户提交；
+  也不学同类脚本那样在 alert 里 `location.reload()`（那是把"页面在报错"变成"页面重来一遍"）。
+- **测试**：离线 **509 → 676 项**（CI 口径 674 + 2 skipped），E2E **5 → 12 项**。
+  新文件 `tests/test_anchoring.py`(46) `test_page_nav_and_sort.py`(18 → 30)
+  `test_runtime_forms.py`(13) `test_packaging.py`(7) `test_question_stage_dispatch.py`(3 → 7)。
+  批次键、选项填空、alert 接管三处各自补了离线契约 + 真浏览器用例（后两处的离线断言只到
+  "注入的脚本长什么样"，页面里到底成不成立仍由 E2E 说）。
 
 ### 修复（4 条全部由真浏览器 E2E 抓到，离线 mock 一律绿）
 
@@ -81,12 +102,20 @@ v3 主线：**从"只能本机开着窗口跑"往可部署、可停、可维护�
 
 ### 变更（门禁与口径）
 
-- `README`「六类题型」→ 八类；权重配置 schema 2.0 → 3.0；`--resume` 与 `--url-file` 互斥。
-- 覆盖率实测 **75.0%（CI 口径）/ 75.3%（装齐可选依赖）**，`src/` 87.0~87.2%、
+- `README`「六类题型」→ 八类；权重配置 schema 2.0 → 3.0；`--resume` 与 `--url-file` 互斥；
+  `--resume` 的匹配口径由"URL 字符串相等"改成"归一化问卷键相等"（README 新增一节
+  「什么算同一份问卷」，把不跨 host 合并这条取舍写在明处）。
+- 覆盖率实测 **75.6%（CI 口径）/ 75.7%（装齐可选依赖）**，`src/` 87.5~87.6%、
   `gui/` 58.4~59.0%。地板**仍留 70**：`3.10` 那条 leg 本机量不到（这台机器只有
   3.11/3.12/3.13），v2.8 定的"不拿没量过的环境赌门禁"照旧生效。
-- `tests/fixtures/mock_wjx.html` 11 题 → **13 题**（新增矩阵多选 Q12、排序题 Q13）；
+- `tests/fixtures/mock_wjx.html` 11 题 → **13 题**（新增矩阵多选 Q12、排序题 Q13），
+  Q2 多选的最后一项改成**自带填空框的"其他"**；页面脚本照问卷星的做法加了必填校验
+  （勾了带框的项却没写字 → 弹 `alert` 且不给成功文案）。有了这条平台规则，
+  补文本与接管弹窗两项能力才算被真浏览器验过，而不只是替身对象上的断言。
   新增 `tests/fixtures/mock_wjx_multipage.html`（两页问卷）。
+- `history.runs` 多一列 `survey_key`（v2→v3 迁移，含一次全表回填，只在升级那一次跑）；
+  `detection.detect_questions` 的题目字典对 single/multi 多一个可选键 `blank_options`
+  （值是 option value，不是下标）。两者都不影响 `answers` 表与 CSV 导出的既有列。
 - `history.answers.options_selected` 值域变宽：排序题写入的是 item id 序列（可能是字符串），
   矩阵多选是各行勾中列值摊平。落库列本来就是 JSON 文本，无需迁移。
 - **明确不做**（评估过、写在这里免得反复重提）：
@@ -102,7 +131,13 @@ v3 主线：**从"只能本机开着窗口跑"往可部署、可停、可维护�
   问卷上验证过**。失败模式是显式的（探测不到该题 / 整份判失败），不会静默交出半份问卷。
 - `Dockerfile` 未在本仓库 CI 里构建过（没有可用的 docker runner），文件里就写着这件事。
 - `gui/controller.py` 14%、`gui/app.py` 25% 仍无离线防线，与 v2.8 同因（要真实 driver
-  或模态对话框）。本轮新起的 `src/pipeline_stages/question_stage.py` 从 29% 抬到 **55%**。
+  或模态对话框）。本轮新起的 `src/pipeline_stages/question_stage.py` 从 29% 抬到 **63%**。
+- 问卷键**不跨 host 合并**：同一份问卷若一次走 `www.wjx.cn`、一次走 `v.wjx.cn`，
+  仍算两个批次、续传不会串起来。并过来的代价是拿别的问卷的中断计数去续传（→ 重复提交），
+  所以这条宁可留着不修；`canonical_survey_key` 的文档里写着理由。
+- "其他____"那格填的是内置短文本池（`answering_v2._OPTION_BLANK_TEXTS`），**不能按题配置**。
+  权重配置的 `options` 目前只服务填空题，扩到选项级要重新设计条目形状（一个题号下
+  既要选项权重又要"第几项写什么"），这一轮没做。
 
 ## [2.8.0] - 2026-09-21
 
