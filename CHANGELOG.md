@@ -2,6 +2,108 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [3.0.0] - 2026-09-22
+
+v3 主线：**从"只能本机开着窗口跑"往可部署、可停、可维护走**，同时补上题型覆盖。
+五个批次（停止谓词 / 题干锚定 / 新题型 / 平台层 / 运行形态）逐条带防线，
+每一条都在真实浏览器 E2E 上复量过 —— 这一轮 E2E 抓到 4 个离线全绿的缺陷，
+下文"修复"一节按现场列出。
+
+### 新增
+
+- **停止谓词贯穿单次提交**（`src/exceptions.py::SubmissionAborted`、`src/pipeline.py`）。
+  v2.6 只让**轮间**停顿可打断，逐题边界与每题"思考时间"（均值 ≈4.5s/题）打不断，
+  点了停止仍要等整份问卷答完并**真的点到提交**。现在：逐题边界、每题停顿
+  （`human_pause(abort_check=)`）、等题轮询、验证码人工等待都以 ≈0.2s 粒度问一次；
+  被打断的那一份**不提交、既不计成功也不计失败**，批次以 `interrupted` 闭合，
+  下次 `--resume` 从这一份重来。
+  - 刻意继承 `BaseException`：提交路径上有十几处为"浏览器偶发异常"写的
+    `except Exception`，停止信号若继承 `Exception` 会被就地吞成"本题失败、继续下一题"，
+    最后照样提交 —— 那正是要防的后果。
+  - 提交成功之后才到的停止信号**不改判这一份**（`except SubmissionAborted: pass`）：
+    成功已是既成事实，抹掉会让成功数少一、`--resume` 起点跟着错。
+- **权重配置支持题干锚定**（`src/anchoring.py`，JSON schema **3.0**）。
+  键仍是题号，但每条可选 `anchor = {title, signature}`；GUI「探测题目 → 另存」自动写入。
+  三条契约：① 带 anchor 的条目**只**按锚点生效，认不到题就走等权并提示一次，
+  **绝不退回答题号**（错位从来不报错，只是安静地给出错的分布）；② 不带 anchor 的老
+  配置行为与 v2.8 逐位一致，schema 2.0 文件照旧可读；③ 锚点优先于题号。
+  题干归一化会剥 `1.` / `第2题` / `（3）` 这类序号，但不会误剥 `2024年收入`；
+  结构签名（`single:4` / `scale:2-10` / `matrix:4x5` / `sort:4`）变了即脱钩。
+- **四类新覆盖**：
+  - **矩阵多选** `matrix_multi`（探测按行内是 radio 还是 checkbox 分流；与单选共用一个
+    JS 生成器；每行勾几个由 `pick_options` / `pick_weights` 控制，默认 1）
+  - **排序题** `sort`（`ul.lisort` + 隐藏 `input[name=qN]`；同时重排 DOM 与写提交值，
+    任一条做不到就整题判失败）
+  - **多分页问卷**（`src/pipeline_stages/page_nav.py`：≥2 个分页容器才承认是分页，
+    翻页后按可见题号继续作答；`no_more` / `advanced` / `failed` 三出口，
+    `failed` 时**不点提交**）
+  - **NPS**：`nps` 作为 `scale` 的别名（DOM 与作答完全同量表，单列题型只会复制分支）
+- **平台适配层**（`src/platforms.py`）。平台专属选择器此前散在 5 处，现在是一张
+  `SurveyPlatform` 表 + `platform_for_url()`；`_scripts.SUBMIT_SELECTORS` /
+  `page_nav.NEXT_PAGE_SELECTORS` / `page_loader.QUESTION_CONTROL_SELECTOR` 都成了它的
+  派生视图。**明确没做的部分也写在文档里**：题型识别与作答注入的 JS 仍是问卷星 DOM
+  约定，换平台要换的是那些脚本，不是这份常量表。附带一条真实能力：域名不在已适配
+  范围时批次开始就提示（此前表现为"探测不到题目 → 整批失败"，容易被误读成适配 bug）。
+- **运行形态**：`pyproject.toml` + `wjx-fill` / `wjx-gui` 控制台入口 + `Dockerfile`；
+  CLI 新增 `--headless`、`--profile-dir`、`--url-file`（顺序队列，每行 `URL[,份数]`，
+  与 `--resume` 互斥）、`--max-total-time`（到点按优雅停止收工，可续传）。
+- **测试**：离线 **509 → 626 项**（CI 口径 624 + 2 skipped），E2E **5 → 9 项**。
+  新文件 `tests/test_anchoring.py`(46) `test_page_nav_and_sort.py`(18)
+  `test_runtime_forms.py`(13) `test_packaging.py`(7) `test_question_stage_dispatch.py`(3)。
+
+### 修复（4 条全部由真浏览器 E2E 抓到，离线 mock 一律绿）
+
+- **矩阵多选勾不上**：共用生成器里"先 `checked=true` 再补一个合成 click"对 radio 无害
+  （点只会选中），对 checkbox 却是**再翻回未选中** —— 脚本返回 True、页面一格没勾。
+  现在按 `r.type` 分流，复选框走原生 `click()`。
+- **排序题探测不到**：`closest('.field, ..., [id]')` 会先匹配到 `<ul>` 自己
+  （它有 `id="q13_list"`），scope 缩成一个查不到隐藏域的节点 → 整道题静默消失。
+- **翻页兜底会点到包裹 `<div>`**：文案匹配遍历 `span/div` 时，装着按钮的容器
+  `textContent` 也是"下一页"且自身可见 → 点中一个没有翻页语义的 div，白等 8s 后判失败。
+  现在只允许叶子节点。
+- **矩阵题题干取不到**：`closest` 停在控件包装层 `.field`，而题面是它的兄弟节点 ——
+  改为从命中元素**逐层往上爬**找题面；矩阵题的 `name="qN_R"` 也补进了定位候选。
+
+另外三条不是 E2E 抓的：
+
+- **矩阵行权重与填空候选词此前从不生效**（README 一直写着这两个配置项）。
+  `answering_v2.generate_answer` 只读 `question["row_weights"]` /
+  `question["options"]`，而 `detect_questions` 回来的题目**永远没有**这两个键 ——
+  于是 `--config` / GUI 表格里填的矩阵分布和候选词全部静默走内置随机。
+  现在经 `anchoring.lookup_weight_entry()` 查全局配置，并把 GUI 产出的字符串行号键
+  统一成 `int`（`row_weights.get(1)` 在 GUI 那条路上此前永远查不到）。
+- **无头模式撞验证码 = 白等 120s**：`wait_for_manual_verification` 现在一进函数就
+  在无头实例上返回 False（不挂人工介入锁、不刷新页面）。等的是一个不存在的人，
+  停止谓词也救不了"没人能点"。
+- **E2E 用例之间共享 DOM 状态**：`driver` 是 module 作用域且页面只加载一次，
+  上一个用例勾过的 checkbox 会留在页面上 —— "每行各勾 1 个"实际测的是累计值。
+  加了 autouse 的 `_fresh_page` 逐用例重载页面，用例现在可以任意换顺序跑。
+
+### 变更（门禁与口径）
+
+- `README`「六类题型」→ 八类；权重配置 schema 2.0 → 3.0；`--resume` 与 `--url-file` 互斥。
+- 覆盖率实测 **75.0%（CI 口径）/ 75.3%（装齐可选依赖）**，`src/` 87.0~87.2%、
+  `gui/` 58.4~59.0%。地板**仍留 70**：`3.10` 那条 leg 本机量不到（这台机器只有
+  3.11/3.12/3.13），v2.8 定的"不拿没量过的环境赌门禁"照旧生效。
+- `tests/fixtures/mock_wjx.html` 11 题 → **13 题**（新增矩阵多选 Q12、排序题 Q13）；
+  新增 `tests/fixtures/mock_wjx_multipage.html`（两页问卷）。
+- `history.answers.options_selected` 值域变宽：排序题写入的是 item id 序列（可能是字符串），
+  矩阵多选是各行勾中列值摊平。落库列本来就是 JSON 文本，无需迁移。
+- **明确不做**（评估过、写在这里免得反复重提）：
+  代理 / IP 池（与 README 免责声明正面冲突，且问卷星按服务端真实 IP + cookie + 智能验证
+  计数，同类项目的 XFF 做法本来就是不稳定的）；并发 worker（同时开 N 个浏览器直接稀释
+  「正态分布人类行为」这条立身点，还会让 `ManualHoldLock` 与人工介入的前提崩掉）。
+- GUI 侧**没有**跟上 v3.0 的运行形态开关（无头 / profile / 队列 / 时限都只在 CLI）：
+  GUI 是"看着窗口跑"的入口，无头对它没意义；队列与时限要的是无人值守，那是 CLI 的场景。
+
+### 已知限制（诚实记录）
+
+- 排序题与多分页的结构假设来自问卷星的公开 DOM 约定 + 自建 mock，**没有在真机分页/排序
+  问卷上验证过**。失败模式是显式的（探测不到该题 / 整份判失败），不会静默交出半份问卷。
+- `Dockerfile` 未在本仓库 CI 里构建过（没有可用的 docker runner），文件里就写着这件事。
+- `gui/controller.py` 14%、`gui/app.py` 25% 仍无离线防线，与 v2.8 同因（要真实 driver
+  或模态对话框）。本轮新起的 `src/pipeline_stages/question_stage.py` 从 29% 抬到 **55%**。
+
 ## [2.8.0] - 2026-09-21
 
 针对 v2.7.0 全面评估报告（`CODE_REVIEW_v2.7.0.md`）的整改批次。逐条复测过：

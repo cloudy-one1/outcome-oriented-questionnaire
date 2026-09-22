@@ -44,10 +44,11 @@ jobs:
           project: ./pyrightconfig.json
 
       - name: Run offline test suite + coverage ratchet
-        # 覆盖率地板：只允许往上走。本 job 口径实测 72.1%（装齐可选依赖的开发机
-        # 72.4%；term 表把两者都四舍五入成 72% —— 别再写整数，见 README
+        # 覆盖率地板：只允许往上走。本 job 口径实测 75.0%（装齐可选依赖的开发机
+        # 75.3%；term 表把两者都四舍五入成 75% —— 别再写整数，见 README
         # 「开发与测试」的环境对照表），阈值定在 70 留一点余量；
-        # 抬高数字后请同步改这里与 README。3.10 那条 leg 本机量不到，不抬地板。
+        # 抬高数字后请同步改这里与 README。3.10 那条 leg 本机量不到，不抬地板
+        # （v3.0 复核过：这台机器只有 3.11/3.12/3.13，抬到 73 也是拿没量过的环境赌门禁）。
         # 用 marker 而不是 --ignore 排除 E2E：该模块本来就会在缺浏览器时自 skip。
         run: >
           pytest tests/ -m "not integration"

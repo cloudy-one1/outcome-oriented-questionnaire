@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![CI](https://github.com/cloudy-one1/outcome-oriented-questionnaire/actions/workflows/ci.yml/badge.svg)](https://github.com/cloudy-one1/outcome-oriented-questionnaire/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.8.0-brightgreen.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-3.0.0-brightgreen.svg)](CHANGELOG.md)
 
 本工具仅供学习与研究 Selenium 浏览器自动化技术使用，请务必遵守问卷星平台使用条款与相关法律法规（详见[免责声明](#免责声明)）。
 
@@ -15,13 +15,16 @@
 
 - **浏览器反检测** — CDP 注入 Stealth JS 隐藏 `navigator.webdriver`，随机化 UA / 屏幕分辨率 / 硬件指纹，可选 `undetected-chromedriver` 增强模式
 - **人类行为模拟** — 所有点击与停顿均为「正态分布 + 区间截断」采样，完整鼠标事件链，偶发长停顿，周期性重启浏览器释放内存
-- **六类题型全覆盖** — 单选 / 多选 / 下拉 / 量表 / 填空 / 矩阵单选，填空题自动识别姓名、手机、邮箱、年龄、地址、公司等字段并按类型生成
-- **加权随机作答** — 每道题可配置选项权重：单选加权采样，多选无放回加权抽样，多选还可控制「选中几个」的分布
-- **智能验证码检测** — DOM / URL 文本 / Shadow DOM 三信号并行检测；检出后弹窗提醒人工处理，人工介入锁保证等待期间不被误判为超时
+- **八类题型全覆盖** — 单选 / 多选 / 下拉 / 量表（含 NPS）/ 填空 / 矩阵单选 / **矩阵多选** / **排序题**，填空题自动识别姓名、手机、邮箱、年龄、地址、公司等字段并按类型生成
+- **多分页问卷** — 按页探测、按页作答、**只在最后一页点提交**；翻页失败时整份判失败，绝不把只答了第一页的问卷交上去（v3.0）
+- **加权随机作答** — 每道题可配置选项权重：单选加权采样，多选无放回加权抽样，多选还可控制「选中几个」的分布；矩阵多选可控制每行勾几个，排序题可钉住前几名
+- **题干锚定的权重配置** — 预设除了题号还带题干 + 结构签名，问卷中间插一题不再整体错位；锚点认不到题时**该题走等权并提示**，而不是拿别人的分布静默填（v3.0）
+- **智能验证码检测** — DOM / URL 文本 / Shadow DOM 三信号并行检测；检出后弹窗提醒人工处理，人工介入锁保证等待期间不被误判为超时；无头模式下直接判本轮失败（没有可介入的人）
+- **随时可停** — 停止/关闭窗口在**逐题边界、每题思考停顿、验证码人工等待**上都以 ≈0.2s 粒度生效，被打断的那一份不提交、不计失败（v3.0）
 - **断点续填与续传** — 重试时自动跳过单次提交内已答的题；跨进程可从上次中断的批次继续（CLI `--resume` / GUI 恢复对话框），权重配置随批次快照持久化
 - **运行历史与统计** — SQLite 记录每次批次的元信息与逐题答案明细，GUI 可视化查询、CSV 导出、过期清理
 - **可靠的提交语义** — 提交结果三态（成功 / 失败 / 未知），答案明细幂等写入，指数退避重试，异常分层（瞬态 DOM 异常可重试、程序错误直接暴露）
-- **CLI / GUI 双入口** — CLI 适合脚本与定时批量运行，GUI（Tkinter）适合可视化配置与实时监控
+- **CLI / GUI 双入口 + 可部署** — CLI 适合脚本与定时批量运行，GUI（Tkinter）适合可视化配置与实时监控；`--url-file` 顺序队列 + `--max-total-time` 时限 + `--profile-dir` 复用浏览器 profile，`pip install -e .` 后可用 `wjx-fill` / `wjx-gui`（v3.0）
 
 ---
 
@@ -40,6 +43,9 @@ cd automation
 
 # 核心依赖
 pip install -r requirements.txt
+
+# 可选：装成命令行工具（之后可直接用 wjx-fill / wjx-gui，不必 python run_cli.py）
+pip install -e .
 
 # 可选：更强的 Chrome 反检测模式
 pip install undetected-chromedriver
@@ -75,7 +81,21 @@ python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" \
 
 # 运行完导出当前权重为 JSON 模板（便于分享与版本管理）
 python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 1 --save-config ./configs/my_survey.json
+
+# v3.0 顺序队列：一个文件多份问卷，共用同一份预设，整批最多跑 2 小时
+cat > urls.txt <<'EOF'
+# 每行一条：URL[,份数]
+https://www.wjx.cn/vm/aaaa.aspx,10
+https://www.wjx.cn/vm/bbbb.aspx
+EOF
+python run_cli.py --url-file ./urls.txt --config ./configs/my_survey.json \
+                  --history ./data/history.db --max-total-time 7200
+
+# v3.0 复用浏览器 profile（登录态/磁盘痕迹）；无头只用于调试
+python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 3 --profile-dir ./profiles/p1
 ```
+
+> `--headless` 下智能验证**一出现就判本轮失败** —— 无头窗口里没有可伸手拉滑块的人。
 
 每次提交会输出 `OK` / `FAIL` / `UNKNOWN` 之一：
 
@@ -90,11 +110,11 @@ python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 1 --save-config ./con
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `-u, --url URL` | （必填） | 问卷完整 URL，出于合规考虑不提供默认值 |
+| `-u, --url URL` | （必填*） | 问卷完整 URL，出于合规考虑不提供默认值。*给了 `--url-file` 时可省 |
 | `-n, --count N` | `17` | 提交份数；配合 `--target-success` 时解释为「目标成功份数」 |
 | `-b, --browser` | `edge` | 浏览器类型：`edge` / `chrome` |
 | `--uc` | 关 | 仅 Chrome 生效：优先使用 undetected-chromedriver，失败自动回退原生 Selenium |
-| `-c, --config PATH` | 无 | 从 JSON 加载权重配置（schema 2.0），**整体替换**当前配置；校验不通过则拒绝运行并以退出码 2 结束 |
+| `-c, --config PATH` | 无 | 从 JSON 加载权重配置（schema 3.0，兼容 2.0），**整体替换**当前配置；校验不通过则拒绝运行并以退出码 2 结束 |
 | `--save-config PATH` | 无 | 运行结束后把当前权重保存为 JSON 模板 |
 | `-H, --history PATH` | 关 | 启用 SQLite 历史记录（指定 DB 路径） |
 | `--stats` | 关 | 运行结束后打印全库统计（需配合 `--history`） |
@@ -103,6 +123,10 @@ python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 1 --save-config ./con
 | `--max-attempts N` | `2×n` | 仅 `--target-success` 时生效：最大尝试次数上限。`--resume` 时按**已尝试次数**扣减（上次成功数 + 失败数），所以续传后总尝试数不会超过 N |
 | `--resume` | 关 | 断点续传：复用同 URL 最近一次未完成批次的 run_id、计数与权重快照，并沿用其计划总份数（需配合 `--history`） |
 | `--log-file PATH` | 关 | 启用 logging 并把运行日志写入指定文件 |
+| `--url-file PATH` | 关 | **v3.0** 顺序队列：每行一条 `URL[,份数]`（`#` 开头为注释）。与 `-u` 同给时 `-u` 先跑；共用同一份 `--config` 与 `--history`；与 `--resume` 互斥（退出码 2） |
+| `--headless` | 关 | **v3.0** 无头模式。**只建议调试**：问卷星对无头敏感，且智能验证一出现就判本轮失败（无头里没有可介入的人） |
+| `--profile-dir PATH` | 无 | **v3.0** 复用浏览器 profile 目录（登录态与磁盘痕迹）。同一目录不能同时被两个实例占用，所以队列是顺序跑的 |
+| `--max-total-time SECONDS` | 无 | **v3.0** 整批墙钟上限。到点按**优雅停止**收工（`interrupted`），下次 `--resume` 可继续 —— 与崩溃的 `failed` 不同 |
 
 ### GUI 使用
 
@@ -131,7 +155,9 @@ python run_gui.py
 
 **跨进程（续传）** — 每个批次在 SQLite 中有一条状态记录（`running / finished / failed / interrupted`）：
 
-- 用户主动停止（GUI 停止按钮 / CLI Ctrl+C）→ 状态记为 `interrupted`，已成功份数保留
+- 用户主动停止（GUI 停止按钮 / CLI Ctrl+C / `--max-total-time` 到点）→ 状态记为 `interrupted`，已成功份数保留
+  - **v3.0**：停止在轮内也生效 —— 逐题边界、每题思考停顿、等题轮询、验证码人工等待都以 ≈0.2s 粒度问一次。
+    被打断的那一份**从未被提交**，所以既不计成功也不计失败，下一份的位置就是它（`--resume` 会重做这一份）
 - 下次对同一 URL 启动时：
   - **CLI**：加 `--resume` 自动查找 24 小时内最近的未完成批次，复用其批次号与计数、接续答案编号，从第 K+1 份继续
   - **GUI**：自动弹出对话框「Run #N · 已成功 K/M 份 · 是否从第 K+1 份继续？」
@@ -150,18 +176,19 @@ python run_gui.py
         ↓
 启动 Stealth 浏览器（指纹随机化 + 反检测 JS 注入）
         ↓
-打开问卷页面 → JS 注入探测 6 类题型结构
+打开问卷页面 → JS 注入探测 8 类题型结构（只看当前可见页 + 题干）
         ↓
 （启用续传时）查找同 URL 未完成批次 → 复用批次号与权重快照
         ↓
 循环提交：
-  ├── 扫描已填题集合，跳过已答题（续填）
-  ├── 逐题按权重随机生成答案（填空题按字段类型生成文本）
-  ├── JS 注入模拟人类操作（事件链 + 正态分布停顿）
-  ├── 每题答案幂等写入 SQLite
-  └── 定期检查验证码 → 弹窗等待人工介入
+  ├── 【逐页】扫描已填题集合，跳过已答题（续填）
+  ├── 【逐页】逐题按权重随机生成答案（填空题按字段类型生成文本）
+  ├── 【逐页】JS 注入模拟人类操作（事件链 + 正态分布停顿）
+  ├── 【逐页】每题答案幂等写入 SQLite
+  ├── 【逐页】定期检查验证码 → 弹窗等待人工介入（无头则直接判失败）
+  └── 有下一页 → 翻页后继续【逐页】；翻页失败 → 整份判失败，**不提交**
         ↓
-模拟点击提交 → 三态判定（OK / FAIL / UNKNOWN）
+（最后一页才）模拟点击提交 → 三态判定（OK / FAIL / UNKNOWN）
         ↓
 结束落盘：finished（完成）/ interrupted（可恢复中断）/ failed（崩溃）
 ```
@@ -225,6 +252,23 @@ WEIGHT_CONFIG = {
 }
 ```
 
+### 题干锚点（schema 3.0，v3.0 新增）
+
+题号只是"保存时这道题在第几格"的遗迹：问卷中间插一道题，整份预设就会**向后错位一格**，
+而只要选项数恰好还对得上，校验一律放行 —— 跑完 17 份才发现分布全落在别人的题上。
+所以 GUI「探测题目 → 另存」会给每条配置附上锚点：
+
+```json
+"3": { "type": "single", "weights": [0.1, 0.3, 0.6],
+       "anchor": { "title": "您所在的城市？", "signature": "single:8" } }
+```
+
+- **带 anchor 的条目只按锚点生效**：题干（剥掉 `1.` / `第2题` 这类序号后比对）+ 结构签名
+  都命中才算认领；认不到就这一题走等权随机，并打印一行
+  `该权重本次**不生效**，不退回答题号`（每进程每条只提示一次）。
+- **不带 anchor 的条目照旧按题号**，schema 2.0 的老文件完全可用（只是没有错位保护）。
+- 手写 JSON 也可以只给 `"anchor": {"title": "..."}`，省略 `signature` 就只比题干。
+
 各题型的关键字段：
 
 | 题型（type） | 关键字段 | 说明 |
@@ -235,6 +279,11 @@ WEIGHT_CONFIG = {
 | `scale`（别名 `rating`） | `scale`, `weights` | weights 对齐分值 1..N |
 | `text`（别名 `textarea` / `fillblank`） | `field?`, `options?` | 留空 options 走内置随机生成 |
 | `matrix_single`（别名 `matrix`） | `rows`, `cols`, `row_weights` | 每行独立权重 |
+| `matrix_multi` | `rows`, `cols`, `row_weights`, `pick_options`, `pick_weights` | 每行勾几个由这两个键控制，默认 1 |
+| `sort`（别名 `ordering` / `rank`） | `order?` | 给定前几名的固定顺序，其余随机补在后面；留空即整题随机排序 |
+| `scale` 的别名 `nps` | 同 `scale` | 0~10 十一级，作答方式与量表相同 |
+
+所有题型都可选 `anchor`（见上）。
 
 ### GUI 中的编辑格式（权重表第 4 列）
 
@@ -281,6 +330,7 @@ WEIGHT_CONFIG = {
 | **run**（批次） | 一次「从启动到退出」的批量提交任务，对应 `runs` 表一行 |
 | **submission**（提交） | 一次完整的「打开问卷 → 答题 → 提交」流程，批次内的子单元 |
 | **attempt**（尝试） | 目标成功模式下的一次尝试；失败的尝试不占用成功数 |
+| **anchor**（锚点） | 权重条目携带的题干 + 结构签名，用来在题号漂移后把预设认领回原题 |
 | **success_count** | 批次内确认成功的份数 |
 | **fail_count** | 批次内确认失败的份数（含保守计入的未知） |
 | **target_count** | 用户期望的成功份数或总尝试份数（取决于运行模式） |
@@ -300,14 +350,14 @@ pip install -r requirements-dev.txt
 # 全量测试（含依赖真实浏览器驱动的 E2E）
 python -m pytest tests/ -v
 
-# 离线套件（无浏览器环境 / CI，509 项）
+# 离线套件（无浏览器环境 / CI，626 项；CI 口径 624 passed + 2 skipped）
 python -m pytest tests/ -m "not integration" -q
 
 # 仅浏览器 E2E（需本机 Edge / Chrome + WebDriver，5 项）
 python -m pytest tests/ -m integration -q
 ```
 
-当前测试全部通过：**514 项**（离线 509 + E2E 5）。
+当前测试全部通过：**635 项**（离线 626 + E2E 9）。
 
 > **类型门禁不随环境变**：`src/` + `gui/` + 入口在两种环境下都是 **0 error
 > 0 warning**。两处可选依赖（`opencv-python`、`undetected_chromedriver`）的动态
@@ -320,10 +370,10 @@ python -m pytest tests/ -m integration -q
 >
 > | 门禁 | 装齐可选依赖（开发机） | 未装（CI / 干净 venv） |
 > |---|---|---|
-> | 离线套件 | 509 passed | 507 passed + 2 skipped（二维码解析用例） |
-> | 覆盖率 TOTAL | 72.4%（`src/` 84.4%、`gui/` 58.6%） | 72.1%（`src/` 84.4%、`gui/` 58.0%） |
+> | 离线套件 | 626 passed | 624 passed + 2 skipped（二维码解析用例） |
+> | 覆盖率 TOTAL | 75.3%（`src/` 87.2%、`gui/` 59.0%） | 75.0%（`src/` 87.0%、`gui/` 58.4%） |
 >
-> 覆盖率请写一位小数，别写整数：`--cov-report=term` 会把两者都四舍五入成 **72%**，
+> 覆盖率请写一位小数，别写整数：`--cov-report=term` 会把两者都四舍五入成 **75%**，
 > 而 README 与 `ci.yml` 曾因此互相指对方口径不对。
 > 批次循环里有 `random` 分支，同一环境两次跑出 ±0.1pp 属正常抖动。
 
@@ -333,7 +383,7 @@ python -m pytest tests/ -m integration -q
 |---|---|---|
 | 静态检查 | `python -m ruff check .` | 通过 |
 | 类型检查 | `npx pyright` | `src/` + `gui/` + 入口 **0 error 0 warning**（不设 baseline、不豁免，两种依赖口径下都一样） |
-| 覆盖率 | `pytest --cov=src --cov=gui --cov-fail-under=70` | 实测 **72.1%**（CI 口径）/ **72.4%**（装齐可选依赖），`src/` 84.4%、`gui/` 58.0~58.6%；地板 70% 只许上调 |
+| 覆盖率 | `pytest --cov=src --cov=gui --cov-fail-under=70` | 实测 **75.0%**（CI 口径）/ **75.3%**（装齐可选依赖），`src/` 87.0~87.2%、`gui/` 58.4~59.0%；地板 70% 只许上调——**v3.0 仍不动它**：`3.10` 那条 leg 本机量不到（这台机器只有 3.11/3.12/3.13），不拿没量过的环境赌门禁 |
 
 - **`ruff.toml`** 启用 `E9/F63/F7/F82` + `F401/F841/F541`。后三条是刻意加的零误报
   「接线断链」防线：v2.4 的 `--resume` 静默失效（`main()` 算出 `resume_fail`
@@ -355,11 +405,16 @@ python -m pytest tests/ -m integration -q
 
 ### E2E 覆盖范围
 
-`tests/fixtures/mock_wjx.html` 是一份 11 题的离线 mock 问卷（6 类题型 +
-一道 2~10 分的非 1 起量表），页面内用 JS 模拟问卷星的 AJAX 提交
+`tests/fixtures/mock_wjx.html` 是一份 **13 题**的离线 mock 问卷（8 类题型 +
+一道 2~10 分的非 1 起量表 + 矩阵多选 + 排序题），页面内用 JS 模拟问卷星的 AJAX 提交
 （URL 不变、延迟渲染「提交成功」文案，并记录提交按钮被点的次数）。
-E2E 因此覆盖到 `run_one_submission` 的完整链路、提交只点一次的保证，
-以及量表边界识别。
+`tests/fixtures/mock_wjx_multipage.html` 是两页版：第 2 页初始 `display:none`，
+靠"下一页"按钮切换。
+
+E2E 因此覆盖到 `run_one_submission` 的完整链路、提交只点一次的保证、量表边界识别、
+**题干探测**、矩阵多选真的勾上、排序题同时改 DOM 与写隐藏域、以及分页问卷
+"两页都答完且只在最后一页提交"。v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），
+离线 mock 对它们一律绿。
 
 ### 已知缺口（诚实记录）
 
@@ -379,7 +434,7 @@ E2E 因此覆盖到 `run_one_submission` 的完整链路、提交只点一次的
 |---|---|---|
 | `gui/controller.py` | 14% | 探测题目 / 二维码解码 / 配置导入都要真实 driver 或模态对话框 |
 | `gui/app.py` | 25% | `SurveyGUI.__init__` 一建就打开真实 `data/history.db` 并启动动画 `after` 循环，测试里无法安全实例化；`_run_loop` 与几个面板薄代理已有契约测试（`tests/test_gui_proxies.py`） |
-| `src/pipeline_stages/question_stage.py` | 29% | 逐题 DOM 交互主干，离线只覆盖等待与分发逻辑，真实点击仍靠 E2E |
+| `src/pipeline_stages/question_stage.py` | 55%（v3.0 补齐分发） | 逐题 DOM 交互主干：等待与「哪道题调哪个填充器」的分发已有离线契约（`test_question_stage_dispatch.py`），真实点击仍靠 E2E |
 | `src/cli.py` | 69% | `run_batch` 主干已测，剩余是 `--save-config` / 统计打印一类输出分支 |
 
 > **覆盖率不等于验证过。** 上面的 100% / 97% 是拿替身对象跑出来的 —— 它证明
@@ -407,6 +462,20 @@ E2E 因此覆盖到 `run_one_submission` 的完整链路、提交只点一次的
 4. `data/`、`configs/`、`*.db`、`*.csv` 已列入 `.gitignore` —— 历史库和权重预设里都有可识别文本，别靠手动留意来防一次 `git add -A`
 
 > 导出的 CSV 中，以 `=` `+` `-` `@` 开头的单元格会被自动加前缀 `'`，避免问卷页面回传的文本在 Excel/WPS 里被当作公式执行。
+
+---
+
+## 不在本工具范围内（评估过、明确不做）
+
+| 事项 | 为什么不做 |
+|---|---|
+| 代理 / IP 池 / 伪造 `X-Forwarded-For` | 与下面的免责声明正面冲突；且问卷星的计数走服务端真实 IP + cookie + 智能验证，XFF 只在特定反代配置下被采信 —— 效果不可靠，代价却是对方的风控 |
+| 并发 worker（同时开 N 个浏览器） | 本工具的立身点是「正态分布的人类行为 + 可靠的提交语义」。N 个实例同时提交会直接稀释前者，并让「人工介入验证码」这个单实例前提失效 |
+| 自动识别验证码 | 只检测、只请人帮忙。绕过验证码不是本项目要解决的问题 |
+| GUI 的无头 / 队列 / 时限开关 | GUI 是"看着窗口跑"的入口；无头对它没有意义，队列与时限要的是无人值守，那是 CLI 的场景 |
+
+第二个平台（腾讯问卷 / 金数据 / Google Forms）也**没有**支持：`src/platforms.py` 只是把
+问卷星专属的选择器收成了一张表，题型识别与作答注入的 JS 仍是问卷星的 DOM 约定。
 
 ---
 
