@@ -10,9 +10,16 @@ from __future__ import annotations
 import os
 import re
 import sys
-import tomllib
 
 import pytest
+
+# `tomllib` 是 Python 3.11 才进标准库的，而本仓库的支持下限是 3.10（CI 矩阵里就有
+# 一条 3.10 的 leg）—— 裸 import 会在**收集阶段**抛 ModuleNotFoundError，
+# 把整套离线测试一起拖红，而不是只红这一个模块。
+# 这里按模块级 skip：本文件的契约（pyproject / requirements / 版本三方对齐）在
+# CI 的 3.13 那条 leg 上是真跑的，所以少一条 leg 覆盖不损失任何判定，
+# 而这些检查本身与解释器版本无关。
+tomllib = pytest.importorskip("tomllib")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
