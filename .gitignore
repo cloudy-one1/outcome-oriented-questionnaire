@@ -39,6 +39,7 @@ Desktop.ini
 # Testing
 .pytest_cache/
 .coverage
+coverage.json
 htmlcov/
 
 # Jupyter

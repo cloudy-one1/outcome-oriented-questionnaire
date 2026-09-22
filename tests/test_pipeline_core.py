@@ -708,3 +708,78 @@ def test_stale_anchor_is_reported_once_across_submissions(capsys) -> None:
         config.WEIGHT_CONFIG.clear()
         config.WEIGHT_CONFIG.update(saved)
         anchoring.reset_reported_anchors()
+
+
+# ---------------------------------------------------------------------------
+#  Step 7.5：提交前完整度自检（v3.1）
+# ---------------------------------------------------------------------------
+_REQUIRED_TWO = [
+    {"q": 1, "code": "3", "required": True},
+    {"q": 2, "code": "11", "required": True},
+]
+
+
+def test_undetected_required_question_blocks_the_submit_click() -> None:
+    """平台标了必答、整份流程却没探测到它 → 不点提交，直接判失败。
+
+    真卷上的日期题与排序题就是这个形状（探测看不见那道题）。今天的行为是白点一次
+    提交、换一句平台的"第 N 题未答"，日志里只剩一条看不出原因的失败。
+    """
+    with stages(detect_questions=_questions(1),
+                detect_platform_questions=_REQUIRED_TWO) as st:
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_FAILED
+    st.find_and_click_submit.assert_not_called()
+
+
+def test_gap_only_counts_questions_we_never_saw() -> None:
+    """逐页探测到的题号是**并集**：第 1 页答过的题不该在最后一页被判漏答。
+
+    这条是"跨页累积"的接线证明（单页 fixture 证不到它 —— 那里 detected_all
+    恰好等于最后一页的题号）。
+    """
+    pages = [_questions(1), _questions(2)]
+    nav = mock.Mock(side_effect=[("advanced", "下一页题号 [2]"), ("no_more", "到底了")])
+    with stages(
+        detect_questions=mock.Mock(side_effect=pages),
+        advance_to_next_page=nav,
+        detect_platform_questions=_REQUIRED_TWO,
+    ):
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+
+
+def test_no_platform_signal_never_blocks_submission() -> None:
+    """模板不标 topic → 拿不到平台读数 → 一律照常提交。
+
+    缺信号不是"有缺口"，拦错一次就是一单本来能交的问卷被判失败。
+    """
+    with stages(detect_questions=_questions(1),
+                detect_platform_questions=[]) as st:
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+    st.find_and_click_submit.assert_called_once()
+
+
+def test_unanswered_optional_question_does_not_block() -> None:
+    """探测不到但**没标必答**的题不拦：那是题型缺口，[对拍] 负责说。"""
+    with stages(
+        detect_questions=_questions(1),
+        detect_platform_questions=[
+            {"q": 1, "code": "3", "required": True},
+            {"q": 2, "code": "11", "required": False},
+        ],
+    ) as st:
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+    st.find_and_click_submit.assert_called_once()
+
+
+def test_gap_scan_reads_whole_survey_while_drift_scan_reads_the_page() -> None:
+    """对拍只看本页（``visible_only=True``），完整度自检必须看整卷（``False``）。"""
+    seen: list[bool] = []
+
+    def _probe(_driver: Any, _platform: Any, *, visible_only: bool = True) -> list[dict]:
+        seen.append(visible_only)
+        return [] if visible_only else _REQUIRED_TWO
+
+    with stages(detect_questions=_questions(1, 2),
+                detect_platform_questions=mock.Mock(side_effect=_probe)):
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+    assert seen[0] is True and seen[-1] is False, f"两次扫描的分页口径不对: {seen}"

@@ -49,6 +49,7 @@ pytestmark = [
 PROJ = Path(__file__).resolve().parent.parent
 FIXTURE_HTML = PROJ / "tests" / "fixtures" / "mock_wjx.html"
 MP_FIXTURE_HTML = PROJ / "tests" / "fixtures" / "mock_wjx_multipage.html"
+GAP_FIXTURE_HTML = PROJ / "tests" / "fixtures" / "mock_wjx_required_gap.html"
 
 sys.path.insert(0, str(PROJ))
 
@@ -406,6 +407,59 @@ def test_detection_extracts_question_titles_for_anchoring(driver):
     assert anchor is not None
     assert anchoring.anchor_matches_question(anchor, by_q[2]) is True
     assert anchoring.anchor_matches_question(anchor, by_q[1]) is False
+
+
+def test_platform_probe_reads_markers_and_crosscheck_stays_silent(driver):
+    """v3.1 结构对拍在真 DOM 上的两头：读得到平台自报结构，且探测对了就不许出声。
+
+    为什么必须占一个 E2E 用例：Python 侧单测喂的是手工 dict，"候选选择器 + 属性名
+    怎么传进 JS""分页过滤与 ``detect_questions`` 口径是否一致""契约 2 的静默反面
+    —— 探测明明判对了却刷一堆假警"这三件事都只有真浏览器能证。
+    fixture 的 13 个容器都按真卷形态标了 ``topic`` / ``type``（见 fixture 内注释），
+    所以这里期望的是：读数齐、码与形状一致、对拍**零提示**。
+    """
+    from src.crosscheck import crosscheck_questions
+    from src.detection import detect_platform_questions, detect_questions
+    from src.platforms import WJX
+
+    items = detect_platform_questions(driver, WJX)
+    assert [it["q"] for it in items] == list(range(1, 14)), f"平台读数: {items}"
+    assert [it["code"] for it in items] == [
+        "3", "4", "7", "5", "1", "1", "1", "2", "2", "6", "5", "6", "11",
+    ], f"题型码读数: {items}"
+
+    drift = crosscheck_questions(detect_questions(driver), items, WJX)
+    assert drift == [], f"探测与平台自报本来一致，对拍却出声了: {drift}"
+
+
+def test_required_but_undetected_question_becomes_a_pre_submit_gap(driver):
+    """真 DOM 上锁住完整度自检的判据：平台标了必答、我们整题没探测到 → 缺口 = [那一题]。
+
+    fixture 复现的是真卷上的日期题（``input.datebox`` 是只读的，被填空那一步的
+    ``readOnly`` 跳过规则挡掉，于是整题不进探测结果）。为什么只能放在 E2E：
+    判据的一半是"探测**看不见**这道题"，而那取决于真实 DOM 与 CSS ——
+    手工 dict 里怎么构造都行，到了真页面上未必不可。
+    另一半是"没标 ``req`` 的题不许拦" —— 拦错一次就是一单本来能交的问卷被判失败。
+    """
+    from src.completeness import describe_gap, unanswered_required
+    from src.detection import detect_platform_questions, detect_questions
+    from src.platforms import WJX
+
+    driver.get("file:///" + GAP_FIXTURE_HTML.as_posix())
+
+    ours = detect_questions(driver)
+    assert [q["q"] for q in ours] == [1, 4], (
+        f"只读 datebox（Q2/Q3）本该探测不到，而 req=\"\" 的 Q4 该探测到: {ours}"
+    )
+
+    items = detect_platform_questions(driver, WJX, visible_only=False)
+    assert [(it["q"], it["required"]) for it in items] == [
+        (1, True), (2, True), (3, False), (4, False),
+    ], f"平台自报结构读歪了（空 req 必须算不必答）: {items}"
+
+    gap = unanswered_required(items, {int(q["q"]) for q in ours})
+    assert gap == [2], f"缺口应该正好是那道必答题: {gap}"
+    assert "Q2" in describe_gap(gap)
 
 
 def test_full_pipeline_fill_and_history(driver, history_db):

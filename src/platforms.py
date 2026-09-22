@@ -23,7 +23,23 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Mapping
+
+
+@dataclass(frozen=True)
+class QuestionTypeCode:
+    """平台在题目容器上自报的**一个**题型码。
+
+    ``accepted`` 是"我们这边的探测结果取哪些值算对得上" —— 用集合而不是单值，
+    因为一个平台码常覆盖我们拆开的两种形态（矩阵单选 / 矩阵多选）。
+    """
+
+    label: str
+    """给人看的题型名，进对拍提示文案"""
+
+    accepted: frozenset[str]
+    """``detect_questions`` 返回项里 ``type`` 可取的值"""
 
 
 @dataclass(frozen=True)
@@ -52,11 +68,45 @@ class SurveyPlatform:
     page_wrapper_selector: str
     """分页容器候选（数量 ≥2 才承认这是分页问卷）"""
 
+    question_marker_selectors: tuple[str, ...] = ()
+    """平台**自报**题号题型的容器候选，按优先级排列（空 = 没有可对拍的信号）
+
+    与 ``question_control_selector`` 的分工要分清：后者只回答"这页渲染出题目了
+    没有"（等题用），这里回答"平台自己认为这一页有哪几道题、各是什么题型"。
+    对拍要的是后者 —— 它是一条**独立于我们探测逻辑**的读数，只有它能发现
+    "我们把矩阵量表认成了 scale"这类自己看不自己的错。
+    """
+
+    question_number_attr: str = "topic"
+    """容器上题号属性名"""
+
+    question_type_attr: str = "type"
+    """容器上题型码属性名"""
+
+    question_type_codes: Mapping[str, QuestionTypeCode] = field(default_factory=dict)
+    """题型码 → 可读名 + 可接受的探测结果；**未收录的码一律不参与对拍**"""
+
     def matches(self, url: str) -> bool:
         host = (url or "").split("://", 1)[-1].split("/", 1)[0].lower()
         return any(host == h or host.endswith("." + h) or host == h.lstrip(".")
                    for h in self.hosts)
 
+
+WJX_TYPE_CODES: Mapping[str, QuestionTypeCode] = {
+    # 码表来源：2026-09-22 在真卷（wjx.cn/vm/rg3dg49.aspx，15 题覆盖 1/2/3/4/5/6/7/9/11）
+    # 上把 ``#fieldset1 > div`` 的 topic / type 与容器内实际控件形状逐题对过。
+    "1": QuestionTypeCode("填空", frozenset({"text"})),
+    "2": QuestionTypeCode("多行文本", frozenset({"text"})),
+    "3": QuestionTypeCode("单选", frozenset({"single"})),
+    "4": QuestionTypeCode("多选", frozenset({"multi"})),
+    "5": QuestionTypeCode("量表", frozenset({"scale"})),
+    "6": QuestionTypeCode("矩阵", frozenset({"matrix_single", "matrix_multi"})),
+    "7": QuestionTypeCode("下拉", frozenset({"dropdown"})),
+    "9": QuestionTypeCode("多空填空", frozenset({"text"})),
+    "11": QuestionTypeCode("排序", frozenset({"sort"})),
+    # 8 / 10 及更大码值没有实测依据，**故意不列**：拿不准的码报错警，
+    # 比不报更糟 —— 用户会开始忽略所有对拍提示。
+}
 
 WJX = SurveyPlatform(
     name="wjx",
@@ -65,6 +115,8 @@ WJX = SurveyPlatform(
         'input[type="radio"], input[type="checkbox"], select, textarea,'
         ' input[type="text"], input[type="tel"], input[type="number"]'
     ),
+    question_marker_selectors=("#fieldset1 > div[topic]", "div[topic][type]"),
+    question_type_codes=WJX_TYPE_CODES,
     submit_selectors=(
         "#divSubmit", "#submit_button", "#ctlNext",
         "button[type='submit']", "input[type='submit']",
@@ -156,8 +208,10 @@ def unsupported_url_notice(url: str) -> str | None:
 
 __all__ = [
     "PLATFORMS",
+    "QuestionTypeCode",
     "SurveyPlatform",
     "WJX",
+    "WJX_TYPE_CODES",
     "canonical_survey_key",
     "platform_for_url",
     "unsupported_url_notice",

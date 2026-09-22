@@ -36,6 +36,10 @@ from .config import (
 )
 # v3.0 权重锚定：按题干认领权重 + 未命中提示
 from .anchoring import report_unmatched_anchors
+# v3.1 结构对拍：我们的探测结果 ↔ 平台在题目容器上自报的 topic/type
+from .crosscheck import crosscheck_questions, report_structure_drift
+# v3.1 提交前完整度自检：平台标了必填、我们整题没探测到的那些，别点提交
+from .completeness import describe_gap, unanswered_required
 # V2.3 第 1 章第 3 条：下沉各阶段实现到 pipeline_stages 子包
 from .pipeline_stages import (
     _answer_one_question,
@@ -50,7 +54,13 @@ from .pipeline_stages import (
     install_alert_recorder,
 )
 # 题目探测（断点续填/题目结构识别）来自 detection 模块，不属于 pipeline 职责
-from .detection import detect_answered_questions, detect_questions
+from .detection import (
+    detect_answered_questions,
+    detect_platform_questions,
+    detect_questions,
+)
+# v3.1 结构对拍的题型码表在平台常量层（对拍读的是问卷星 DOM 上的 topic/type）
+from .platforms import WJX
 # 提交三态 + 查找提交按钮来自 interactions.submit（第一章第 2 条已拆分）
 from .interactions.submit import (
     SUBMIT_FAILED,
@@ -95,6 +105,29 @@ def _abort_if_stopped(
         raise SubmissionAborted(stage, question=question)
 
 
+def _platform_structure(driver: Any, *, visible_only: bool = True) -> list[dict]:
+    """平台自报的题目结构（题号 + 题型码 + 必答标记）；**任何失败都退化成"没有信号"**。
+
+    对拍与提交前完整度自检都靠它，而两者都只是诊断：它们自己出问题时不能把一份本来
+    能提交成功的问卷判失败，所以这里把异常吞干净、返回空列表 —— 调用方拿到空就是
+    "没信号"，对拍整体静默、完整度自检不拦停。
+    （与 ``detect_answered_questions`` 那处的降级同构，区别只在：那边降级会重答题目，
+    这边降级什么都不损失。）
+
+    :param visible_only: 逐页对拍用 ``True``；提交前的整卷自检用 ``False``。
+    """
+    try:
+        return detect_platform_questions(driver, WJX, visible_only=visible_only)
+    except TRANSIENT_DOM_EXCEPTIONS:
+        return []
+    except Exception as _e:
+        raise_non_recoverable(_e)
+        print("  " + format_exc_log(
+            _e, action="读平台自报题型", recovery="跳过对拍与完整度自检",
+        ))
+        return []
+
+
 def _answer_current_page(
     driver: Any,
     lock: ManualHoldLock,
@@ -126,6 +159,14 @@ def _answer_current_page(
     # 但必须说出来 —— 静默走等权，和用户没配一样，只是没人知道预设其实没生效。
     for _anchor_line in report_unmatched_anchors(WEIGHT_CONFIG, questions):
         print("  " + _anchor_line)
+
+    # v3.1 结构对拍：拿平台自报的 topic/type 与上面的探测结果比一次。锚定只能发现
+    # "预设里的题干在这份卷上找不到"，发现不了"我们把这道题判成了别的题型"
+    # —— 签名本来就是从探测结果算的，探测错了签名跟着错。纯诊断，不改作答行为。
+    for _drift_line in report_structure_drift(
+        crosscheck_questions(questions, _platform_structure(driver), WJX)
+    ):
+        print("  " + _drift_line)
 
     qnums = {int(q["q"]) for q in questions if isinstance(q.get("q"), int)}
 
@@ -273,6 +314,9 @@ def _do_one_submission_core(
     page_index = 0
     skipped_total = 0
     detected_total = 0
+    # 整份问卷（跨所有页）探测到的题号并集：完整度自检要的是"这一份从头到尾见过哪些
+    # 题"，只看最后那一页会把前面几页的必答题误判成漏答。
+    detected_all: set[int] = set()
     while True:
         page_index += 1
         if page_index > MAX_SURVEY_PAGES:
@@ -291,6 +335,7 @@ def _do_one_submission_core(
         )
         skipped_total += page_skipped
         detected_total += len(qnums)
+        detected_all |= qnums
         if page_status != "ok":
             driver.switch_to.default_content()
             return SUBMIT_FAILED
@@ -312,6 +357,18 @@ def _do_one_submission_core(
     # Step 7 全题答完后再检查一次验证码（提交前问卷星最爱弹）
     _abort_if_stopped(stop_check, "本页已答完但收到停止请求，不点提交")
     if not _check_verification_with_lock(driver, lock, stop_check):
+        driver.switch_to.default_content()
+        return SUBMIT_FAILED
+
+    # Step 7.5 提交前完整度自检：平台标了必答、而我们**整题都没探测到**的题，
+    # 交上去注定被必填拦下 —— 那就别点提交，并直接说是哪几题。
+    # 判据只收零歧义的那一种（探测到了但题型判错的归 [对拍] 管），
+    # 契约与"为什么不管另一半"见 src/completeness.py。
+    _gap = unanswered_required(
+        _platform_structure(driver, visible_only=False), detected_all
+    )
+    if _gap:
+        print("  " + describe_gap(_gap))
         driver.switch_to.default_content()
         return SUBMIT_FAILED
 

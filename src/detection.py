@@ -28,6 +28,7 @@ import json
 from typing import Any
 
 from .interactions._scripts import option_blank_helper_script
+from .platforms import SurveyPlatform
 
 
 # 两处 execute_script 脚本体共用的 JS 函数声明（见 option_blank_helper_script）：
@@ -35,6 +36,81 @@ from .interactions._scripts import option_blank_helper_script
 # "框填上了没有"。三段判定必须同源，否则会出现"探测说有框、作答找不到框"这种
 # 报成功但页面仍是空的分裂。
 _OPTION_BLANK_JS: str = option_blank_helper_script()
+
+
+# ``detect_questions`` 与 ``detect_platform_questions`` **共用**的分页过滤：
+# 问卷星把每一页渲染成同一棵 DOM 树里的 div.page，只有当前页可见。
+# 不做这层过滤，探测会把后面几页的题也算成"本页题"—— 于是在第 1 页就去点
+# 第 3 页的选项，平台只收当前页的输入，结果是"整卷答完"仍被判未答。
+# 刻意只认分页容器这一层：量表那些 display:none 的隐藏 radio 不在其列，
+# 那是它们的正常形态（v2.6 靠那些 radio 读量表边界）。
+#
+# 为什么两处必须同源：对拍是拿"本页探测结果"比"本页平台题号"。两边分页口径
+# 不一致时，每份分页问卷都会刷一堆"平台有 Q9 我们没探测到"的假警 —— 而假警的
+# 代价是用户开始忽略所有提示，真错位也就跟着没人看了。
+_PAGE_HIDDEN_JS: str = r"""
+function pageHidden(el) {
+    var n = el;
+    while (n && n !== document.body) {
+        var cl = (n.className || '').toString();
+        var isPage = /(^|\s)(page|paging|pDiv|question-page|ui-page)(\s|$)/.test(cl)
+                  || (n.dataset && n.dataset.page !== undefined);
+        if (isPage) {
+            if (n.hidden) return true;
+            if (n.style && n.style.display === 'none') return true;
+            if (window.getComputedStyle
+                    && window.getComputedStyle(n).display === 'none') return true;
+        }
+        n = n.parentElement;
+    }
+    return false;
+}
+"""
+
+
+# 平台自报结构（题号 + 题型码 + 必填标记）的读取脚本。参数依次是候选选择器、
+# 题号属性名、题型码属性名、是否只看当前可见页。
+# 选择器按候选顺序试到**第一个非空**为止就停：`#fieldset1 > div[topic]` 是问卷星的
+# 标准投放，`div[topic][type]` 兜那些换了外层容器的模板。
+#
+# 两种"看不见"要分清，它们的意思正好相反：
+#   * ``skip``  —— 被**跳题 / 互斥**逻辑藏起来的题（不在分页容器里却整块 display:none）。
+#     这种题平台本来就不要求答，算进必答题会把一份能交的问卷白拦下来。
+#   * 分页隐藏 —— 别的页的题（``pageHidden``）。对拍时不算（两边都只看本页），
+#     提交前完整度自检时要算（那时整卷都走完了）。
+_PLATFORM_QUESTIONS_JS: str = r"""
+var selectors = arguments[0] || [];
+var numAttr = arguments[1];
+var typeAttr = arguments[2];
+var visibleOnly = arguments[3];
+var nodes = [];
+for (var i = 0; i < selectors.length && nodes.length === 0; i++) {
+    var found = document.querySelectorAll(selectors[i]);
+    if (found.length) nodes = Array.prototype.slice.call(found);
+}
+function displayHidden(n) {
+    if (n.hidden) return true;
+    if (n.style && n.style.display === 'none') return true;
+    return !!(window.getComputedStyle && window.getComputedStyle(n).display === 'none');
+}
+var out = [];
+nodes.forEach(function(n) {
+    var num = parseInt(n.getAttribute(numAttr), 10);
+    var code = n.getAttribute(typeAttr);
+    if (isNaN(num) || code === null || String(code).trim() === '') return;
+    var paged = pageHidden(n);
+    if (displayHidden(n) && !paged) return;          // 跳题藏起来的题：不参与任何判定
+    if (visibleOnly && paged) return;                // 对拍：只要本页的题
+    var reqAttr = (n.getAttribute('req') || '').trim();
+    out.push({
+        q: num,
+        code: String(code).trim(),
+        // 空值、"0"、没有这个属性都算不必答：缺信号一律朝"不拦"的方向降级
+        required: reqAttr !== '' && reqAttr !== '0'
+    });
+});
+return JSON.stringify(out);
+"""
 
 
 def detect_questions(driver: Any) -> list[dict]:
@@ -78,7 +154,7 @@ def detect_questions(driver: Any) -> list[dict]:
           {"q": 6, "type": "matrix_single",
            "rows": [1, 2, 3], "cols": [1, 2, 3, 4, 5]}
     """
-    raw = driver.execute_script(_OPTION_BLANK_JS + r"""
+    raw = driver.execute_script(_OPTION_BLANK_JS + _PAGE_HIDDEN_JS + r"""
 return (function() {
     var result = [];
     var map = {};   // qnum(int) -> question dict
@@ -91,27 +167,7 @@ return (function() {
     }
 
     // ---------- 工具：跳过"被分页容器隐藏"的控件（v3.0 多分页问卷） ----------
-    // 问卷星把每一页渲染成同一棵 DOM 树里的 div.page，只有当前页可见。
-    // 不做这层过滤，探测会把后面几页的题也算成"本页题"—— 于是在第 1 页就去点
-    // 第 3 页的选项，平台只收当前页的输入，结果是"整卷答完"仍被判未答。
-    // 刻意只认分页容器这一层：量表那些 display:none 的隐藏 radio 不在其列，
-    // 那是它们的正常形态（v2.6 靠那些 radio 读量表边界）。
-    function pageHidden(el) {
-        var n = el;
-        while (n && n !== document.body) {
-            var cl = (n.className || '').toString();
-            var isPage = /(^|\s)(page|paging|pDiv|question-page|ui-page)(\s|$)/.test(cl)
-                      || (n.dataset && n.dataset.page !== undefined);
-            if (isPage) {
-                if (n.hidden) return true;
-                if (n.style && n.style.display === 'none') return true;
-                if (window.getComputedStyle
-                        && window.getComputedStyle(n).display === 'none') return true;
-            }
-            n = n.parentElement;
-        }
-        return false;
-    }
+    // pageHidden 本体在 _PAGE_HIDDEN_JS（与平台侧对拍共用，见那边注释）。
 
     // ---------- 1. 单选 / 多选（v1 逻辑，保持完全一致） ----------
     (function() {
@@ -445,6 +501,70 @@ return (function() {
 })();
     """)
     return json.loads(raw)
+
+
+def detect_platform_questions(
+    driver: Any,
+    platform: SurveyPlatform,
+    *,
+    visible_only: bool = True,
+) -> list[dict]:
+    """读平台自己标在题目容器上的结构：``[{"q": 7, "code": "6", "required": True}, ...]``。
+
+    与 :func:`detect_questions` 的区别在于**信息来源**：那边是我们从控件形状反推
+    出来的结构，这边是平台明写的结构。两者对不上就说明其中一边错了，而"我们探测
+    出来的题型"是没法自己发现自己是错的 —— ``question_signature`` 算签名时用的
+    就是这个探测结果，探测判错时签名跟着错，锚点比对也就一路放行。
+
+    这是**只读旁路**，不参与作答，也不改变任何作答行为：拿不到信号（模板不带这些
+    属性、候选选择器全部落空、脚本被页面改写）就返回空列表，调用方据此**静默跳过
+    对拍**。平台没自报结构不等于我们探测错了，把它报成警报只会训练用户忽略提示。
+
+    分页问卷只返回**当前可见页**的题 —— 与 ``detect_questions`` 共用
+    ``_PAGE_HIDDEN_JS``，两边口径必须一致，理由见那段的注释。
+    ``visible_only=False`` 时返回**整卷**的题（含其它页上那些），给提交前的完整度自检用；
+    两种情况下被跳题 / 互斥逻辑藏起来的题都不返回 —— 那种题平台本来就不要求答。
+
+    每项的 ``required`` 取自容器上的 ``req`` 属性（真卷实测 ``req="1"``）。
+    **没有这个属性、或值是 ``0``，一律算不必答**：这条判据只在"确定会被平台拦下"时
+    才拦停，宁可少拦也不能拦错 —— 拦错一次就是一单本来能交的问卷被判失败。
+    """
+    if not platform.question_marker_selectors:
+        return []
+    raw = driver.execute_script(
+        _PAGE_HIDDEN_JS + _PLATFORM_QUESTIONS_JS,
+        list(platform.question_marker_selectors),
+        platform.question_number_attr,
+        platform.question_type_attr,
+        bool(visible_only),
+    )
+    if not isinstance(raw, str):
+        return []
+    try:
+        items = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(items, list):
+        return []
+
+    out: list[dict] = []
+    seen: set[int] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            qi = int(item.get("q"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        code = str(item.get("code") or "").strip()
+        # 同一题号出现两次（嵌套容器 / 模板异常）时保留第一个：对拍只要有个读数，
+        # 拿两个互相矛盾的读数去比我们的探测，等于自己造警。
+        if not code or qi in seen:
+            continue
+        seen.add(qi)
+        out.append({"q": qi, "code": code,
+                    "required": bool(item.get("required"))})
+    return sorted(out, key=lambda d: int(d["q"]))
 
 
 def detect_answered_questions(driver: Any) -> set[int]:

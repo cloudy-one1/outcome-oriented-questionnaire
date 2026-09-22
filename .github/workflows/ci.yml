@@ -44,16 +44,25 @@ jobs:
           project: ./pyrightconfig.json
 
       - name: Run offline test suite + coverage ratchet
-        # 覆盖率地板：只允许往上走。本 job 口径实测 75.6%（装齐可选依赖的开发机
-        # 75.7%；term 表把两者都四舍五入成 75% —— 别再写整数，见 README
-        # 「开发与测试」的环境对照表），阈值定在 70 留一点余量；
-        # 抬高数字后请同步改这里与 README。3.10 那条 leg 本机量不到，不抬地板
-        # （v3.0 复核过：这台机器只有 3.11/3.12/3.13，抬到 73 也是拿没量过的环境赌门禁）。
+        # 覆盖率地板：只允许往上走。地板就是这条命令里的 `--cov-fail-under`，
+        # 它是**手写数字里唯一还留在 CI 的**——README 的实测覆盖率由
+        # scripts/readme_coverage.py 从 coverage.json 生成，并把这里的地板值一起抄进块里。
+        # 抬高地板请只改这一处，README 下一次 --write 自动跟上。
+        # 3.10 那条 leg 本机量不到，所以不抬地板（这台机器只有 3.11/3.12/3.13，
+        # 抬到 73 也是拿没量过的环境赌门禁）。
         # 用 marker 而不是 --ignore 排除 E2E：该模块本来就会在缺浏览器时自 skip。
         run: >
           pytest tests/ -m "not integration"
           --cov=src --cov=gui --cov-report=term-missing
+          --cov-report=json:coverage.json
           --cov-fail-under=70
+
+      - name: README 覆盖率口径一致性
+        # 只在 3.13 leg 上比：README 生成块的数字来自某一次真实运行，而两条 leg 的
+        # 覆盖率本就允许不同（3.10 分支差异没人量过）。在没量过的 leg 上断言"数字必须
+        # 等于 3.13 的实测"，等于把口径差异伪装成缺陷。
+        if: matrix.python-version == '3.13'
+        run: python scripts/readme_coverage.py --check
 
   # E2E 用真实浏览器跑 mock 问卷，是唯一能验证"生成的 JS 在真 DOM 里成立"的环节
   # —— selector 被误拼进 JS 字符串字面量这类**语法合法、语义非法**的错误，
