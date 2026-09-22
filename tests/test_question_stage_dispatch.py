@@ -115,3 +115,105 @@ def test_matrix_single_still_dispatches_to_the_single_filler(monkeypatch) -> Non
         {"q": 10, "type": "matrix_single", "rows": [1], "cols": [1, 2, 3]},
     ) is True
     assert len(seen) == 1
+
+
+# ===========================================================================
+#  v3.0：选项自带填空框（"其他____"）
+# ===========================================================================
+def _force_pick_value_3() -> None:
+    """让 Q2 的多选永远只勾中值为 3 的那一项。"""
+    config.WEIGHT_CONFIG[2] = {
+        "type": "multi",
+        "weights": [0, 0, 1],
+        "count_options": [1],
+        "count_weights": [1],
+    }
+
+
+def test_multi_fills_blank_only_for_selected_option(monkeypatch) -> None:
+    """带框的选项被勾中才补文本；没勾中的那一项不许动。
+
+    往没选中的框里写字，页面上一格都没勾、服务端却收到一段文本 ——
+    比漏填更难查，因为回收数据里会多出一列没人解释得了的内容。
+    """
+    _force_pick_value_3()
+    fills: list[tuple[int, Any, str]] = []
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.js_click_question_options",
+        lambda driver, q, qtype, values: True,
+    )
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.js_fill_option_blank",
+        lambda driver, q, choice, text: fills.append((q, choice, text)) or True,
+    )
+
+    q = {"q": 2, "type": "multi", "choices": [1, 2, 3], "blank_options": [2, 3]}
+    assert _answer_one_question(RecordingDriver(), q) is True
+    assert [f[1] for f in fills] == [3], "只该为被勾中的那一项补文本"
+    assert fills[0][0] == 2
+    assert fills[0][2].strip(), "补的文本不能是空串"
+
+
+def test_unselected_blank_option_is_not_touched(monkeypatch) -> None:
+    """一个都没勾中带框的项时，一次都不该调用填充器。"""
+    config.WEIGHT_CONFIG[2] = {
+        "type": "multi",
+        "weights": [1, 0, 0],
+        "count_options": [1],
+        "count_weights": [1],
+    }
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.js_click_question_options",
+        lambda driver, q, qtype, values: True,
+    )
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.js_fill_option_blank",
+        lambda *a, **k: pytest.fail("没勾中带框的项，不该去填它"),
+    )
+    assert _answer_one_question(
+        RecordingDriver(),
+        {"q": 2, "type": "multi", "choices": [1, 2, 3], "blank_options": [3]},
+    ) is True
+
+
+def test_blank_fill_failure_flips_question_to_failed(monkeypatch) -> None:
+    """补文本失败必须把本题记为失败。
+
+    报"成功"而页面空着一格，最后只剩一个看不出原因的 unknown 提交 ——
+    这是本工具最难查的一类故障，宁可在逐题这一层就认下来。
+    """
+    _force_pick_value_3()
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.js_click_question_options",
+        lambda driver, q, qtype, values: True,
+    )
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.js_fill_option_blank",
+        lambda driver, q, choice, text: False,
+    )
+    assert _answer_one_question(
+        RecordingDriver(),
+        {"q": 2, "type": "multi", "choices": [1, 2, 3], "blank_options": [3]},
+    ) is False
+
+
+def test_blank_fill_exception_is_swallowed_as_failure(monkeypatch) -> None:
+    """填充器抛 WebDriver 级异常时降级为"本题失败"，不能掀掉整批。"""
+    from selenium.common.exceptions import StaleElementReferenceException
+
+    _force_pick_value_3()
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.js_click_question_options",
+        lambda driver, q, qtype, values: True,
+    )
+
+    def _boom(*a: Any, **k: Any) -> bool:
+        raise StaleElementReferenceException("框所在的 li 被重绘了")
+
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.js_fill_option_blank", _boom
+    )
+    assert _answer_one_question(
+        RecordingDriver(),
+        {"q": 2, "type": "multi", "choices": [1, 2, 3], "blank_options": [3]},
+    ) is False

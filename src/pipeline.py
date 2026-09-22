@@ -45,6 +45,9 @@ from .pipeline_stages import (
     _wait_for_questions,
     _wait_for_ready_state,
     advance_to_next_page,
+    collect_blocked_alerts,
+    describe_blocked_alerts,
+    install_alert_recorder,
 )
 # 题目探测（断点续填/题目结构识别）来自 detection 模块，不属于 pipeline 职责
 from .detection import detect_answered_questions, detect_questions
@@ -183,6 +186,21 @@ def _answer_current_page(
 
 
 # ---------------------------------------------------------------------------
+#  提交失败的补充诊断：把页面自己说出来的原因捞回日志
+# ---------------------------------------------------------------------------
+def _report_submit_diagnostics(driver: Any) -> None:
+    """打印本轮被拦下的 ``alert`` 文案（如果有的话）。
+
+    问卷星的必填校验就是拿 alert 说"您第 N 题未填写"的。接管之前有两种结局，
+    一种比一种难看：原生弹窗让下一条命令抛 ``UnexpectedAlertPresentException``
+    （整轮按瞬态异常重跑，重跑之后原因早就没了），或者干脆什么都没留下，
+    只剩一行看不出所以然的 unknown。
+    """
+    for _line in describe_blocked_alerts(collect_blocked_alerts(driver)):
+        print("  " + _line)
+
+
+# ---------------------------------------------------------------------------
 #  核心编排：单次提交真正实现（无外层重试）
 # ---------------------------------------------------------------------------
 def _do_one_submission_core(
@@ -239,6 +257,18 @@ def _do_one_submission_core(
         driver.switch_to.default_content()
         return SUBMIT_FAILED
 
+    # Step 3.5 接管 window.alert —— 必须在 frame 切换之后，弹窗是页面自己
+    # 那个 realm 里弹的，钩子挂在 default content 上等于没挂。
+    # 装不上不影响本轮提交：这是诊断能力，不是流程的一环。
+    try:
+        install_alert_recorder(driver)
+    except Exception as _e:
+        raise_non_recoverable(_e)
+        print("  " + format_exc_log(
+            _e, action="接管页面弹窗", submission_index=submission_index,
+            recovery="本轮没有弹窗诊断，其余流程照常",
+        ))
+
     # Step 4~6 逐页作答（v3.0 多分页问卷；单页问卷恰好走一圈）
     page_index = 0
     skipped_total = 0
@@ -289,11 +319,13 @@ def _do_one_submission_core(
     _abort_if_stopped(stop_check, "点击提交前收到停止请求")
     submit_result = find_and_click_submit(driver)
     if submit_result == SUBMIT_FAILED:
+        _report_submit_diagnostics(driver)
         driver.switch_to.default_content()
         return SUBMIT_FAILED
     if submit_result == SUBMIT_UNKNOWN:
         print("  [提交] 状态未知：按钮已点击但未观察到成功信号（超时 / AJAX / 服务端拒绝）"
               "→ 保守计为失败")
+        _report_submit_diagnostics(driver)
         driver.switch_to.default_content()
         return SUBMIT_UNKNOWN
 

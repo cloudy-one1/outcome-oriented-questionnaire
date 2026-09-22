@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 from ..answering import build_answer_strategy
 from ..answering_v2 import generate_answer as generate_answer_v2
+from ..answering_v2 import generate_option_blank_text
 from ..config import (
     Q_THINK_MU,
     Q_THINK_SIGMA,
@@ -24,7 +25,11 @@ from ..exceptions import (
     raise_non_recoverable,
 )
 from ..models import normalize_question_type
-from ..interactions.choices import js_click_option, js_click_question_options
+from ..interactions.choices import (
+    js_click_option,
+    js_click_question_options,
+    js_fill_option_blank,
+)
 from ..interactions.dropdown import js_select_dropdown
 from ..interactions.matrix import js_fill_matrix_multi, js_fill_matrix_single
 from ..interactions.scale import js_set_scale
@@ -154,6 +159,28 @@ def _answer_one_question(
             is_ok = False
         # history 记录：选项值列表
         options_selected = list(answer_values) if answer_values else None
+
+        # ---- 选项自带填空框（"其他____"）：勾完还要把那一格写上 ----
+        # 放在 try/except 之后而不是之内：上面降级成"逐一点击"的路径同样勾中了
+        # 那些项，一样需要补文本。少写这一处，症状是"报了成功、平台却整题拒收"。
+        selected_values = set(answer_values or [])
+        for blank_value in (q.get("blank_options") or []):
+            if blank_value not in selected_values:
+                continue
+            try:
+                if not js_fill_option_blank(
+                    driver, qnum, blank_value, generate_option_blank_text()
+                ):
+                    print(f"  [填空选项] Q{qnum} 第 {blank_value} 项的框没写进去"
+                          " → 本题计失败")
+                    is_ok = False
+            except Exception as _e:
+                raise_non_recoverable(_e)
+                print("  " + format_exc_log(
+                    _e, action="填写选项自带空", question=qnum, qtype=qtype,
+                    recovery="本题计失败，跳过继续答下一题",
+                ))
+                is_ok = False
 
     # ------------------------------------------------------------------
     #  V2 题型：text / scale / dropdown / matrix_single

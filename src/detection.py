@@ -27,6 +27,15 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .interactions._scripts import option_blank_helper_script
+
+
+# 两处 execute_script 脚本体共用的 JS 函数声明（见 option_blank_helper_script）：
+# 探测时用它认"这一项自带填空框"，作答时用它定位要写入的框，已答扫描时用它判断
+# "框填上了没有"。三段判定必须同源，否则会出现"探测说有框、作答找不到框"这种
+# 报成功但页面仍是空的分裂。
+_OPTION_BLANK_JS: str = option_blank_helper_script()
+
 
 def detect_questions(driver: Any) -> list[dict]:
     """扫描当前页面，自动提取所有题目的结构信息（v2.0 全题型版）。
@@ -49,6 +58,11 @@ def detect_questions(driver: Any) -> list[dict]:
           {"q": 1, "type": "single", "choices": [1, 2, 3, 4]}
           {"q": 2, "type": "multi",  "choices": [1, 2, 3]}
 
+      单选/多选的某一项自带填空框（"其他____"）时多一个键，值是**那些选项的
+      option value**（与 ``choices`` 同域，不是下标）::
+
+          {"q": 2, "type": "multi", "choices": [1, 2, 3], "blank_options": [3]}
+
       **V2 新增题型** ::
 
           # 下拉（等价单选，choices 是选项文本或数值）
@@ -64,7 +78,7 @@ def detect_questions(driver: Any) -> list[dict]:
           {"q": 6, "type": "matrix_single",
            "rows": [1, 2, 3], "cols": [1, 2, 3, 4, 5]}
     """
-    raw = driver.execute_script(r"""
+    raw = driver.execute_script(_OPTION_BLANK_JS + r"""
 return (function() {
     var result = [];
     var map = {};   // qnum(int) -> question dict
@@ -117,6 +131,13 @@ return (function() {
             var v = parseInt(el.value);
             if (!isNaN(v) && s.choices.indexOf(v) === -1) {
                 s.choices.push(v);
+                // 这一项自带填空框（"其他____"）。勾了它却不写文本，平台会按
+                // "该项内容未填写"拦下整题 —— 在本工具侧的样子是提交返回
+                // unknown，完全看不出是这一格空着。
+                if (optionBlankInput(el)) {
+                    if (!s.blank_options) s.blank_options = [];
+                    s.blank_options.push(v);
+                }
             }
         });
     })();
@@ -402,6 +423,9 @@ return (function() {
         if (it.type === 'scale' || it.type === 'text'
                 || it.type === 'matrix_single' || it.type === 'matrix_multi') {
             delete it.choices;
+            // 矩阵/量表的控件 name 也带 qN，第 1 步会把它们先记成选择题；
+            // 题型改判后这些"哪一项要填空"的结论不再适用于本体的定位方式。
+            delete it.blank_options;
         }
         if (it.choices && typeof it.choices.sort === 'function') {
             it.choices.sort(function(a, b) {
@@ -446,9 +470,10 @@ def detect_answered_questions(driver: Any) -> set[int]:
     :param driver: Selenium WebDriver
     :return:       set[int]，元素是已答的题号；探测失败/页面无题 → 空集合
     """
-    raw = driver.execute_script(r"""
+    raw = driver.execute_script(_OPTION_BLANK_JS + r"""
 return (function() {
     var answered = {};
+    var blankPending = {};   // 勾了"其他____"但那一格还没写字的题号
 
     // ---------- 1. 单选 / 多选 ----------
     document.querySelectorAll('input[type="radio"], input[type="checkbox"]').forEach(function(el) {
@@ -456,7 +481,12 @@ return (function() {
         if (!m) return;
         var q = parseInt(m[1]);
         if (el.checked) {
-            answered[q] = true;
+            var blank = optionBlankInput(el);
+            if (blank && !(blank.value || '').trim()) {
+                blankPending[q] = true;
+            } else {
+                answered[q] = true;
+            }
         }
     });
 
@@ -504,6 +534,10 @@ return (function() {
     );
     fillables.forEach(function(el) {
         if (el.disabled || el.readOnly) return;
+        // 选项自带的填空框（"其他____"）不是一道填空题。它的 id 形如 q2_6_text，
+        // 下面那条宽松的 /q(\d+)/ 兜底匹配会把它归给第 2 题，于是"框里有字"
+        // 就把整题报成已答 —— 而那一格属于哪个选项、有没有被勾中，全没人看。
+        if (isOptionLevelBlank(el)) return;
         var id = el.id || '', name = el.name || '';
         var m = id.match(/^q(\d+)$/) || id.match(/^answerq(\d+)$/) ||
                 name.match(/^q(\d+)$/) || id.match(/q(\d+)/);
@@ -557,6 +591,12 @@ return (function() {
             delete answered[qi];
         }
     });
+
+    // ---------- 6. "其他____"没写字的题不算已答 ----------
+    // 放在所有判定之后统一收口：量表兜底（第 3 步）也可能把同一题标成已答，
+    // 而"勾了带填空的项却没写字"是更强的未答证据。跳过它去提交，换回来的是
+    // 一个看不出原因的 unknown。
+    Object.keys(blankPending).forEach(function(q) { delete answered[parseInt(q)]; });
 
     return JSON.stringify(Object.keys(answered).map(function(k) { return parseInt(k); }));
 })();

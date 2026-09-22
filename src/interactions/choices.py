@@ -5,7 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from ._common import js_execute_retry
-from ._scripts import click_option_script, click_question_options_script
+from ._scripts import (
+    click_option_script,
+    click_question_options_script,
+    fill_option_blank_script,
+)
 
 
 @js_execute_retry()
@@ -15,6 +19,16 @@ def js_click_option(driver: Any, q: int, choice: int) -> bool:
     JS 实现集中在 `interactions._scripts.click_option_script`（第六章模块化）。
     """
     return driver.execute_script(click_option_script(q, choice))
+
+
+@js_execute_retry()
+def js_fill_option_blank(driver: Any, q: int, choice: int, text: str) -> bool:
+    """把 ``text`` 写进 Q{q} 第 ``choice`` 项**自带**的填空框（"其他____"）。
+
+    只在 ``detection`` 报出 ``blank_options`` 且那一项确实被选中时才被调用；
+    框的定位与探测侧共用同一个 JS 助手（见 ``fill_option_blank_script``）。
+    """
+    return driver.execute_script(fill_option_blank_script(q, choice, text))
 
 
 @js_execute_retry()

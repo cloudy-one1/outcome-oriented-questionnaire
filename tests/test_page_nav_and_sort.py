@@ -226,6 +226,30 @@ def test_url_host_routing_and_notice() -> None:
     assert platforms.unsupported_url_notice("https://www.wjx.cn/vm/x.aspx") is None
 
 
+@pytest.mark.parametrize("url, key", [
+    # 同一份问卷的多种投放形态 + 渠道参数 → 同一个键
+    ("https://www.wjx.cn/jq/77295530.aspx", "wjx.cn:77295530"),
+    ("https://www.wjx.cn/m/77295530.aspx", "wjx.cn:77295530"),
+    ("https://www.wjx.cn/vm/77295530.aspx?kd=abc&source=wx", "wjx.cn:77295530"),
+    ("https://www.wjx.cn/hj/77295530.aspx#wechat", "wjx.cn:77295530"),
+    ("https://www.wjx.cn/vj/Pq8k2A.aspx", "wjx.cn:Pq8k2A"),
+    ("https://www.wjx.cn/VJ/Pq8k2A.aspx", "wjx.cn:Pq8k2A"),   # host 归一，短码原样
+    # 结束页：标识在 query 上（同类项目的历史 issue 里参数名换过一次）
+    ("https://www.wjx.cn/wjx/join/complete.aspx?activityid=77295530", "wjx.cn:77295530"),
+    ("https://www.wjx.cn/wjx/join/complete.aspx?q=77295530", "wjx.cn:77295530"),
+    # 刻意不合并的两类：跨 host、短码大小写
+    ("https://v.wjx.cn/vj/Pq8k2A.aspx", "v.wjx.cn:Pq8k2A"),
+    ("https://www.wjx.cn/vj/pq8k2a.aspx", "wjx.cn:pq8k2a"),
+    # 非问卷星 URL / 空值只要不炸就行，匹配交由 history
+    ("https://example.com/form/42", "example.com:42"),
+    ("", ":"),
+])
+def test_canonical_survey_key_collapses_url_forms(url: str, key: str) -> None:
+    from src import platforms
+
+    assert platforms.canonical_survey_key(url) == key
+
+
 def test_call_sites_read_selectors_from_the_platform_table() -> None:
     """常量搬进平台层后，三个调用点必须是**派生视图**而不是各自再抄一份。
 

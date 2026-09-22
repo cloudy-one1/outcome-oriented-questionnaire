@@ -149,6 +149,107 @@ def click_question_options_script(q: int, choices: list[int]) -> str:
 
 
 # ============================================================================
+#  选项自带填空框（"其他____"）—— 探测与作答共用的定位约定
+# ============================================================================
+
+def option_blank_helper_script() -> str:
+    """JS 函数声明组：认"选项自带的填空框"（"其他____"）及其所在容器。
+
+    三个函数：``optionLevelBox``（这一格自己的 label/li/td）、
+    ``optionBlankInput``（选项容器里的文本框，没有则 null）、
+    ``isOptionLevelBlank``（反过来判断一个文本框是不是长在某个选项里）。
+
+    判据刻意用"结构关系"而不是 ``class="underline"``：类名是问卷星某一代模板的
+    产物，换皮肤就没有了，而"填空框长在选项节点内部"是这类控件的画法本身。
+    只往**最近的一个选项容器**（``label`` / ``li`` / ``td``）里找，不爬到整道题 ——
+    爬高了会把同题其它选项的框、甚至题目的备注框误认成自己的填空。
+
+    这些字符串被 ``detection`` import 进它的两条脚本：探测时认"这一项要不要填文本"、
+    已答扫描时判"框填上了没有"、以及"这一格文本框不该被当成一道填空题"；
+    本模块的 :func:`fill_option_blank_script` 则用它定位要写入的框。
+    几处必须同源 —— 一边认得、一边找不到框，效果就是"报了成功、页面仍是空的"。
+    """
+    return """
+        function optionLevelBox(el) {
+            // 严格意义的"选项容器"：这一格自己的 label / li / td。
+            // 只认 closest，不退回 parentElement —— 判据一旦放宽，
+            // 普通填空题的父 div 也会被当成选项容器（它里面可能真有别的控件）。
+            if (!el || !el.closest) return null;
+            return el.closest('label, li, td');
+        }
+        function optionBlankInput(el) {
+            if (!el) return null;
+            var box = optionLevelBox(el) || el.parentElement;
+            if (!box) return null;
+            var cand = box.querySelectorAll(
+                'input[type="text"], input[type="tel"], input[type="number"],'
+                + ' input:not([type]), textarea');
+            for (var i = 0; i < cand.length; i++) {
+                var c = cand[i];
+                if (c.disabled || c.readOnly) continue;
+                var t = (c.type || '').toLowerCase();
+                if (t === 'radio' || t === 'checkbox' || t === 'hidden') continue;
+                return c;
+            }
+            return null;
+        }
+        function isOptionLevelBlank(el) {
+            // "这一格文本框其实是某个选项自带的"——同容器里住着 radio/checkbox。
+            var box = optionLevelBox(el);
+            if (!box) return false;
+            return !!box.querySelector('input[type="radio"], input[type="checkbox"]');
+        }
+    """
+
+
+def fill_option_blank_script(q: int, choice, text: str) -> str:
+    """把 ``text`` 写进 Q{q} 第 ``choice`` 项自带的填空框；成功返回 true。
+
+    为什么单独一次注入而不并进点击脚本：只有"被选中 **且** 带框"的选项才需要，
+    绝大多数题一次都不会走到这里。
+
+    写入后按 ``maxLength`` 截断：``el.value = ...`` 这种程序赋值**不受**
+    maxlength 约束（浏览器只在交互输入时裁），于是一段比框更长的文本会被原样
+    提交给服务端 —— 前端看起来填好了，校验却按"超出长度"拒，症状又落回
+    本工具最难查的那一类：提交返回 unknown。
+    """
+    q_json = json.dumps(q)
+    choice_json = json.dumps(str(choice))
+    text_json = json.dumps(str(text))
+    return f"""
+        {option_blank_helper_script()}
+        var q = {q_json};
+        var choice = {choice_json};
+        var txt = {text_json};
+
+        var input = document.querySelector('#q' + q + '_' + choice) ||
+                    document.querySelector('input[name="q' + q + '"][value="' + choice + '"]');
+        if (!input) return false;
+        var blank = optionBlankInput(input);
+        if (!blank) return false;
+
+        var limit = parseInt(blank.getAttribute('maxlength'));
+        if (!isNaN(limit) && limit > 0 && txt.length > limit) {{
+            txt = txt.substring(0, limit);
+        }}
+
+        var wrap = blank.closest ? (blank.closest('label, li, td') || blank) : blank;
+        try {{ wrap.scrollIntoView({{behavior: 'instant', block: 'center'}}); }} catch(_) {{}}
+        try {{ blank.focus(); }} catch(_) {{}}
+        try {{ blank.dispatchEvent(new Event('focus', {{bubbles:true}})); }} catch(_) {{}}
+        if (blank.isContentEditable) {{
+            blank.innerText = txt;
+        }} else {{
+            blank.value = txt;
+        }}
+        try {{ blank.dispatchEvent(new Event('input',  {{bubbles:true}})); }} catch(_) {{}}
+        try {{ blank.dispatchEvent(new Event('change', {{bubbles:true}})); }} catch(_) {{}}
+        try {{ blank.dispatchEvent(new Event('blur',   {{bubbles:true}})); }} catch(_) {{}}
+        return (blank.value || blank.innerText || '').length > 0;
+    """
+
+
+# ============================================================================
 #  text 模块：填空题
 # ============================================================================
 
@@ -543,6 +644,64 @@ def fill_sort_script(q: int, order: list) -> str:
             if (window.jQuery) {{ window.jQuery(ul).trigger('sortstop'); }}
         }} catch(_) {{}}
         return true;
+    """
+
+
+# ============================================================================
+#  页面级探针：接管 window.alert
+# ============================================================================
+
+def install_alert_recorder_script() -> str:
+    """把 ``window.alert`` 换成一个记录器：文案进数组，页面不再弹原生对话框。
+
+    两件事一起解决：
+      1. Selenium 侧不会再被原生弹窗噎住 —— 下一条命令抛
+         ``UnexpectedAlertPresentException``，整轮按瞬态异常重试，
+         而页面重跑一遍之后弹窗原因就又没了；
+      2. 问卷星必填校验**就是**用 alert 说"您第 N 题未填写"的，
+         接住它等于把提交失败的原因捞回日志里。
+
+    刻意只接管 ``alert``：
+      * ``confirm`` / ``prompt`` 的返回值是页面控制流的一部分（"确认提交？"
+        这类模板确实用 confirm），替用户回答"是"就是替用户提交 ——
+        一个诊断功能不该有这个权限。
+      * 也不做同类工具那种"alert 里顺手 ``location.reload()``"：那是把
+        "页面在报错"变成"页面重来一遍"，故障痕迹被抹干净，正是 issue 里
+        "无限自动刷新一道题不做"的成因。
+
+    返回值用于确认装上了；同一 document 重复注入是幂等的（页面跳转后
+    window 是新的，所以每次 ``driver.get`` 之后都要重装一次）。
+    """
+    return r"""
+        return (function () {
+            if (window.__wjxBlockedAlerts) return true;
+            window.__wjxBlockedAlerts = [];
+            window.__wjxNativeAlert = window.alert;
+            window.alert = function (msg) {
+                try {
+                    window.__wjxBlockedAlerts.push(
+                        (msg === undefined || msg === null) ? '' : String(msg));
+                } catch (_) {}
+                return undefined;
+            };
+            return true;
+        })();
+    """
+
+
+def read_blocked_alerts_script() -> str:
+    """取回并清空已捕获的弹窗文案（清空是为了下次读到的都是新产生的）。
+
+    条数上限是防御性的：页面若在一个循环里反复 alert，不带上限就等于
+    把整个数组跨进程搬到 Python 侧。
+    """
+    return r"""
+        return (function () {
+            var a = window.__wjxBlockedAlerts;
+            if (!a || !a.slice) return [];
+            window.__wjxBlockedAlerts = [];
+            return a.slice(0, 20);
+        })();
     """
 
 

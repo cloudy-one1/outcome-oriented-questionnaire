@@ -149,9 +149,12 @@ def test_detection_discovers_all_13_questions(driver):
     assert by_q[1]["type"] == "single"
     assert by_q[1]["choices"] == [1, 2, 3, 4]
 
-    # 2. multi (多选) - 5 选项
+    # 2. multi (多选) - 6 选项，其中第 6 项自带填空框（"其他____"）
     assert by_q[2]["type"] == "multi"
-    assert by_q[2]["choices"] == [1, 2, 3, 4, 5]
+    assert by_q[2]["choices"] == [1, 2, 3, 4, 5, 6]
+    assert by_q[2]["blank_options"] == [6], (
+        "带填空框的选项必须被单独标出来（值是 option value，不是下标）"
+    )
 
     # 3. dropdown (下拉) - 8 个非空选项
     assert by_q[3]["type"] == "dropdown"
@@ -235,6 +238,109 @@ def test_matrix_multi_actually_gets_checked_in_the_dom(driver):
     )
     hits = json.loads(states)
     assert hits == [1, 1, 1], f"每行应各勾中 1 个（默认 pick_options=[1]），实际 {hits}"
+
+
+def test_option_level_blank_is_filled_and_gates_the_resume_scan(driver):
+    """勾中"其他____"必须同时把那格写上，而它又决定这题算不算"答完"。
+
+    三件事只有真浏览器能一起验出来：
+      1. 作答侧点完之后还能定位到那一格 —— "探测说有框、注入找不到框"是最坏的组合，
+         Python 侧全绿而页面空着；
+      2. 写入受 maxlength 约束（``el.value = ...`` 不会被浏览器裁，服务端却按超长拒）；
+      3. 已答扫描在"勾了、格子空着"时必须报未答，否则 ``--resume`` 会跳过这一题，
+         交上去只剩一个看不出原因的 unknown。
+    """
+    import json as _json
+
+    from src import config
+    from src.detection import detect_answered_questions, detect_questions
+    from src.pipeline_stages.question_stage import _answer_one_question
+
+    config.WEIGHT_CONFIG[2] = {
+        "type": "multi",
+        "weights": [0, 0, 0, 0, 0, 1],
+        "count_options": [1],
+        "count_weights": [1],
+    }
+    try:
+        q2 = next(x for x in detect_questions(driver) if x["q"] == 2)
+        assert _answer_one_question(driver, q2) is True
+
+        state = driver.execute_script(
+            "return JSON.stringify({"
+            "  checked: !!document.querySelector('#q2_6').checked,"
+            "  text: document.querySelector('#q2_6_text').value"
+            "});"
+        )
+        info = _json.loads(state)
+        assert info["checked"] is True, "第 6 项应被勾中"
+        assert info["text"].strip(), "被勾中的'其他'那一格必须有文本"
+        assert len(info["text"]) <= 6, "maxlength=6 必须在写入时就被尊重"
+        assert 2 in detect_answered_questions(driver)
+
+        # 反证：格子清空后这题不能再算已答（续填才会重做它）
+        driver.execute_script("document.querySelector('#q2_6_text').value = '';")
+        assert 2 not in detect_answered_questions(driver)
+    finally:
+        config.WEIGHT_CONFIG.pop(2, None)
+
+
+def test_page_alert_is_captured_instead_of_blocking_the_driver(driver):
+    """页面弹 alert 时：WebDriver 不被噎住，而且那句原因能读回 Python 侧。
+
+    不打钩的旧行为是：必填校验的原生弹窗让**下一条**命令抛
+    ``UnexpectedAlertPresentException`` → 整轮按瞬态异常重跑 → 重跑之后
+    弹窗原因早就没了，日志里只剩一行看不出所以然的 unknown。
+    这里验的是接管之后的三个后果：命令照常执行、文案被读回、且读一次就清空。
+    """
+    from src.pipeline_stages.page_loader import (
+        collect_blocked_alerts,
+        describe_blocked_alerts,
+        install_alert_recorder,
+    )
+
+    # 勾中带填空框的选项但不写字 → 提交时页面必然弹 alert
+    driver.execute_script("document.querySelector('#q2_6').checked = true;")
+    assert install_alert_recorder(driver) is True
+    # 原生 alert 留着作对照：接管只是把它包起来，没有破坏页面
+    assert driver.execute_script("return typeof window.__wjxNativeAlert;") == "function"
+
+    driver.execute_script("document.getElementById('submit_button').click();")
+    # 关键一步：页面刚刚"弹"过 alert，而这条命令没有抛
+    assert driver.execute_script("return document.readyState") == "complete"
+
+    alerts = collect_blocked_alerts(driver)
+    assert any("第 2 题" in a for a in alerts), f"没捞到必填提示：{alerts}"
+    assert describe_blocked_alerts(alerts)[0].startswith("[页面弹窗]")
+    # 读过即清空：同一条原因不该在后面的轮次里反复出现
+    assert collect_blocked_alerts(driver) == []
+    # 提交确实被校验挡下了（成功文案不该出现）
+    assert driver.execute_script(
+        "return document.querySelector('#submit_result') === null;"
+    ) is True
+
+
+def test_clean_submission_does_not_trip_the_blank_validation(driver):
+    """反面对照：写字之后再提交，页面不弹、也不拦。
+
+    只有"填了也不让过"能被这条测出来 —— 那说明 fixture 的校验写错了，
+    上面那条用例通过的原因也就不可信了。
+    """
+    from src.pipeline_stages.page_loader import (
+        collect_blocked_alerts,
+        install_alert_recorder,
+    )
+
+    # 照样打钩：万一校验写错了，也不该留一个原生弹窗把后续用例一起拖死
+    install_alert_recorder(driver)
+    driver.execute_script(
+        "var c = document.querySelector('#q2_6');"
+        "c.checked = true;"
+        "document.querySelector('#q2_6_text').value = '自建渠道';"
+    )
+    driver.execute_script("document.getElementById('submit_button').click();")
+    assert collect_blocked_alerts(driver) == []
+    assert driver.execute_script("return window.__submitClicks;") == 1
 
 
 def test_sort_question_writes_order_into_dom_and_hidden_input(driver):
@@ -345,6 +451,18 @@ def test_full_pipeline_fill_and_history(driver, history_db):
     vs2 = [int(x) for x in a2["selected"]]
     assert 1 <= len(vs2) <= len(by_q[2]["choices"])
     assert js_click_question_options(driver, 2, "multi", vs2) is True
+    # 勾中带填空框的选项（"其他____"）就必须同时写上那一格 —— 生产路径
+    # （``_answer_one_question``）是这么做的，这里跟着模仿才能测出真实行为。
+    from src.answering_v2 import generate_option_blank_text
+    from src.interactions.choices import js_fill_option_blank
+    for _blank_value in by_q[2].get("blank_options") or []:
+        if int(_blank_value) in vs2:
+            assert js_fill_option_blank(
+                driver, 2, _blank_value, generate_option_blank_text()
+            ) is True
+            assert driver.execute_script(
+                "return (document.querySelector('#q2_6_text').value || '').trim().length;"
+            ), "写了却读不回来：框定位错了或赋值没生效"
     history_db.record_answer(run_id, submission_index, 2, "multi", options_selected=vs2)
     answers_record[2] = a2
 

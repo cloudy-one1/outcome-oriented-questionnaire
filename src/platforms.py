@@ -91,6 +91,53 @@ def platform_for_url(url: str) -> SurveyPlatform | None:
     return None
 
 
+def canonical_survey_key(url: str) -> str:
+    """把同一份问卷的各种 URL 形态收敛成一个键（批次匹配用，不写进页面请求）。
+
+    为什么不能拿 URL 字符串直接当"同一份问卷"的判据：问卷星同一份问卷的答卷
+    链接至少有 ``jq``（电脑端）/ ``m``（移动端）/ ``vm``、``vj``（短码分享）/
+    ``hj`` 几种投放形态，微信与渠道参数还会往 query 上挂 ``kd``、``source`` 一类
+    可变字段。同一份问卷经二维码解析和手输进来，字符串往往就是不一样的。
+    而 ``history.find_resumable_run`` 按这个键查上次中断的批次 —— 键对不上时
+    症状不是报错，是**静默不续传**：权重快照找不回来，计数从 0 开始，
+    统计被拆成几行。
+
+    收敛规则：``host（去 www. 前缀、转小写）+ ":" + 路径最后一段（去 .aspx、
+    大小写原样保留）``。刻意**不**跨 host 合并 —— ``www.wjx.cn`` 与 ``v.wjx.cn``
+    可能是同一问卷的不同投放渠道，但也可能是两件事，误并批次的代价是重复提交，
+    比少并（只是不续传，重跑一次即可）重得多。短码大小写同理不做归一。
+    """
+    rest = (url or "").strip().split("://", 1)[-1]
+    host, _, path_and_query = rest.partition("/")
+    host = host.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    path_part, _, query = path_and_query.split("#", 1)[0].partition("?")
+    segments = [s for s in path_part.split("/") if s]
+    ident = segments[-1] if segments else ""
+    if ident.lower().endswith(".aspx"):
+        ident = ident[: -len(".aspx")]
+    # 结束页（``complete.aspx``）的路径段里没有问卷标识，id 挂在 query 上。
+    # 不特判的话两份不同问卷的结束页会撞成同一个键 —— 而误并批次的后果是
+    # 把另一份问卷的中断计数拿来续传，直接产生重复提交。
+    if ident.lower() == "complete" and query:
+        ident = _query_ident(query) or ident
+    return f"{host}:{ident}"
+
+
+def _query_ident(query: str) -> str:
+    """从 query 上取问卷标识参数（``activityid`` / ``q`` / ``id``）。
+
+    参数名换过：同类项目的历史 issue 里，同一处解析从 ``activityid`` 改成了
+    ``q``。取第一个非空命中即可，不猜优先级。
+    """
+    for pair in query.split("&"):
+        name, _, value = pair.partition("=")
+        if name.strip().lower() in ("activityid", "q", "id") and value.strip():
+            return value.strip()
+    return ""
+
+
 def unsupported_url_notice(url: str) -> str | None:
     """非受支持平台的一行提示；认得出平台时返回 ``None``。
 
@@ -111,6 +158,7 @@ __all__ = [
     "PLATFORMS",
     "SurveyPlatform",
     "WJX",
+    "canonical_survey_key",
     "platform_for_url",
     "unsupported_url_notice",
 ]

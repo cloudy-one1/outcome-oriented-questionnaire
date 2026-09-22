@@ -59,6 +59,11 @@
     <label class="opt"><input type="checkbox" name="q2" id="q2_3" value="3">B站</label>
     <label class="opt"><input type="checkbox" name="q2" id="q2_4" value="4">小红书</label>
     <label class="opt"><input type="checkbox" name="q2" id="q2_5" value="5">知乎</label>
+    <!-- 选项自带的填空框（"其他____"）：勾中它必须同时写文本，否则平台按
+         "该项未填写"拒收整题。v3.0 的 blank_options 识别就靠这一格。 -->
+    <label class="opt"><input type="checkbox" name="q2" id="q2_6" value="6">其他
+      <input type="text" class="underline" id="q2_6_text" maxlength="6" placeholder="请注明">
+    </label>
   </div>
 </div>
 
@@ -282,6 +287,22 @@ window.__lastCheckedValue = function (name) {
   var r = document.querySelector('input[name="' + name + '"]:checked');
   return r ? r.value : null;
 };
+// 必填校验：勾了自带填空框的选项（"其他____"）却没写字 → 弹 alert 并拒绝提交。
+// 真实问卷星就是在这里弹原生 alert 的 —— 原生弹窗会噎住 Selenium
+// （下一条命令抛 UnexpectedAlertPresentException），所以 alert 接管的用例专门靠它。
+window.__blankViolation = function () {
+  var bad = null;
+  Array.prototype.forEach.call(
+    document.querySelectorAll('input[type="checkbox"], input[type="radio"]'),
+    function (ctl) {
+      if (!ctl.checked) return;
+      var box = ctl.closest ? ctl.closest('label, li, td') : null;
+      if (!box) return;
+      var t = box.querySelector('input[type="text"], textarea');
+      if (t && !(t.value || '').trim()) bad = ctl.name || '';
+    });
+  return bad;
+};
 (function () {
   var btn = document.getElementById('submit_button');
   if (!btn) return;
@@ -289,6 +310,11 @@ window.__lastCheckedValue = function (name) {
     // 阻止默认提交：file:// 下会让页面跳走，把 E2E 的断言窗口弄没
     if (ev && ev.preventDefault) ev.preventDefault();
     window.__submitClicks += 1;
+    var violation = window.__blankViolation();
+    if (violation) {
+      window.alert('您第 ' + violation.replace(/\D/g, '') + ' 题的"其他"项未填写');
+      return;
+    }
     window.setTimeout(function () {
       var box = document.createElement('div');
       box.id = 'submit_result';

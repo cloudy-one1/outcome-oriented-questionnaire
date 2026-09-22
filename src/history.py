@@ -35,6 +35,8 @@ import threading
 from contextlib import contextmanager
 from typing import Any, Callable, Iterable, Iterator, Optional
 
+from .platforms import canonical_survey_key
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,6 +48,7 @@ _SCHEMA_SQL: str = """
 CREATE TABLE IF NOT EXISTS runs (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,
     survey_url              TEXT    NOT NULL,
+    survey_key              TEXT,                       -- v3.0 断点续传：同一问卷多种 URL 形态的归一化键
     total_submissions       INTEGER NOT NULL,
     browser                 TEXT    NOT NULL,           -- 'edge' | 'chrome'
     use_uc                  INTEGER NOT NULL DEFAULT 0,  -- 0=False, 1=True
@@ -82,6 +85,9 @@ CREATE INDEX IF NOT EXISTS idx_answers_qnum  ON answers(question_number);
 -- 注意：(run_id, submission_index, question_number) 的 UNIQUE 索引不放在这里
 -- （_SCHEMA_SQL 由 executescript 无条件执行，老库若有重复行会导致 CREATE UNIQUE INDEX
 --  直接失败）。唯一索引改在 _apply_migrations 中先 dedup 再创建，保证幂等。
+-- 同理，runs.survey_key 的索引也只能写在 _migrate_v2_to_v3 —— 老库走到这一步时
+-- 这一列还不存在，放在这里会让 executescript 直接抛 "no such column"，
+-- 整个历史模块打不开。
 """
 
 # ============================================================================
@@ -113,7 +119,7 @@ WHERE id NOT IN (
 """
 
 # 目标 schema 版本（写入 SQLite 的 ``PRAGMA user_version``）
-_SCHEMA_VERSION: int = 2
+_SCHEMA_VERSION: int = 3
 
 
 def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
@@ -140,12 +146,43 @@ def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
         )
 
 
+# runs.survey_key（v3.0）：同一份问卷多种 URL 形态的归一化键
+_MIGRATION_ADD_SURVEY_KEY_COLUMN: str = (
+    "ALTER TABLE runs ADD COLUMN survey_key TEXT;"
+)
+
+# 这一句也只能待在迁移里，不能进 _SCHEMA_SQL：老库执行那段时列还不存在
+_MIGRATION_SURVEY_KEY_INDEX: str = (
+    "CREATE INDEX IF NOT EXISTS idx_runs_key ON runs(survey_key);"
+)
+
+
+def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
+    """v2 → v3：补 ``runs.survey_key`` 并回填全部历史批次。
+
+    回填只能在 Python 侧算：归一化规则（忽略 jq/m/vm/vj/hj 投放前缀与 query
+    差异、host 去 www）不是 SQL 表达式能干净写出来的。而且**留着 NULL 就等于
+    没修** —— ``find_resumable_run`` 按键匹配，老批次没键就永远续不上，
+    而那正是这次要消灭的"静默不续传"症状。
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
+    if "survey_key" not in cols:
+        conn.execute(_MIGRATION_ADD_SURVEY_KEY_COLUMN)
+    for rid, url in conn.execute(
+        "SELECT id, survey_url FROM runs WHERE survey_key IS NULL"
+    ).fetchall():
+        conn.execute(
+            "UPDATE runs SET survey_key = ? WHERE id = ?",
+            (canonical_survey_key(str(url or "")), int(rid)),
+        )
+    conn.execute(_MIGRATION_SURVEY_KEY_INDEX)
+
+
 # 迁移脚本表：key = 升级**到**的版本号。只跑一次，跑完写进 user_version。
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     2: _migrate_v1_to_v2,
+    3: _migrate_v2_to_v3,
 }
-
-
 def _require_lastrowid(cur: sqlite3.Cursor, what: str) -> int:
     """取 INSERT 的自增主键；lastrowid 为 None 时给出可定位的报错。
 
@@ -277,6 +314,9 @@ class SubmissionHistory:
     ) -> int:
         """开始一次批量运行，插入 runs 表并返回 run_id。
 
+        除 URL 原文外还写一列 ``survey_key``（v3.0）：同一份问卷的 jq/m/vm/vj
+        多种投放形态与渠道参数都归到同一个键上，续传按它匹配。
+
         :param weight_config: V2.1 断点续传 —— 把本次批次的权重配置序列化为 JSON
                               存入 ``runs.weight_config_json``，下次启动时可反序列化恢复。
                               传 None 则留空，下次无法续传权重。
@@ -292,15 +332,16 @@ class SubmissionHistory:
             wc_json = json.dumps(serializable, ensure_ascii=False)
 
         sql = (
-            "INSERT INTO runs (survey_url, total_submissions, browser, use_uc, status,"
-            " weight_config_json)"
-            " VALUES (?, ?, ?, ?, 'running', ?)"
+            "INSERT INTO runs (survey_url, survey_key, total_submissions,"
+            " browser, use_uc, status, weight_config_json)"
+            " VALUES (?, ?, ?, ?, ?, 'running', ?)"
         )
         with self._locked():
             cur = self._conn.execute(
                 sql,
                 (
                     survey_url,
+                    canonical_survey_key(survey_url),
                     int(total_submissions),
                     browser,
                     1 if use_uc else 0,
@@ -482,26 +523,34 @@ class SubmissionHistory:
         survey_url: str,
         max_age_hours: int = 24,
     ) -> Optional[sqlite3.Row]:
-        """查找同一问卷 URL 下最近一次未完成的 run（status='interrupted' 或 'running'）。
+        """查找同一问卷下最近一次未完成的 run（status='interrupted' 或 'running'）。
 
         用于「断点续传」场景：上次批量提交因网络/进程崩溃中断，
         下次启动时调用此方法找到上次的 run_id 与已成功份数 K，
         然后从 K+1 份继续。
 
-        :param survey_url:    问卷 URL（完全匹配，含 hash 片段）
+        v3.0 起按 ``survey_key`` 匹配而不是 URL 字符串相等：同一份问卷的
+        ``/jq/`` 与 ``/m/`` 形态、二维码解出的 ``v.wjx.cn/vm/`` 与手输的
+        ``www.wjx.cn/vm/``、以及微信带进来的 ``?kd=`` 一类渠道参数，此前都会
+        让这一句 SQL 落空 —— 落空的样子不是报错，是**安静地不起续传提示**，
+        用户以为功能没触发。
+
+        :param survey_url:    问卷 URL（原始串，内部先算归一化键再匹配）
         :param max_age_hours: 只查最近 N 小时内的 run（避免把几天前的老 run 误恢复）
         :return:              Row(run.id, total_submissions, success_count, ...) 或 None
         """
         sql = (
             "SELECT * FROM runs "
-            "WHERE survey_url = ? "
+            "WHERE survey_key = ? "
             "  AND status IN ('interrupted', 'running') "
             "  AND started_at >= datetime('now', ?) "
             # id DESC 兜底：started_at 只有秒级精度，同秒内建的两个批次若不加兜底，
             # LIMIT 1 命中哪一条是不确定的 —— 续传挑错批次会直接导致重复提交。
             "ORDER BY started_at DESC, id DESC LIMIT 1"
         )
-        return self._query_one(sql, (survey_url, f"-{int(max_age_hours)} hours"))
+        return self._query_one(
+            sql, (canonical_survey_key(survey_url), f"-{int(max_age_hours)} hours")
+        )
 
     def count_done_submissions(self, run_id: int) -> int:
         """统计某个 run 已成功提交的份数（success_count 字段，简单可靠）。

@@ -509,7 +509,7 @@ class TestSubmissionHistory(unittest.TestCase):
         )
         self.assertEqual(len(rows), 1, "dedup 后应只剩 1 条（max id）")
         self.assertEqual(
-            int(db2._conn.execute("PRAGMA user_version").fetchone()[0]), 2,
+            int(db2._conn.execute("PRAGMA user_version").fetchone()[0]), 3,
             "迁移跑完必须把版本号写回去，否则下次打开又要全表扫一遍",
         )
         import json as _json2
@@ -580,7 +580,7 @@ class TestSubmissionHistory(unittest.TestCase):
         self.db.close()
         conn = _sqlite3.connect(self._tmppath)
         version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-        self.assertEqual(version, 2, "新建库应当已落在当前版本")
+        self.assertEqual(version, 3, "新建库应当已落在当前版本")
         # 若把 dedup 挂回构造路径，下面这次打开会执行全表 DELETE；
         # 用触发器把它的执行次数记录下来。
         conn.execute("DROP TABLE IF EXISTS _dedup_probe")
@@ -646,6 +646,95 @@ class TestSubmissionHistory(unittest.TestCase):
         ms = self.db._conn.execute("PRAGMA busy_timeout").fetchone()[0]
         self.assertGreaterEqual(int(ms), 5000,
                                 "默认 5s 忙等且报错被吞会让 runs 行永停 running")
+
+    # ---------------------------------------------------------------
+    #  v3.0：survey_key 归一化匹配
+    # ---------------------------------------------------------------
+    def test_start_run_persists_survey_key(self) -> None:
+        """runs 行除 URL 原文外必须带上归一化键，否则续传无从匹配。"""
+        rid = self.db.start_run("https://www.wjx.cn/vm/Pq8k.aspx?kd=wx", 3, "edge", False)
+        row = self.db._query_one("SELECT survey_key FROM runs WHERE id=?", (rid,))
+        self.assertEqual(row["survey_key"], "wjx.cn:Pq8k")
+
+    def test_resume_matches_across_url_forms(self) -> None:
+        """同一份问卷的不同投放形态要能续上同一个批次。
+
+        这里是本次整改的正向断言：/jq/ 电脑端、/m/ 移动端、带渠道参数的分享链接
+        此前都被当成三份不同问卷，症状是"安静地不弹续传提示"而不是报错。
+        """
+        rid = self.db.start_run("https://www.wjx.cn/jq/77295530.aspx", 10, "edge", False)
+        self.db.mark_interrupted(rid, success_count=4, fail_count=1)
+
+        for variant in (
+            "https://www.wjx.cn/m/77295530.aspx",
+            "https://www.wjx.cn/vm/77295530.aspx?kd=abc&source=wx#qq",
+            "https://www.wjx.cn/JQ/77295530.aspx",
+        ):
+            found = self.db.find_resumable_run(variant)
+            self.assertIsNotNone(found, f"{variant} 应命中同批次")
+            self.assertEqual(int(found["id"]), rid)
+            self.assertEqual(int(found["success_count"]), 4)
+
+    def test_resume_does_not_merge_across_hosts_or_ids(self) -> None:
+        """跨 host 与跨问卷都不许并：误并批次的代价是重复提交。
+
+        v.wjx.cn 与 www.wjx.cn 可能是同一问卷的不同投放渠道，但也可能是两件事，
+        所以刻意不合并；短码大小写同理不做归一。
+        """
+        rid = self.db.start_run("https://www.wjx.cn/vj/AbCd12.aspx", 5, "edge", False)
+        self.db.mark_interrupted(rid, success_count=1, fail_count=0)
+        self.assertIsNone(self.db.find_resumable_run("https://v.wjx.cn/vj/AbCd12.aspx"))
+        self.assertIsNone(self.db.find_resumable_run("https://www.wjx.cn/vj/abcd12.aspx"))
+        self.assertIsNone(self.db.find_resumable_run("https://www.wjx.cn/vj/AbCd13.aspx"))
+
+    def test_v3_migration_backfills_survey_key(self) -> None:
+        """老库（无 survey_key 列）打开后要补列 + 回填 + 建索引。
+
+        留着 NULL 等于没修：按键匹配的话，升级前建的所有批次永远续不上。
+        """
+        self.db.close()
+        import sqlite3 as _sqlite3
+
+        conn = _sqlite3.connect(self._tmppath)
+        conn.execute("DROP TABLE IF EXISTS answers")
+        conn.execute("DROP TABLE IF EXISTS runs")
+        conn.execute("""
+            CREATE TABLE runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                survey_url TEXT NOT NULL,
+                total_submissions INTEGER NOT NULL,
+                browser TEXT NOT NULL,
+                use_uc INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'running',
+                success_count INTEGER NOT NULL DEFAULT 0,
+                fail_count INTEGER NOT NULL DEFAULT 0,
+                total_elapsed_seconds REAL NOT NULL DEFAULT 0.0,
+                error_message TEXT,
+                weight_config_json TEXT,
+                started_at TEXT NOT NULL DEFAULT (datetime('now')),
+                finished_at TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT INTO runs (survey_url, total_submissions, browser, status, success_count)"
+            " VALUES ('https://www.wjx.cn/jq/999888.aspx', 5, 'edge', 'interrupted', 2)"
+        )
+        conn.execute("PRAGMA user_version = 2")
+        conn.commit()
+        conn.close()
+
+        from src.history import SubmissionHistory
+        db2 = SubmissionHistory(self._tmppath)
+        cols = {r["name"] for r in db2._query("PRAGMA table_info(runs)")}
+        self.assertIn("survey_key", cols)
+        names = {r[0] for r in db2._query(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='runs'"
+        )}
+        self.assertIn("idx_runs_key", names)
+        found = db2.find_resumable_run("https://www.wjx.cn/m/999888.aspx")
+        self.assertIsNotNone(found, "回填后老批次一样要能续传")
+        self.assertEqual(int(found["success_count"]), 2)
+        db2.close()
 
 
 if __name__ == "__main__":

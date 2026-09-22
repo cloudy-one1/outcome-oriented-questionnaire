@@ -11,6 +11,9 @@ from .page_loader import (
     _ensure_questions_context,
     _robust_driver_get,
     _wait_for_ready_state,
+    collect_blocked_alerts,
+    describe_blocked_alerts,
+    install_alert_recorder,
 )
 # 验证码检查阶段
 from .verification_stage import _check_verification_with_lock
@@ -26,6 +29,9 @@ __all__ = [
     "_ensure_questions_context",
     "_robust_driver_get",
     "_wait_for_ready_state",
+    "collect_blocked_alerts",
+    "describe_blocked_alerts",
+    "install_alert_recorder",
     # verification
     "_check_verification_with_lock",
     # question

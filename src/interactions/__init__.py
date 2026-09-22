@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 # 题型：单选/多选
-from .choices import js_click_option, js_click_question_options
+from .choices import js_click_option, js_click_question_options, js_fill_option_blank
 # 题型：填空
 from .text import js_fill_text
 # 题型：量表
@@ -39,6 +39,7 @@ __all__ = [
     # 题型
     "js_click_option",
     "js_click_question_options",
+    "js_fill_option_blank",
     "js_fill_text",
     "js_set_scale",
     "js_select_dropdown",
