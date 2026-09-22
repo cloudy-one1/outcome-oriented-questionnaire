@@ -23,6 +23,7 @@ import sys
 import time
 from argparse import Namespace
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from .config import (
@@ -63,6 +64,96 @@ def _browser_type(value: str) -> str:
             f"不支持的浏览器：{value!r}，可选值：{', '.join(BROWSER_OPTIONS)}"
         )
     return b
+
+
+# 预约开跑接受的形态：带日期的三种 + 只给时刻的两种（"T" 分隔符归一化后同一路径）。
+# 刻意不做"猜用户想说的是哪天"之外的宽容（相对量词、时区、闰秒一类），理由见 _start_at。
+_START_AT_FORMATS: tuple[tuple[str, bool], ...] = (
+    ("%Y-%m-%d %H:%M:%S", True),
+    ("%Y-%m-%d %H:%M", True),
+    ("%Y-%m-%d", True),
+    ("%H:%M:%S", False),
+    ("%H:%M", False),
+)
+
+
+def _start_at(value: str, *, now: Callable[[], datetime] = datetime.now) -> datetime:
+    """把 ``--start-at`` 读成一个时间点（argparse 自定义类型，不合法即 ArgumentTypeError）。
+
+    带日期的写法（``2030-01-01 08:00``）已经过去了就是写错了 → 直接拒绝：预约一个
+    过去的时间，症状是"批次立刻开跑"，而用户以为自己在等 —— 与本仓库"宁可少做，
+    不做静默不对"的取向冲突。只给时刻（``08:00``）说的是"今天这个点"，点已经过了
+    则是明天的同一时刻，这是这种写法的通常意思，所以往后滚一天而不是报错。
+
+    这里**只**保证"不早于 T"：不做时钟同步、不抢开跑瞬间、不预留准备时间。
+    """
+    text = (value or "").strip().replace("T", " ")
+    if not text:
+        raise argparse.ArgumentTypeError("--start-at 不能是空串")
+    for fmt, has_date in _START_AT_FORMATS:
+        try:
+            parsed = datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+        if not has_date:
+            # 只给时刻：strptime 会把日期填成 1900-01-01，不换成今天的话任何时刻都
+            # "已经过去"。语义是"今天这个点"，点过了就是明天（不猜"下一个工作日"之类）
+            today = now().replace(hour=0, minute=0, second=0, microsecond=0)
+            parsed = parsed.replace(year=today.year, month=today.month, day=today.day)
+            if parsed < now():
+                parsed = parsed + timedelta(days=1)
+        # 此刻已经过去（带日期的写法不会自己往后滚）→ 这不是"等 0 秒"，是写错了
+        if parsed < now():
+            raise argparse.ArgumentTypeError(
+                f"--start-at 指定的时间已经过去：{value!r}（现在 {now():%Y-%m-%d %H:%M:%S}）。"
+                "只写时刻（HH:MM）= 今天或明天这个点，带日期的写法不会自己往后滚。"
+            )
+        return parsed
+    raise argparse.ArgumentTypeError(
+        f"--start-at 看不懂的时间：{value!r}，"
+        "可用 'YYYY-MM-DD HH:MM[:SS]' / 'YYYY-MM-DDTHH:MM' / 'HH:MM[:SS]'"
+    )
+
+
+_START_AT_SLICE: float = 1.0     # 等待切片：Ctrl+C / 停止信号最迟 1s 后能被看到
+_START_AT_PROGRESS_EVERY: float = 60.0   # 进度行节奏：每秒一行会把日志埋掉
+
+
+def _sleep_until(
+    start_at: datetime,
+    *,
+    now: Callable[[], datetime] = datetime.now,
+    sleep: Callable[[float], None] = time.sleep,
+    log: Callable[[str], None] = print,
+) -> None:
+    """睡到 ``start_at``（只保证不早于它，到点后的第一件事才是开浏览器）。
+
+    分片睡（``_START_AT_SLICE``）而不是 ``sleep(整个剩余)``：预约动辄几小时，
+    一发的 ``time.sleep`` 期间 Ctrl+C 只能等这一觉睡完才生效 —— 而"到点之前先停掉"
+    正是等待期唯一会被做的事。
+
+    等待结束后才返回给调用方去建浏览器，所以 ``--max-total-time`` 天然从 T 起算
+    （那条上限的计时在 ``run_batch`` 里开始），不必为此改任何计数。
+    """
+    remaining = (start_at - now()).total_seconds()
+    if remaining <= 0:      # 校验到开跑之间隔了几毫秒，到点即走
+        return
+    log(f"[预约] 不早于 {start_at:%Y-%m-%d %H:%M:%S} 开跑（还要等 {remaining:.0f}s；"
+        "这期间不会启动浏览器，也不会访问问卷地址）")
+    waited = 0.0
+    next_progress = _START_AT_PROGRESS_EVERY
+    while True:
+        remaining = (start_at - now()).total_seconds()
+        if remaining <= 0:
+            break
+        slice_ = min(_START_AT_SLICE, remaining)
+        sleep(slice_)
+        waited += slice_
+        if waited >= next_progress:
+            log(f"[预约] 还有 {remaining:.0f}s 开跑（已等 {waited:.0f}s）")
+            next_progress += _START_AT_PROGRESS_EVERY
+    log(f"[预约] 到点（{start_at:%H:%M:%S}），开始提交")
+
 
 
 def parse_args(argv: list[str] | None = None) -> Namespace:
@@ -118,7 +209,8 @@ def parse_args(argv: list[str] | None = None) -> Namespace:
         type=_positive_int,
         default=None,
         metavar="SECONDS",
-        help="v3.0 整批墙钟上限（秒）：到点按优雅停止收工，下次 --resume 可继续",
+        help="v3.0 整批墙钟上限（秒）：到点按优雅停止收工，下次 --resume 可继续。"
+             " 与 --start-at 同给时从预约时刻起算（不含等待）",
     )
     parser.add_argument(
         "-n", "--count",
@@ -224,6 +316,17 @@ def parse_args(argv: list[str] | None = None) -> Namespace:
         help="[补漏轮] 提交前完整度自检拦下必答缺口题时，不直接判失败：把那道题滚进"
              " 视野、等在场的人工在浏览器窗口里补答（最长 300s），补齐了才点提交。"
              " 默认关（判失败、不点提交）。无头模式下不等待，与默认一致。",
+    )
+    parser.add_argument(
+        "--start-at",
+        dest="start_at",
+        type=_start_at,
+        default=None,
+        metavar="'YYYY-MM-DD HH:MM[:SS]' | 'HH:MM'",
+        help="[预约开跑] 不早于指定时刻开跑（等待期间不启动浏览器、不访问问卷地址）。"
+             " 只写 HH:MM 表示今天这个点，已经过了就顺延到明天；带日期而又已经过去的一律"
+             " 拒绝（退出码 2）。只承诺 '不早于 T' —— 不做时钟同步，也不为抢开跑瞬间提前"
+             " 加载页面。--max-total-time 从 T 起算。",
     )
     return parser.parse_args(argv)
 
@@ -947,6 +1050,19 @@ def main(argv: list[str] | None = None) -> None:
     if len(targets) > 1 and args.resume:
         print("[error] --resume 只对一份问卷有意义，不能与 --url-file 队列同用")
         sys.exit(2)
+
+    # ---------- v3.1：--start-at 预约开跑 ----------
+    # 位置在所有校验之后、启动浏览器之前，两件事都由此成立：
+    #   * 坏配置 / 坏队列在**启动那一刻**就红，而不是让人等几小时后才发现白等；
+    #   * 第一次 driver.get 一定发生在 T 之后（run_batch 里才建浏览器），
+    #     而 --max-total-time 的计时也在 run_batch 里开始 → 它天然从 T 起算。
+    if args.start_at is not None:
+        try:
+            _sleep_until(args.start_at)
+        except KeyboardInterrupt:
+            # 还没提交过任何一份，也没有浏览器要收尾：非零码退出，别让 cron 以为跑成了
+            print("\n[预约] 等待开跑期间被中断 → 本次一份都没提交")
+            sys.exit(1)
 
     total_success = 0
     total_fail = 0

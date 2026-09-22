@@ -26,7 +26,7 @@
 - **断点续填与续传** — 重试时自动跳过单次提交内已答的题；跨进程可从上次中断的批次继续（CLI `--resume` / GUI 恢复对话框），权重配置随批次快照持久化。批次匹配认的是**同一份问卷**而不是 URL 字符串：`/jq/`、`/m/`、`/vm/`、`/vj/` 几种投放形态与微信带进来的渠道参数都归一到同一个键上（v3.0）
 - **运行历史与统计** — SQLite 记录每次批次的元信息与逐题答案明细，GUI 可视化查询、CSV 导出、过期清理
 - **可靠的提交语义** — 提交结果三态（成功 / 失败 / 未知），答案明细幂等写入，指数退避重试，异常分层（瞬态 DOM 异常可重试、程序错误直接暴露）；页面的 `alert` 被接管成记录器，**必填校验那句话会变成日志里的失败原因**，而不是把整轮噎成 `UnexpectedAlertPresentException`（v3.0）
-- **CLI / GUI 双入口 + 可部署** — CLI 适合脚本与定时批量运行，GUI（Tkinter）适合可视化配置与实时监控；`--url-file` 顺序队列 + `--max-total-time` 时限 + `--profile-dir` 复用浏览器 profile，`pip install -e .` 后可用 `wjx-fill` / `wjx-gui`（v3.0）
+- **CLI / GUI 双入口 + 可部署** — CLI 适合脚本与定时批量运行，GUI（Tkinter）适合可视化配置与实时监控；`--url-file` 顺序队列 + `--max-total-time` 时限 + `--profile-dir` 复用浏览器 profile，`pip install -e .` 后可用 `wjx-fill` / `wjx-gui`（v3.0）；`--start-at` 预约开跑（等待期间不启动浏览器，时限从到点算起）+ `--rescue-gaps` 补漏轮（v3.1）
 
 ---
 
@@ -95,6 +95,15 @@ python run_cli.py --url-file ./urls.txt --config ./configs/my_survey.json \
 
 # v3.0 复用浏览器 profile（登录态/磁盘痕迹）；无头只用于调试
 python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 3 --profile-dir ./profiles/p1
+
+# v3.1 预约开跑：不早于明早 08:00（今天的点已过则顺延到明天）。等待期间浏览器根本不
+# 启动，所以 --max-total-time 7200 是从 08:00 起算的两小时，不是从你敲下命令算起
+python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" --start-at "08:00" \
+                  --max-total-time 7200
+
+# v3.1 补漏轮：必答缺口题（我们探测不到、但人在窗口里看得懂的那些）先交给人补答，
+# 复检读得到答案才点提交；不写这个开关就是「判失败、不点提交」
+python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" --rescue-gaps
 ```
 
 > `--headless` 下智能验证**一出现就判本轮失败** —— 无头窗口里没有可伸手拉滑块的人。
@@ -128,7 +137,8 @@ python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 3 --profile-dir ./pro
 | `--url-file PATH` | 关 | **v3.0** 顺序队列：每行一条 `URL[,份数]`（`#` 开头为注释）。与 `-u` 同给时 `-u` 先跑；共用同一份 `--config` 与 `--history`；与 `--resume` 互斥（退出码 2） |
 | `--headless` | 关 | **v3.0** 无头模式。**只建议调试**：问卷星对无头敏感，且智能验证一出现就判本轮失败（无头里没有可介入的人） |
 | `--profile-dir PATH` | 无 | **v3.0** 复用浏览器 profile 目录（登录态与磁盘痕迹）。同一目录不能同时被两个实例占用，所以队列是顺序跑的 |
-| `--max-total-time SECONDS` | 无 | **v3.0** 整批墙钟上限。到点按**优雅停止**收工（`interrupted`），下次 `--resume` 可继续 —— 与崩溃的 `failed` 不同 |
+| `--max-total-time SECONDS` | 无 | **v3.0** 整批墙钟上限。到点按**优雅停止**收工（`interrupted`），下次 `--resume` 可继续 —— 与崩溃的 `failed` 不同。与 `--start-at` 同给时**从预约时刻起算**，不含等待 |
+| `--start-at '...'` | 无 | **v3.1** 预约开跑：不早于指定时刻开始（`'YYYY-MM-DD HH:MM[:SS]'` / `'HH:MM'`，后者过点即顺延到明天；带日期又已经过去 → 退出码 2）。等待期间不启动浏览器、不访问问卷地址，所以**没有"提前打开页面等着"那回事**。只承诺「不早于 T」—— 不做时钟同步，也不为抢整点提前加载 |
 | `--rescue-gaps` | 关 | **v3.1** 补漏轮：完整度自检拦下必答缺口题时不再直接判失败，而是把那道题滚进视野、等在场的人工补答（最长 300s），**复检空了才点提交**。默认关 = 行为与此前逐位一致；`--headless` 下不等待（窗口里没有可补答的人） |
 
 ### GUI 使用
@@ -381,14 +391,14 @@ pip install -r requirements-dev.txt
 # 全量测试（含依赖真实浏览器驱动的 E2E）
 python -m pytest tests/ -v
 
-# 离线套件（无浏览器环境 / CI，768 项；只装 requirements*.txt 的口径下会有若干 skip）
+# 离线套件（无浏览器环境 / CI，791 项；只装 requirements*.txt 的口径下会有若干 skip）
 python -m pytest tests/ -m "not integration" -q
 
 # 仅浏览器 E2E（需本机 Edge / Chrome + WebDriver，14 项）
 python -m pytest tests/ -m integration -q
 ```
 
-当前测试全部通过：**782 项**（离线 768 + E2E 14）。
+当前测试全部通过：**805 项**（离线 791 + E2E 14）。
 
 > **类型门禁不随环境变**：`src/` + `gui/` + 入口在两种环境下都是 **0 error
 > 0 warning**。两处可选依赖（`opencv-python`、`undetected_chromedriver`）的动态
@@ -401,7 +411,7 @@ python -m pytest tests/ -m integration -q
 >
 > | 门禁 | 装齐可选依赖（开发机） | 未装（CI / 干净 venv） |
 > |---|---|---|
-> | 离线套件 | 768 passed | 765 passed + 3 skipped（二维码解析 2 项；文档口径比对 1 项 —— 它读的 `coverage.json` 是同一次运行**末尾**才产出的） |
+> | 离线套件 | 791 passed | 788 passed + 3 skipped（二维码解析 2 项；文档口径比对 1 项 —— 它读的 `coverage.json` 是同一次运行**末尾**才产出的） |
 > | 覆盖率 | 实测比 CI 口径高 0.3pp（`src/` +0.1、`gui/` +0.6） | 见下方「已知缺口（诚实记录）」的生成块，那是门禁认的唯一口径 |
 >
 > 覆盖率数字现在只有一个来源：`scripts/readme_coverage.py` 从 `coverage.json` 生成，
@@ -461,8 +471,8 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 
 | 范围 | 离线覆盖率 |
 |---|---|
-| 全部 | **76.8%** |
-| `src/` | 88.6%（2912 条语句剩 331 行） |
+| 全部 | **77.0%** |
+| `src/` | 88.8%（2959 条语句剩 331 行） |
 | `gui/` | 58.4%（1888 条语句剩 785 行） |
 
 #### 已补齐的缺口（v2.7 那五条）
@@ -482,7 +492,7 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 | `gui/controller.py` | 13.5% | 探测题目 / 二维码解码 / 配置导入都要真实 driver 或模态对话框 |
 | `gui/app.py` | 25.0% | `SurveyGUI.__init__` 一建就打开真实 `data/history.db` 并启动动画 `after` 循环，测试里无法安全实例化；`_run_loop` 与几个面板薄代理已有契约测试（`tests/test_gui_proxies.py`） |
 | `src/pipeline_stages/question_stage.py` | 62.6% | 逐题 DOM 交互主干：等待、「哪道题调哪个填充器」的分发、带框选项只勾不填的降级都已有离线测试（`tests/test_question_stage_dispatch.py`），真实点击仍靠 E2E |
-| `src/cli.py` | 72.3% | `run_batch` 主干已测，剩余是 `--save-config` / 统计打印一类输出分支 |
+| `src/cli.py` | 75.2% | `run_batch` 主干已测，剩余是 `--save-config` / 统计打印一类输出分支 |
 | `src/browser/__init__.py` | 52.2% | `create_driver` 的 edge/chrome 分发与 `cleanup_browser_state` 整段 Cookie/Storage 清理没有离线替身（缺的正是那 11 行）—— `driver_factory` 有替身 driver，这层薄门面反而没人走一遍 |
 | `src/interactions/choices.py` | 58.8% | 三个 `@js_execute_retry` 包装函数的函数体一次都没在离线测试里执行（缺 21/31/42-46 行）—— 分发测到「该调哪个填充器」就停了，填充器自身的 `execute_script` 只有 E2E 覆盖 |
 
@@ -527,7 +537,7 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 | 代理 / IP 池 / 伪造 `X-Forwarded-For` | 与下面的免责声明正面冲突；且问卷星的计数走服务端真实 IP + cookie + 智能验证，XFF 只在特定反代配置下被采信 —— 效果不可靠，代价却是对方的风控 |
 | 并发 worker（同时开 N 个浏览器） | 本工具的立身点是「正态分布的人类行为 + 可靠的提交语义」。N 个实例同时提交会直接稀释前者，并让「人工介入验证码」这个单实例前提失效 |
 | 自动识别验证码 | 只检测、只请人帮忙。绕过验证码不是本项目要解决的问题 |
-| GUI 的无头 / 队列 / 时限开关 | GUI 是"看着窗口跑"的入口；无头对它没有意义，队列与时限要的是无人值守，那是 CLI 的场景 |
+| GUI 的无头 / 队列 / 时限 / 预约开关 | GUI 是"看着窗口跑"的入口；无头对它没有意义，队列、时限与 `--start-at` 要的是无人值守，那是 CLI 的场景 |
 
 第二个平台（腾讯问卷 / 金数据 / Google Forms）也**没有**支持：`src/platforms.py` 只是把
 问卷星专属的选择器收成了一张表，题型识别与作答注入的 JS 仍是问卷星的 DOM 约定。
