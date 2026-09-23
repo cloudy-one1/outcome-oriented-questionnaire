@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>问卷星自动填写工具 · 项目评估看板 v2.7.0</title>
+<style>
+  :root{
+    --bg:#f5f7fa; --card:#ffffff; --ink:#1f2933; --muted:#64748b; --line:#e2e8f0;
+    --blue:#2563eb; --blue-soft:#dbeafe;
+    --ok:#16a34a; --ok-soft:#dcfce7;
+    --warn:#d97706; --warn-soft:#fef3c7;
+    --bad:#dc2626; --bad-soft:#fee2e2;
+    --accent:#0f766e;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Microsoft YaHei UI","Segoe UI",system-ui,-apple-system,sans-serif;
+    line-height:1.6;padding:28px 18px;}
+  .wrap{max-width:1080px;margin:0 auto;}
+  h1{font-size:24px;margin:0 0 4px;}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:22px;}
+  .grid{display:grid;gap:16px;}
+  .g2{grid-template-columns:1.05fr 1fr;}
+  .g3{grid-template-columns:repeat(3,1fr);}
+  @media(max-width:860px){.g2,.g3{grid-template-columns:1fr;}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:20px 22px;box-shadow:0 1px 3px rgba(15,23,42,.05);}
+  .card h2{font-size:15px;margin:0 0 14px;display:flex;align-items:center;gap:8px;}
+  .card h2::before{content:"";width:4px;height:15px;background:var(--blue);border-radius:2px;}
+  .score-hero{display:flex;align-items:center;gap:22px;}
+  .grade{width:108px;height:108px;border-radius:50%;flex:0 0 auto;
+    background:conic-gradient(var(--blue) 0 85%, #e5edf7 85% 100%);
+    display:flex;align-items:center;justify-content:center;position:relative;}
+  .grade::after{content:"";position:absolute;inset:0;margin:auto;width:78px;height:78px;background:#fff;border-radius:50%;}
+  .grade span{position:relative;z-index:1;text-align:center;}
+  .grade b{font-size:30px;display:block;line-height:1;}
+  .grade small{font-size:11px;color:var(--muted);}
+  .hero-txt .big{font-size:18px;font-weight:700;}
+  .hero-txt p{margin:6px 0 0;color:var(--muted);font-size:13px;}
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top;}
+  th{color:var(--muted);font-weight:600;font-size:12px;}
+  tr:last-child td{border-bottom:none;}
+  .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap;}
+  .p-ok{background:var(--ok-soft);color:var(--ok);}
+  .p-warn{background:var(--warn-soft);color:var(--warn);}
+  .p-bad{background:var(--bad-soft);color:var(--bad);}
+  .p-p2{background:var(--bad-soft);color:var(--bad);}
+  .p-p3{background:var(--warn-soft);color:var(--warn);}
+  .p-nit{background:#eef2f7;color:var(--muted);}
+  .bar-row{display:grid;grid-template-columns:118px 1fr 52px;align-items:center;gap:10px;margin:10px 0;font-size:13px;}
+  .bar{height:14px;background:#eef2f7;border-radius:7px;overflow:hidden;}
+  .bar i{display:block;height:100%;border-radius:7px;background:var(--accent);}
+  .bar i.gray{background:#94a3b8;}
+  .bar i.blue{background:var(--blue);}
+  .bar-val{text-align:right;font-variant-numeric:tabular-nums;font-weight:600;}
+  .gate{display:flex;align-items:center;gap:8px;font-size:13px;padding:7px 0;border-bottom:1px dashed var(--line);}
+  .gate:last-child{border-bottom:none;}
+  .dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;}
+  .dot.ok{background:var(--ok);} .dot.warn{background:var(--warn);}
+  .issue{padding:11px 0;border-bottom:1px solid var(--line);}
+  .issue:last-child{border-bottom:none;}
+  .issue .t{font-size:13.5px;font-weight:600;margin-bottom:3px;}
+  .issue .d{font-size:12.5px;color:var(--muted);}
+  code{background:#f1f5f9;padding:1px 5px;border-radius:4px;font-size:12px;
+    font-family:"Cascadia Code",Consolas,monospace;}
+  ul.feat{margin:0;padding-left:18px;font-size:13px;}
+  ul.feat li{margin:6px 0;}
+  .note{background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:12px 14px;font-size:12.5px;color:#92400e;}
+  .foot{color:var(--muted);font-size:12px;text-align:center;margin-top:20px;}
+  a{color:var(--blue);}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>问卷星自动填写工具 · 项目全面评估看板</h1>
+  <div class="sub">版本 v2.7.0 ｜ Selenium 4 + Stealth ｜ CLI + Tkinter GUI ｜ 审查 2026-09-21 ｜ 复核环境 Python 3.14.7 / Edge（干净环境实跑）</div>
+
+  <div class="grid g2">
+    <!-- 总评 + 雷达 -->
+    <div class="card">
+      <h2>综合评分（8 维度，满分 10）</h2>
+      <div class="score-hero">
+        <div class="grade"><span><b>A−</b><small>8.5 / 10</small></span></div>
+        <div class="hero-txt">
+          <div class="big">工程化成熟度明显高于平均水平</div>
+          <p>核心链路经真浏览器 E2E 验证，质量门禁齐备且<b>实测属实</b>。扣分集中在默认配置卫生、个别异常吞咽点与 GUI 类型债，均不致命、可快速修复。</p>
+        </div>
+      </div>
+      <svg viewBox="0 0 440 400" width="100%" role="img" aria-label="八维评分雷达图" style="margin-top:8px;">
+        <!-- grid rings -->
+        <polygon points="220.0,175.0 241.2,183.8 250.0,205.0 241.2,226.2 220.0,235.0 198.8,226.2 190.0,205.0 198.8,183.8" fill="none" stroke="#e8eef5"/>
+        <polygon points="220.0,145.0 262.4,162.6 280.0,205.0 262.4,247.4 220.0,265.0 177.6,247.4 160.0,205.0 177.6,162.6" fill="none" stroke="#e8eef5"/>
+        <polygon points="220.0,115.0 283.6,141.4 310.0,205.0 283.6,268.6 220.0,295.0 156.4,268.6 130.0,205.0 156.4,141.4" fill="none" stroke="#e2e8f0"/>
+        <polygon points="220.0,85.0 304.9,120.1 340.0,205.0 304.9,289.9 220.0,325.0 135.1,289.9 100.0,205.0 135.1,120.1" fill="none" stroke="#e8eef5"/>
+        <polygon points="220.0,55.0 326.1,98.9 370.0,205.0 326.1,311.1 220.0,355.0 113.9,311.1 70.0,205.0 113.9,98.9" fill="none" stroke="#cbd5e1"/>
+        <!-- axes -->
+        <g stroke="#dbe3ec">
+          <line x1="220" y1="205" x2="220.0" y2="55.0"/>
+          <line x1="220" y1="205" x2="326.1" y2="98.9"/>
+          <line x1="220" y1="205" x2="370.0" y2="205.0"/>
+          <line x1="220" y1="205" x2="326.1" y2="311.1"/>
+          <line x1="220" y1="205" x2="220.0" y2="355.0"/>
+          <line x1="220" y1="205" x2="113.9" y2="311.1"/>
+          <line x1="220" y1="205" x2="70.0" y2="205.0"/>
+          <line x1="220" y1="205" x2="113.9" y2="98.9"/>
+        </g>
+        <!-- data -->
+        <polygon points="220.0,70.0 315.5,109.5 355.0,205.0 315.5,300.5 220.0,325.0 129.8,295.2 92.5,205.0 151.1,136.1"
+          fill="rgba(37,99,235,.20)" stroke="#2563eb" stroke-width="2"/>
+        <g fill="#2563eb">
+          <circle cx="220.0" cy="70.0" r="3.2"/><circle cx="315.5" cy="109.5" r="3.2"/>
+          <circle cx="355.0" cy="205.0" r="3.2"/><circle cx="315.5" cy="300.5" r="3.2"/>
+          <circle cx="220.0" cy="325.0" r="3.2"/><circle cx="129.8" cy="295.2" r="3.2"/>
+          <circle cx="92.5" cy="205.0" r="3.2"/><circle cx="151.1" cy="136.1" r="3.2"/>
+        </g>
+        <!-- labels -->
+        <g font-size="11.5" fill="#334155" font-weight="600">
+          <text x="220" y="21" text-anchor="middle">功能完整性 9.0</text>
+          <text x="350" y="72" text-anchor="start">工程化/可复现 9.0</text>
+          <text x="378" y="209" text-anchor="start">测试与质量保障 9.0</text>
+          <text x="350" y="332" text-anchor="start">可维护性/文档 9.0</text>
+          <text x="220" y="384" text-anchor="middle">可靠性 8.0</text>
+          <text x="90" y="332" text-anchor="end">安全性 8.5</text>
+          <text x="62" y="209" text-anchor="end">架构/代码质量 8.5</text>
+          <text x="90" y="72" text-anchor="end" fill="#b45309">合规/伦理 6.5</text>
+        </g>
+      </svg>
+    </div>
+
+    <!-- 客观门禁 -->
+    <div class="card">
+      <h2>质量门禁复核（审查者干净环境实跑）</h2>
+      <div class="gate"><span class="dot ok"></span><div><b>离线测试 491 passed</b> + 2 skipped（未装可选 opencv），0 failed</div></div>
+      <div class="gate"><span class="dot ok"></span><div><b>浏览器 E2E 5 passed</b>（真实 Edge headless 跑本地 mock 问卷，15.3s）</div></div>
+      <div class="gate"><span class="dot ok"></span><div><b>ruff check .</b> 全部通过</div></div>
+      <div class="gate"><span class="dot warn"></span><div><b>pyright（src+入口）</b> 0 error、<b>1 warning</b>（可选依赖 undetected-chromedriver 缺失；文档称"0 warning"不精确）</div></div>
+      <div class="gate"><span class="dot warn"></span><div><b>pyright（gui）</b> 30 error + 14 warning，<b>未纳入 CI 门禁</b>（README 已诚实记录）</div></div>
+      <div class="gate"><span class="dot ok"></span><div><b>覆盖率 TOTAL 71%</b>，过 70 门禁（README 写 72%、ci.yml 写 71%，口径不一）</div></div>
+      <div class="gate"><span class="dot ok"></span><div>Python <b>3.14.7</b>（高于声明下限 3.10 / CI 3.13）全量通过</div></div>
+
+      <h2 style="margin-top:18px;">覆盖率分项（门槛 70%）</h2>
+      <div class="bar-row"><span>src 整体</span><div class="bar"><i class="blue" style="width:84%"></i></div><span class="bar-val">≈84%</span></div>
+      <div class="bar-row"><span>gui 整体</span><div class="bar"><i class="gray" style="width:58%"></i></div><span class="bar-val">58%</span></div>
+      <div class="bar-row"><span>合计</span><div class="bar"><i style="width:71%"></i></div><span class="bar-val">71%</span></div>
+      <div class="bar-row"><span>pipeline.py</span><div class="bar"><i style="width:100%"></i></div><span class="bar-val">100%</span></div>
+      <div class="bar-row"><span>driver_factory</span><div class="bar"><i style="width:100%"></i></div><span class="bar-val">100%</span></div>
+      <div class="bar-row"><span>question_stage</span><div class="bar"><i class="gray" style="width:29%"></i></div><span class="bar-val">29%</span></div>
+      <div class="bar-row"><span>gui/app.py</span><div class="bar"><i class="gray" style="width:22%"></i></div><span class="bar-val">22%</span></div>
+      <div class="bar-row"><span>gui/controller</span><div class="bar"><i class="gray" style="width:14%"></i></div><span class="bar-val">14%</span></div>
+    </div>
+  </div>
+
+  <!-- 问题清单 -->
+  <div class="card" style="margin-top:16px;">
+    <h2>需处理问题（按优先级）</h2>
+    <div class="issue">
+      <div class="t"><span class="pill p-p2">P2</span> 默认权重配置污染所有 CLI 运行</div>
+      <div class="d"><code>src/config.py</code> 内置一份特定问卷的 Q1–Q22 偏斜权重；CLI 不传 <code>--config</code> 时 <code>answering.build_answer_strategy</code> 直接读全局，导致任何问卷前 22 道单选/多选默认套用该分布，违背 README"未配置→等权"承诺，且会写入批次快照（GUI 因启动显式清空而免疫）。另含一行生成器占位注释。建议默认置 <code>{}</code>，示例迁至 <code>configs/</code>。</div>
+    </div>
+    <div class="issue">
+      <div class="t"><span class="pill p-p2">P2</span> pipeline.py 4 处兜底 except 静默吞掉纯代码异常</div>
+      <div class="d">L109/138/205/270 的 <code>except Exception: raise_non_recoverable(_e); pass</code>，因瞬态集合已含 WebDriverException 基类，走到这里的几乎只剩 KeyError/TypeError 等 bug，却被无日志吞掉，违背 <code>exceptions.py</code>"程序错误上抛保留堆栈"契约与项目 V2.4"静默路径留痕"规范。应对照 <code>question_stage.py</code> 记录或上抛。</div>
+    </div>
+    <div class="issue">
+      <div class="t"><span class="pill p-p3">P3</span> GUI 约 44 条 pyright 诊断未入门禁　<span style="font-weight:400;color:var(--muted)">｜ 文档"0 warning"与 CI 实际 1 条 import warning 不符　｜ 覆盖率 71/72% 口径不一　｜ target-success 续传上限只减成功数　｜ 成功判定弱关键词"已完成"可能误判</span></div>
+    </div>
+    <div class="issue">
+      <div class="t"><span class="pill p-nit">Nit</span> 死导入 SUBMIT_SUCCESS　｜ 非 Windows 降级桩 except ImportError 不可达　｜ 不支持嵌套 iframe　｜ models 4 个 dataclass 为无生产调用的"契约锚点"　｜ 量表 &gt;5 级默认权重尾部略粗糙　｜ history.close 后无守卫</div>
+    </div>
+  </div>
+
+  <div class="grid g2" style="margin-top:16px;">
+    <div class="card">
+      <h2>值得肯定的真实防线</h2>
+      <ul class="feat">
+        <li><b>提交防重复点击</b>：副作用点击与效果确认分离、<code>old_url=None</code> 防导航抖动，配真浏览器"只点一次"回归测试。</li>
+        <li><b>三态提交</b> success/failed/unknown，未知保守计败且单独计数，不虚报成功。</li>
+        <li><b>注入防护成体系</b>：JS 值 <code>json.dumps</code>、SQL 参数化、CSV 公式注入前缀，并各有回归用例。</li>
+        <li><b>隐私默认</b>：GUI 默认不记录填空原文；data/db/csv 进 .gitignore。</li>
+        <li><b>资源/状态收尾</b>：driver 泄漏强杀、孤儿批次回收、关窗 join、续传复用 run_id + 权重快照。</li>
+        <li><b>测试防真实历史回归</b>：lock 断链、整批夭折、关窗重建、量表越界、selector 拼进字面量等。</li>
+        <li><b>门禁有想法</b>：F401/F841/F541 防接线断链、node --check 校验生成 JS、覆盖率只许上调。</li>
+        <li><b>文档极度诚实</b>：明确列出已知缺口，并直言"覆盖率≠验证过"。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h2>合规与用途风险（dual-use）</h2>
+      <div class="note">
+        工具可对问卷星<b>批量自动填写与提交</b>，即便模拟人类行为，仍可能违反平台条款，并可能被用于刷票/刷量、污染调研样本。<br><br>
+        项目已做的正确动作：README 两处免责声明、<code>--url</code> 必填且<b>不内置任何真实线上问卷</b>、MIT 许可。<br><br>
+        建议：前置"仅限学习与获得授权测试"提示；不内置真实问卷/不提供分发渠道；可默认限速与单次数量上限，降低被滥用为刷量工具的便利度。
+      </div>
+      <h2 style="margin-top:18px;">建议修复顺序</h2>
+      <table>
+        <tr><td><span class="pill p-p2">立即</span></td><td>清空默认 WEIGHT_CONFIG、删占位注释与死导入（约 10 分钟）</td></tr>
+        <tr><td><span class="pill p-p3">短期</span></td><td>统一 pipeline 异常吞咽点；校正文档门禁口径；收紧成功关键词（约半天）</td></tr>
+        <tr><td><span class="pill p-nit">中期</span></td><td>清零并纳入 gui 类型门禁；明确续传计数口径</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="foot">所有"实测"数字均由审查者在干净环境执行命令获得，可按 <code>CODE_REVIEW_v2.7.0.md</code> 第二节命令复现 ｜ 完整论述见随附 Markdown 报告</div>
+</div>
+</body>
+</html>
