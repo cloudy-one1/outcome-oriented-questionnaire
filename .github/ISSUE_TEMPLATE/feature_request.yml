@@ -1,0 +1,63 @@
+name: 功能建议
+description: 想让工具多承担一件事
+labels:
+  - feature
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先读 README 的「不在本工具范围内（评估过、明确不做）」。下面三类方向已经评估过并
+        **刻意不做**，提上来大概率会被关：
+
+        - 代理池 / 频繁换 IP —— 可靠性与法律风险都换不起
+        - 并发提速 —— 多浏览器同时提交与平台风控对撞，失败归因会变糊
+        - 大模型代答 —— 答案来源无法审计，"这份答卷是谁答的"说不清
+
+        同类油猴脚本与 Selenium 仓库对标过六轮，结论都写在那一节里。
+        如果你的建议不落在上面三类，请继续。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 它现在解决不了什么
+      description: 从你实际卡住的那一步写起，不要直接写实现
+      value: |
+        我在 ______ 场景下，工具会 ______，所以我不得不 ______。
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 它会不会改变作答结果或提交行为
+      description: |
+        这条决定默认值。本仓库的规矩：**改变答题结果的开关默认关**
+        （例：`--drift-correct`、`--rescue-gaps`），只测量不改答的可以默认开
+        （例：`--report-alpha`、结构对拍）。
+      value: |
+        - [ ] 只报告、不改变行为
+        - [ ] 改变作答或提交行为（因此默认关）
+        - [ ] 只影响性能或界面
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 你能接受的降级行为
+      description: 平台不给信号时怎么办 —— 静默跳过、明说未适配、还是整份判失败
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 证据（涉及新题型时必填）
+      description: |
+        新题型的判定与作答需要**真卷实测**：容器上的 `topic` / `type`、控件结构、
+        提交时 FormData 里对应的字段。官方 `q_type` 文档不能替代它。
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: 确认
+      options:
+        - label: 我已读过「不在本工具范围内」那一节，我的建议不落在被否决的三类里
+          required: true
+        - label: 我愿意拿一份自有或已获授权的测试问卷配合验证
+          required: true

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 使用边界与免责声明
+    url: https://github.com/cloudy-one1/outcome-oriented-questionnaire/blob/main/README.md#免责声明
+    about: 只适用于自有或已获授权的测试问卷；被平台风控不属于缺陷
+  - name: 安全问题请走私有报告
+    url: https://github.com/cloudy-one1/outcome-oriented-questionnaire/security/advisories/new
+    about: 不要在公开 issue 里贴问卷地址或答卷原文，里面含真实个人信息
