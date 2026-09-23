@@ -616,6 +616,24 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 > 研究数据"的样本，就是本段禁止的刷量本身。设计稿对这一条的表述见
 > `docs/design/DESIGN_reliability_alpha.md` §0。
 
+## 仓库结构与文档
+
+| 位置 | 是什么 |
+|---|---|
+| `README.md` | 这一份：能力边界、安装、CLI / GUI 用法、门禁与已知缺口 |
+| `CHANGELOG.md` | 按版本记的变更，每条带当时的取舍理由 |
+| `docs/design/` | 设计稿 —— `DESIGN_reliability_alpha.md` 写失信度那条链的数学与边界 |
+| `docs/reviews/` | 历史评估报告的归档：查出过什么缺陷、按哪条落地 |
+| `CONTRIBUTING.md` | 环境、提交前必过的门禁、测试基座的两个坑、定版步骤 |
+| `SECURITY.md` | 哪些落盘位置含个人信息、什么算安全问题、私有报告入口 |
+| `src/` | 引擎：探测 → 作答 → 提交；`src/interactions/` 一种题型一个模块 |
+| `gui/` | Tkinter 界面，与 CLI 共用同一条 pipeline |
+| `scripts/` | 门禁工具本身（README 覆盖率口径的生成脚本、E2E 计数闸门） |
+| `tests/` | 离线套件与浏览器 E2E；mock 问卷在 `tests/fixtures/` |
+
+贡献前先读 `CONTRIBUTING.md`，安全问题按 `SECURITY.md` 走私有报告 —— 问卷地址与
+答卷原文里都有真实个人信息，公开 issue 不是它们该去的地方。
+
 ## License
 
 [MIT](LICENSE)

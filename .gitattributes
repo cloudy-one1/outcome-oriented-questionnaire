@@ -1,0 +1,14 @@
+# 入库统一存 LF。Windows 上的 git 默认 core.autocrlf=true，实际状态就是"index 里 LF、
+# 工作区 CRLF"；写成显式规则只为让 autocrlf=false 的贡献者不把 CRLF 带进 index ——
+# 那一次的 diff 会把每个文件都标成改过。
+* text=auto
+
+# 二进制：不做换行处理，也不进文本 diff
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.db binary
+*.sqlite binary
+*.pdf binary
+*.xlsx binary
