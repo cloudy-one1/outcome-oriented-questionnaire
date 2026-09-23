@@ -42,6 +42,10 @@ from .models import RunState, SubmitOutcome
 from .platforms import unsupported_url_notice
 
 from . import __version__
+from . import distribution  # v3.2 投递分布在线纠正（默认关，--drift-correct 开）
+from . import reverse_fill  # v3.2 真实答卷回放（--replay-file）
+from . import reliability  # v3.2 实测 Cronbach α 报告（--report-alpha）
+from . import plan as alpha_plan  # v3.2 信度控制（--alpha-target）
 
 
 def _positive_int(value: str) -> int:
@@ -178,6 +182,44 @@ def parse_args(argv: list[str] | None = None) -> Namespace:
         default=False,
         help="[隐私保护] 不把填空题答案写入 SQLite（text_answer 列写 NULL 占位）。"
              " 避免明文保存姓名/手机/邮箱等敏感内容；DOM 仍会填入实际文本（流程需要）。",
+    )
+    parser.add_argument(
+        "--drift-correct",
+        dest="drift_correct",
+        action="store_true",
+        default=False,
+        help="[v3.2] 按**已提交成功**的实际比例小幅纠正加权采样：目标 3:1 而落地被"
+             " 失败 / UNKNOWN 拉歪时往配置上拉回来。默认关 —— 它改变答题结果，不是"
+             " 防线；因子夹在 ±1/3、前 8 份完全不纠正。",
+    )
+    parser.add_argument(
+        "--report-alpha",
+        dest="report_alpha",
+        action="store_true",
+        default=False,
+        help="[v3.2] 批次结束后按维度打印**实测** Cronbach α（读历史库，不改任何"
+             " 作答行为）。维度取权重配置里的 dimension；未声明时按全部量表/单选题"
+             " 兜底分组，并在输出里明说那是兜底组、不能当某个构念的信度引用。",
+    )
+    parser.add_argument(
+        "--alpha-target",
+        dest="alpha_target",
+        metavar="0.60-0.95",
+        type=float,
+        default=None,
+        help="[v3.2] 按 Cronbach α 控制整批答卷的量表结构：先按权重把每道题的选项"
+             " 配额精确摊到总份数上，再用潜变量 + 秩映射兑现它。必须在权重配置里"
+             " 用 dimension 显式声明哪些题属于同一构念（未声明就不建计划并说明原因）。"
+             " 目标值硬夹在 0.60~0.95；边际配额优先，α 不达标只告警不返工。",
+    )
+    parser.add_argument(
+        "--replay-file",
+        dest="replay_file",
+        metavar="PATH",
+        default=None,
+        help="[v3.2] 用一份真实答卷表（CSV，或装了 openpyxl 时的 .xlsx）逐份回放："
+             " 表里有的题按表答，认不到列 / 解析不出的格子照旧随机。"
+             " 第 N 份用第 N 行，只有提交成功才推进队列。",
     )
     parser.add_argument(
         "--target-success",
@@ -461,6 +503,10 @@ def run_batch(
     # 用掉 done+fail 次尝试。此前只减 done，续传后总尝试数会凭空多出 fail 次
     # （计划 20 份、已完成 12、失败 3 → 旧算法再给 8 次 = 合计 23 次）。
     consumed_attempts = int(resume_done) + int(resume_fail)
+    # 每份问卷各自清零分布统计：开着纠正时不清，上一份问卷的落地比例会来管这一份
+    distribution.start_run()
+    reverse_fill.reset_for_survey()   # 同理：列绑定缓存按题号存，换问卷必须清
+    alpha_plan.reset_survey()         # 同理：计划矩阵是按当前问卷的题号算出来的
     attempts_cap: int
     if target_success:
         base_cap = int(max_attempts) if max_attempts else (int(total_submissions) * 2)
@@ -739,6 +785,36 @@ def main(argv: list[str] | None = None) -> None:
         print("[error] 必须通过 -u/--url 或 --url-file 指定问卷 URL")
         sys.exit(2)
 
+    # v3.2 投递分布在线纠正：显式开关，默认关（见 src/distribution.py 的 WHY）
+    if getattr(args, "drift_correct", False):
+        distribution.enable(True)
+        print("[drift] 在线纠正已开启：只统计提交成功的份，"
+              "因子夹 ±1/3、前 8 份完全不纠正")
+
+    # v3.2 信度控制：目标 α 越界要在动手前说清楚，别等建计划时抛 ValueError
+    if getattr(args, "alpha_target", None) is not None:
+        target = float(args.alpha_target)
+        if not 0.60 <= target <= 0.95:
+            print(f"[error] --alpha-target 只接受 0.60~0.95，收到 {target:.2f}"
+                  " —— 低于 0.60 没有控制价值，高于 0.95 的题目之间基本就是重复")
+            sys.exit(2)
+        alpha_plan.configure(target, int(args.count))
+        print(f"[信度] 目标 α = {target:.2f}，本次 {args.count} 份"
+              "；维度归属取权重配置里的 dimension")
+
+    # v3.2 真实答卷回放：装载失败必须现在就说，等跑完几份才发现"表根本没读进来"
+    # 等于白提交了几份收不回来的数据。
+    if getattr(args, "replay_file", None):
+        try:
+            notes = reverse_fill.begin_replay(args.replay_file, args.count)
+        except Exception as e:
+            print(f"[error] 答卷表读不进来（{args.replay_file}）: "
+                  f"{type(e).__name__}: {e}")
+            sys.exit(2)
+        for _note_line in notes:
+            print(_note_line)
+        print(f"[replay] 已装载 {reverse_fill.remaining_rows()} 行答卷数据")
+
     SURVEY_URL = (args.url or "").strip()
     TOTAL_SUBMISSIONS = args.count
     BROWSER = args.browser
@@ -928,6 +1004,12 @@ def main(argv: list[str] | None = None) -> None:
     if len(targets) > 1 and args.resume:
         print("[error] --resume 只对一份问卷有意义，不能与 --url-file 队列同用")
         sys.exit(2)
+    if len(targets) > 1 and getattr(args, "replay_file", None):
+        # 回放表是按"第 N 份 ↔ 第 N 行"对齐的，而每份问卷的 submission_index 都从 1
+        # 重新开始 —— 多份问卷同用一张表会让它们各自都从第一行开始答，
+        # 症状是"数据看起来重了一遍"，比报错难发现得多。
+        print("[error] --replay-file 只对一份问卷有意义，不能与 --url-file 队列同用")
+        sys.exit(2)
 
     total_success = 0
     total_fail = 0
@@ -955,6 +1037,18 @@ def main(argv: list[str] | None = None) -> None:
         total_fail += fail
     print(f"运行结束 — 成功 {total_success}, 失败 {total_fail}"
           + (f"（共 {len(targets)} 份问卷）" if len(targets) > 1 else ""))
+    if getattr(args, "report_alpha", False):
+        _report_reliability(history_db, dict(WEIGHT_CONFIG))
+
+    if distribution.control_enabled():
+        # 报的是"统计口径下每题最高份额"，用来判断纠正到底有没有把分布拉回来；
+        # 没开纠正时这里什么都不印 —— 空报告印出来只会多一行噪声。
+        rep = distribution.drift_report()
+        if rep:
+            worst = max(rep.items(), key=lambda kv: kv[1]["max_share"])
+            print(f"[drift] 参与统计 {len(rep)} 题；"
+                  f"份额最高 Q{worst[0]} = {worst[1]['max_share']:.0%}"
+                  f"（已投递 {int(worst[1]['delivered'])} 份）")
 
     # ---------- V2：--save-config 保存当前配置模板 ----------
     if args.save_config:
@@ -1007,6 +1101,36 @@ def main(argv: list[str] | None = None) -> None:
 
     # 失败时以非零码退出，方便脚本判断成功/失败
     sys.exit(0 if fail == 0 else 1)
+
+
+def _report_reliability(history_db: Any, weight_config: dict) -> None:
+    """批次结束后报**实测** α（v3.2 B3-P0：只测不改，先看现状值不值得做控制）。
+
+    读的是历史库而不是计划表 —— 设计稿 §3 的核心判断：计划上的 α 不需要测，
+    落地的才需要。
+    """
+    if history_db is None:
+        print("[信度] 没开历史库（-H / --history），无数据可测 → 跳过")
+        return
+    runs = history_db.query_runs(limit=1)
+    if not runs:
+        print("[信度] 历史库里没有批次记录 → 跳过")
+        return
+    run_id = int(runs[0]["id"])
+    dims = reliability.dimensions_from_config(weight_config)
+    reverse = reliability.reverse_from_config(weight_config)
+    how = "维度取自权重配置里声明的 dimension"
+    if not dims:
+        dims = reliability.implicit_dimension(history_db, run_id)
+        how = "配置没声明 dimension → 按全部量表/单选题兜底分组（不是某个构念的信度）"
+    if not dims:
+        print(f"[信度] Run #{run_id} 没有可参与 α 的题（需要量表/单选/下拉/矩阵单选）")
+        return
+    print(f"[信度] Run #{run_id} 实测 Cronbach α —— {how}")
+    for line in reliability.format_reports(
+        reliability.measure_dimensions(history_db, run_id, dims, reverse)
+    ):
+        print(line)
 
 
 if __name__ == "__main__":

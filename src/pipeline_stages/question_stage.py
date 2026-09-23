@@ -12,6 +12,8 @@ from typing import Any, Callable
 
 
 from ..answering import build_answer_strategy
+from .. import distribution  # v3.2 投递分布在线纠正的缓冲入口
+from .. import reverse_fill  # v3.2 真实答卷回放：逐题问一次要不要覆盖
 from ..answering_v2 import generate_answer as generate_answer_v2
 from ..answering_v2 import generate_option_blank_text
 from ..config import (
@@ -133,11 +135,23 @@ def _answer_one_question(
     t0 = time.perf_counter()
     is_ok = False
 
+    # ---- v3.2 真实答卷回放：这一题被外部答卷表覆盖时用表里的值 ----
+    # 覆盖只发生在"生成答案"这一步，点击/校验/落盘全部沿用原路径 —— 回放的答案
+    # 同样要经过真 DOM 回读，否则"表里写了但页面没落上"会被记成成功。
+    replayed = reverse_fill.answer_for_question(q, submission_index)
+    replay_values: list[Any] | None = None
+    if replayed is not None and str(replayed.get("type", "")).lower() in (
+        "single", "multi",
+    ):
+        picked = list(replayed.get("selected") or [])
+        if picked:
+            replay_values = picked
+
     # ------------------------------------------------------------------
     #  V1 题型：单选 / 多选（完全保留原逻辑，不做任何破坏性改动）
     # ------------------------------------------------------------------
     if qtype in ("single", "multi"):
-        answer_values = build_answer_strategy(q)  # list[int]
+        answer_values = replay_values if replay_values else build_answer_strategy(q)
         try:
             is_ok = js_click_question_options(driver, qnum, qtype, answer_values)
         except TRANSIENT_DOM_EXCEPTIONS as _e:
@@ -172,8 +186,9 @@ def _answer_one_question(
             if blank_value not in selected_values:
                 continue
             try:
+                blank_text = str(replayed.get("option_blank_text") or "") if replayed else ""
                 if not js_fill_option_blank(
-                    driver, qnum, blank_value, generate_option_blank_text()
+                    driver, qnum, blank_value, blank_text or generate_option_blank_text()
                 ):
                     print(f"  [填空选项] Q{qnum} 第 {blank_value} 项的框没写进去"
                           " → 本题计失败")
@@ -190,7 +205,7 @@ def _answer_one_question(
     #  V2 题型：text / scale / dropdown / matrix_single
     # ------------------------------------------------------------------
     else:
-        ans = generate_answer_v2(q)  # dict 结构
+        ans = replayed if replayed is not None else generate_answer_v2(q)  # dict 结构
         ans_type = str(ans.get("type", qtype)).lower()
 
         try:
@@ -324,6 +339,20 @@ def _answer_one_question(
         except Exception as _he:
             # history 写失败只打印提示，不影响主流程
             print(f"  [history] record_answer(Q{qnum}) 失败: {type(_he).__name__}")
+
+    # ---- 投递分布纠正：先攒进缓冲，这一份真的提交成功了才计入 ----
+    # 与上面的 history 落盘同址不同命：history 记的是"作答时就写"，这里要的是
+    # "**落地**了多少份" —— 失败与 UNKNOWN 的那几份不该进来（见 src/distribution.py）。
+    if distribution.control_enabled() and is_ok and options_selected:
+        picks = [v for v in options_selected if isinstance(v, int)]
+        if picks:
+            total = (
+                len(q.get("choices") or [])
+                or len(q.get("cols") or [])
+                or len(q.get("items") or [])
+                or len(picks)
+            )
+            distribution.buffer_answer(qnum, picks, total)
 
     return bool(is_ok)
 

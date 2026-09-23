@@ -151,13 +151,18 @@ def detect_questions(driver: Any) -> list[dict]:
           # 量表打分：scale=N 表示 1..N 分
           {"q": 4, "type": "scale", "scale": 5}
 
-          # 填空题：field 表示字段类型（name/phone/email/address/age/company/
-          # date/None），供 answering_v2 匹配。field="date" 的是**日期题**：
-          # 平台把它做成只读框（值由 laydate 面板回填），所以它是这批里唯一
-          # 允许 readOnly 通过的一条；date_kind / date_min / date_max 来自
-          # 框上的 datelimittype / datelimit，生成范围外的值会被平台自己的校验清掉。
+          # 填空题：field 表示字段类型（name/phone/email/address/region/age/
+          # company/date/None），供 answering_v2 与 src/persona 匹配。
+          # field="date" 的是**日期题**：平台把它做成只读框（值由 laydate 面板回填），
+          # 所以它是这批里唯一允许 readOnly 通过的一条；date_kind / date_min /
+          # date_max 来自框上的 datelimittype / datelimit，生成范围外的值会被平台
+          # 自己的校验清掉。
+          # field="region" 是**地区题**（get_Local / opencitybox / verify 含省市），
+          # 只交"省 市"两段；真做成城市选择器那种只读框目前仍按不可填跳过，
+          # 症状会由提交前完整度自检报出来（见「已知缺口」）。
           {"q": 5, "type": "text",  "field": "name"}
           {"q": 15, "type": "text", "field": "date", "date_kind": "date"}
+          {"q": 16, "type": "text", "field": "region"}
 
           # 排序题：items 是选项值（DOM 顺序），sort_mode 区分两种控件形态 ——
           # "value" 是老页面那种一个隐藏域装逗号串，"click" 是真卷那种
@@ -390,6 +395,16 @@ return (function() {
             else if (/手机|电话/.test(verify)) field = 'phone';
             else if (/数字|数值/.test(verify)) field = 'age';   // 纯数字框：按年龄档生成最安全
 
+            // 地区题的三条平台侧信号（同类项目在 HTML 里就是靠这三条认的）：
+            // 控件类名 get_Local、onclick 打开城市选择器 opencitybox、
+            // verify 写着省市/地区语义。判成 region 才能只交"省 市"，
+            // 判成 address 会把整条街道门牌塞进级联框。
+            var onclick = el.getAttribute('onclick') || '';
+            var isRegion = (el.classList && el.classList.contains('get_Local'))
+                || /opencitybox/i.test(onclick)
+                || /地图|省市|省份|城市|地区|区县/.test(verify);
+            if (field === null && isRegion) field = 'region';
+
             // 猜字段类型：从 placeholder / 标签文字 / 前导 label
             var txt = (el.placeholder || '') + '|' +
                       (el.getAttribute('aria-label') || '') + '|';
@@ -402,7 +417,8 @@ return (function() {
                 if (/姓名|名字|name|您的称呼|称呼/.test(txt)) field = 'name';
                 else if (/手机|电话|mobile|phone|tel|联系方式/.test(txt)) field = 'phone';
                 else if (/邮箱|e-mail|email|mail/.test(txt)) field = 'email';
-                else if (/地址|住址|地址|addr|address|所在地区/.test(txt)) field = 'address';
+                else if (/地址|住址|addr|address/.test(txt)) field = 'address';
+                else if (/所在地区|所在区域|省市|户籍地|现居住地区/.test(txt)) field = 'region';
                 else if (/年龄|岁数|age/.test(txt)) field = 'age';
                 else if (/公司|单位|学校|工作|org|company/.test(txt)) field = 'company';
             }

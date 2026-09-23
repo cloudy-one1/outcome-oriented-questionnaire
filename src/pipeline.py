@@ -40,6 +40,14 @@ from .anchoring import report_unmatched_anchors
 from .crosscheck import crosscheck_questions, report_structure_drift
 # v3.1 提交前完整度自检：平台标了必填、我们整题没探测到的那些，别点提交
 from .completeness import describe_gap, unanswered_required
+# v3.2 一份问卷一个人：填空题的人口学字段全从这份画像派生
+from .persona import new_persona
+# v3.2 投递分布在线纠正：只有提交成功的那份才计入统计（见该模块 docstring）
+from . import distribution
+# v3.2 真实答卷回放：逐题覆盖 + 成功才推进队列
+from . import reverse_fill
+# v3.2 信度控制：整批计划矩阵（--alpha-target），逐题按秩映射兑现
+from . import plan
 # V2.3 第 1 章第 3 条：下沉各阶段实现到 pipeline_stages 子包
 from .pipeline_stages import (
     _answer_one_question,
@@ -155,6 +163,13 @@ def _answer_current_page(
     if not questions:
         return "failed", set(), 0
 
+    # v3.2 信度计划：第一页探测完就把整批的计划矩阵建出来（只建一次），并告诉它
+    # "现在在答第几份"。计划必须覆盖整批而不是每页各建一份 —— 第二页再建会把第一页
+    # 已经兑现过的行改掉，症状是配额被兑了两次。
+    plan.begin_submission(submission_index)
+    for _plan_line in plan.ensure_plan(questions):
+        print("  " + _plan_line)
+
     # v3.0 权重锚定：带了 anchor 却认不到题的条目**不会**退回答题号（见 anchoring 契约 1），
     # 但必须说出来 —— 静默走等权，和用户没配一样，只是没人知道预设其实没生效。
     for _anchor_line in report_unmatched_anchors(WEIGHT_CONFIG, questions):
@@ -267,6 +282,12 @@ def _do_one_submission_core(
         ``SubmissionAborted`` —— **绝不**继续答下一题，更不点提交按钮。
         不传时行为与 v2.8 逐位一致（CLI/GUI 不传即不变）。
     """
+
+    # Step 0 换一个人。放在这里（而不是 CLI/GUI 的批次循环里）是为了同时满足两件事：
+    # 一次真实提交 = 一个画像，而**重试的每一次尝试**也算一次 —— 本函数第一步就
+    # 重新导航到问卷页（Step 1），DOM 是干净的，不存在"半份问卷里混进两个人"。
+    # 姓名 / 身份证 / 手机 / 邮箱 / 地址 / 年龄 / 生日之后全从这份画像取，见 src.persona。
+    new_persona()
 
     # Step 1 打开页面 + 等 ready
     _robust_driver_get(driver, survey_url)
@@ -455,7 +476,7 @@ def run_one_submission(
       既不被本函数的 ``except Exception`` 清理分支吞掉，也不在重试范围内）
     """
     try:
-        return _do_one_submission_core(
+        outcome = _do_one_submission_core(
             driver,
             survey_url,
             lock,
@@ -467,6 +488,7 @@ def run_one_submission(
         )
     except Exception as e:
         # Ctrl+C/SystemExit 直接上抛（不做任何清理尝试以免吞）
+        distribution.discard_buffer()
         raise_non_recoverable(e)
         print("  " + format_exc_log(
             e, action="单次提交核心流程", recovery="尝试回到默认上下文并重抛给外层重试",
@@ -481,3 +503,17 @@ def run_one_submission(
             raise_non_recoverable(_e2)
             pass
         raise  # 重抛异常，让 retry_with_backoff 判定是否重试
+    except BaseException:
+        # 停止信号 / Ctrl+C：这一份永远不会有结果，缓冲必须丢掉 —— 留着它，
+        # 下一份的 commit 会把本题一起算进去，实际份额就虚增了。
+        distribution.discard_buffer()
+        raise
+
+    # 分布统计与回放队列都只认**真的提交成功**的那几份：failed / unknown 的一份
+    # 可能压根没入库，把它们算进去等于往一个不存在的目标上收敛。
+    if outcome == "success":
+        distribution.commit_buffer()
+        reverse_fill.mark_consumed(submission_index)
+    else:
+        distribution.discard_buffer()
+    return outcome

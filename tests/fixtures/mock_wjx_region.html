@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>地区题 Mock（v3.2 persona 绑定）</title>
+</head>
+<body>
+<!-- 地区题的三条识别信号，一条一个控件，外加一条"必须不被误判"的对照：
+
+       Q1 class=get_Local + onclick=opencitybox —— 问卷星城市级联框的原型形态；
+       Q2 verify="省市"     —— 平台把校验语义直接写在框上；
+       Q3 只有题干写"所在地区" —— 没有任何平台信号，靠兜底正则；
+       Q4 只有题干写"家庭住址" —— 对照组：这条**必须**仍是 address。
+          判成 region 只会交"省 市"两段，真地址题要的是门牌。
+
+     刻意全部用**可见的非只读**输入框：只读的城市选择器面板由平台自己回填，
+     探测在上游就把只读框跳过了（只有日期题例外），那属于已知缺口，不在此页伪装成"支持"。 -->
+<h2>地区题 Mock</h2>
+
+<div id="div1" class="field ui-field-contain" topic="1" type="1" req="1">
+  <div class="field-label"><span class="req">*</span><div class="topicnumber">1.</div>
+    <div class="topichtml">请选择您所在的省市：</div></div>
+  <input type="text" class="txt get_Local" id="q1" name="q1"
+         onclick="opencitybox(this);return false;">
+</div>
+
+<div id="div2" class="field ui-field-contain" topic="2" type="1" req="1">
+  <div class="field-label"><div class="topicnumber">2.</div>
+    <div class="topichtml">您目前常驻的省级行政区：</div></div>
+  <input type="text" class="txt" id="q2" name="q2" verify="省市">
+</div>
+
+<div id="div3" class="field ui-field-contain" topic="3" type="1" req="1">
+  <div class="field-label"><div class="topicnumber">3.</div>
+    <div class="topichtml">请问您所在地区是？</div></div>
+  <input type="text" class="txt" id="q3" name="q3">
+</div>
+
+<div id="div4" class="field ui-field-contain" topic="4" type="1" req="1">
+  <div class="field-label"><div class="topicnumber">4.</div>
+    <div class="topichtml">您的家庭住址：</div></div>
+  <input type="text" class="txt" id="q4" name="q4">
+</div>
+
+<div id="div5" class="field ui-field-contain" topic="5" type="3" req="1">
+  <div class="field-label"><div class="topicnumber">5.</div>
+    <div class="topichtml">您的姓名：</div></div>
+  <label class="labelitem"><input type="text" class="txt" id="q5" name="q5"></label>
+</div>
+
+<div class="completediv">
+  <a href="javascript:void(0)" id="submit_button" onclick="submitSurvey()">提交</a>
+</div>
+</body>
+</html>

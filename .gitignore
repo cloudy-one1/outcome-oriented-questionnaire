@@ -65,3 +65,6 @@ configs/
 *.sqlite
 *.sqlite3
 *.csv
+
+# 真实答卷回放的样例表是测试夹具，不是运行产物 —— *.csv 那条是管 data/ 的
+!tests/fixtures/replay_answers.csv

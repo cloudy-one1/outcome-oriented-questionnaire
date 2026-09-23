@@ -51,6 +51,7 @@ FIXTURE_HTML = PROJ / "tests" / "fixtures" / "mock_wjx.html"
 MP_FIXTURE_HTML = PROJ / "tests" / "fixtures" / "mock_wjx_multipage.html"
 GAP_FIXTURE_HTML = PROJ / "tests" / "fixtures" / "mock_wjx_required_gap.html"
 REAL_WIDGETS_HTML = PROJ / "tests" / "fixtures" / "mock_wjx_real_widgets.html"
+REGION_FIXTURE_HTML = PROJ / "tests" / "fixtures" / "mock_wjx_region.html"
 
 sys.path.insert(0, str(PROJ))
 
@@ -990,3 +991,37 @@ def test_matrix_scale_fill_reports_missing_rows(driver):
     _load_real_widgets(driver)
     assert js_fill_matrix_scale(driver, 3, {"q3_0": 9}) is False      # 没有 dval=9 这格
     assert js_fill_matrix_scale(driver, 3, {"q9_9": 3}) is False      # 根本没有这一行
+
+
+def test_region_signals_are_detected_and_answered_by_one_persona(driver):
+    """地区题三条识别信号 + 答案必须与画像同省（v3.2 persona 绑定）。
+
+    这一条只能在真浏览器里验：判据是探测注入 JS 里的 DOM 事实，离线替身看不见
+    ``classList`` / ``onclick`` / ``verify``。
+    """
+    from src.answering_v2 import generate_answer
+    from src.detection import detect_questions
+    from src.interactions.text import js_fill_text
+    from src.persona import active_persona, new_persona
+
+    driver.get("file:///" + REGION_FIXTURE_HTML.as_posix())
+    new_persona()
+    p = active_persona()
+    fields = {q["q"]: q.get("field") for q in detect_questions(driver)}
+    assert fields[1] == "region", f"class=get_Local + onclick=opencitybox 没认出来: {fields}"
+    assert fields[2] == "region", f"verify=省市 没认出来: {fields}"
+    assert fields[3] == "region", f"题干兜底没认出来: {fields}"
+    assert fields[4] == "address", f"真地址题被抢判成 region: {fields}"
+    assert fields[5] == "name", fields
+
+    qs = {q["q"]: q for q in detect_questions(driver)}
+    regions = [generate_answer(qs[i])["text"] for i in (1, 2, 3)]
+    assert regions == [f"{p.province} {p.city}"] * 3, f"三道地区题答出三个地方: {regions}"
+
+    addr = generate_answer(qs[4])["text"]
+    assert addr.startswith(p.city if p.municipality else p.province), (addr, p.province)
+    assert generate_answer(qs[5])["text"] == p.name, "同一份问卷里换人了"
+
+    assert js_fill_text(driver, 1, regions[0]) is True
+    got = driver.find_element("id", "q1").get_attribute("value")
+    assert got == f"{p.province} {p.city}", f"页面上留下的是 {got!r}"

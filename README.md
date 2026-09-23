@@ -15,7 +15,12 @@
 
 - **浏览器反检测** — CDP 注入 Stealth JS 隐藏 `navigator.webdriver`，随机化 UA / 屏幕分辨率 / 硬件指纹，可选 `undetected-chromedriver` 增强模式
 - **人类行为模拟** — 所有点击与停顿均为「正态分布 + 区间截断」采样，完整鼠标事件链，偶发长停顿，周期性重启浏览器释放内存
-- **九类题型全覆盖** — 单选 / 多选 / 下拉 / 量表（含 NPS）/ 填空 / 矩阵单选 / **矩阵多选** / **矩阵量表** / **排序题**，填空题自动识别姓名、手机、邮箱、年龄、地址、公司等字段并按类型生成；字段类型**先问平台的 `verify` 属性**再用题干正则猜（v3.1）
+- **九类题型全覆盖** — 单选 / 多选 / 下拉 / 量表（含 NPS）/ 填空 / 矩阵单选 / **矩阵多选** / **矩阵量表** / **排序题**，填空题自动识别姓名、手机、邮箱、年龄、地址、**所在地区（省市）**、公司等字段并按类型生成；字段类型**先问平台的 `verify` 属性**再用题干正则猜（v3.1）
+- **一份问卷 = 一个人** — 姓名 / 性别 / 年龄 / 学历 / 职业 / 收入 / 婚姻 / 子女 / 省市 一次抽定，其余字段全部从这份画像派生：身份证前 6 位就是画像那个省市、出生日期与年龄同一、第 17 位奇偶对得上性别、校验位是真算的（ISO 7064 MOD 11-2）、邮箱前缀是姓氏拼音、住址与地区题同省。此前是四个各自随机的池子，同一份卷里能长出「女名池的张伟 · 深圳地址 · 3 岁 · 乌鲁木齐公司」这种不存在的人（v3.2，`src/persona.py`）
+- **真实答卷回放**（`--replay-file`） — 拿一份已收集到的答卷表（CSV，装了 openpyxl 时也可 .xlsx）逐份回放：表里有的题按表答，认不到列 / 解析不出的格子**照旧随机**并说明为什么。第 N 份用第 N 行，**只有提交成功才推进队列**（失败重投拿到同一行，避免出现两份一模一样的真实答卷）。多选 / 排序 / 矩阵多选本版本明确不支持（v3.2，`src/reverse_fill.py`）
+- **投递分布在线纠正**（`--drift-correct`，默认关） — 加权随机只管每次抽样的期望，管不了"失败与 UNKNOWN 吃掉几份之后落地还剩什么比例"。开启后按**已提交成功**的实际比例对目标权重做小幅指数修正（因子夹 ±1/3、前 8 份完全不纠正）。它改变答题结果，所以不是默认行为（v3.2，`src/distribution.py`）
+- **实测信度报告**（`--report-alpha`，只测不改） — 批次结束后从历史库读已落库的答案，按维度打印**实测 Cronbach α**；维度取权重配置里人显式声明的 `dimension` / `reverse`。配置没声明时按全部量表题兜底分组，**并在输出里明说那不是某个构念的信度**
+- **信度控制**（`--alpha-target 0.60~0.95`，**仅 CLI**） — 先按权重把每道题的选项配额精确摊到总份数上，再用潜变量 + 按秩映射兑现它，使整批的量表结构逼近目标 α（`src/plan.py`，设计稿 `DESIGN_reliability_alpha.md`）。必须在权重配置里用 `dimension` 显式声明哪些题属于同一构念，没声明就不建计划并说清原因；**边际配额优先**，α 不达标只告警不返工。少于 30 份不参与
 - **矩阵量表** — 格子里是一排可点的 `<a dval>`、值由平台同步写回 `tr[fid]` 指名的提交槽；
   行按平台标的 `fid` 认而不是数行号（同类做法是「容器子元素数 − 3」这种魔数）（v3.1）
 - **日期题与新版排序题** — 日期题是只读的 `input.datebox`（值由平台面板回填），按 `field="date"` 生成合规格式的日期并照守 `datelimit` 区间；排序题兼容两种控件形态 —— 老页面往一个隐藏域写逗号串，新页面的**排名只写在 li 的 DOM 顺序里**，只能按目标顺序点击（v3.1）；**选项自带填空框（"其他____"）时，勾中它就同时把那一格写上文本**（v3.0）
@@ -57,6 +62,9 @@ pip install undetected-chromedriver
 
 # 可选：GUI 二维码 URL 解析
 pip install opencv-python
+
+# 可选：真实答卷回放的 .xlsx 读表（`--replay-file`，CSV 不需要它）
+pip install openpyxl
 ```
 
 ### CLI 快速上手
@@ -132,6 +140,10 @@ python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 3 --profile-dir ./pro
 | `--headless` | 关 | **v3.0** 无头模式。**只建议调试**：问卷星对无头敏感，且智能验证一出现就判本轮失败（无头里没有可介入的人） |
 | `--profile-dir PATH` | 无 | **v3.0** 复用浏览器 profile 目录（登录态与磁盘痕迹）。同一目录不能同时被两个实例占用，所以队列是顺序跑的 |
 | `--max-total-time SECONDS` | 无 | **v3.0** 整批墙钟上限。到点按**优雅停止**收工（`interrupted`），下次 `--resume` 可继续 —— 与崩溃的 `failed` 不同 |
+| `--replay-file PATH` | 无 | **v3.2** 真实答卷回放：第 N 份用第 N 行，**只有提交成功才推进队列**。CSV 零依赖，`.xlsx` 需另装 `openpyxl`。与 `--url-file` 互斥（退出码 2，因为每份问卷的行号都从 1 重新开始）；多选 / 排序 / 矩阵多选不支持 |
+| `--drift-correct` | 关 | **v3.2** 按**已提交成功**的实际份额小幅纠正加权采样（因子夹 ±1/3、前 8 份不纠正），修正结果**不回写**配置。默认关：它改变答题结果，不是防线 |
+| `--report-alpha` | 关 | **v3.2** 批次结束后从历史库按维度打印**实测** Cronbach α（只读不改作答行为；需配合 `--history`） |
+| `--alpha-target 0.60-0.95` | 无 | **v3.2** 用计划矩阵 + 按秩映射把整批的量表结构逼近目标 α。越界直接退出码 2；维度归属取权重配置里的 `dimension` / `reverse`，没声明就不建计划并说明原因；**仅 CLI**，GUI 无此开关 |
 
 ### GUI 使用
 
@@ -381,28 +393,28 @@ pip install -r requirements-dev.txt
 # 全量测试（含依赖真实浏览器驱动的 E2E）
 python -m pytest tests/ -v
 
-# 离线套件（无浏览器环境 / CI，799 项；只装 requirements*.txt 的口径下会有若干 skip）
+# 离线套件（无浏览器环境 / CI，990 项；只装 requirements*.txt 的口径下会有若干 skip）
 python -m pytest tests/ -m "not integration" -q
 
-# 仅浏览器 E2E（需本机 Edge / Chrome + WebDriver，20 项）
+# 仅浏览器 E2E（需本机 Edge / Chrome + WebDriver，21 项）
 python -m pytest tests/ -m integration -q
 ```
 
-当前测试全部通过：**819 项**（离线 799 + E2E 20）。
+当前测试全部通过：**1011 项**（离线 990 + E2E 21）。
 
 > **类型门禁不随环境变**：`src/` + `gui/` + 入口在两种环境下都是 **0 error
-> 0 warning**。两处可选依赖（`opencv-python`、`undetected_chromedriver`）的动态
-> 导入改用 `importlib` + `Any` 声明 —— `try: import x` 配 `# type: ignore` 那个
+> 0 warning**。三处可选依赖（`opencv-python`、`undetected_chromedriver`、`openpyxl`）
+> 的动态导入改用 `importlib` + `Any` 声明 —— `try: import x` 配 `# type: ignore` 那个
 > 写法必然两类环境各留一条 warning：装了包时 ignore 被判"冗余"（本仓库把
 > `reportUnnecessaryTypeIgnoreComment` 也设成了 warning），没装时又报模块解析不了。
 >
 > 仍随环境变的只剩测试数与覆盖率（`requirements.txt` 只声明必选依赖，CI 装不到
-> 那两个可选项）：
+> 那几个可选项：`opencv-python`、`undetected_chromedriver`、`openpyxl`）：
 >
 > | 门禁 | 装齐可选依赖（开发机） | 未装（CI / 干净 venv） |
 > |---|---|---|
-> | 离线套件 | 799 passed | 797 passed + 2 skipped（二维码解析用例） |
-> | 覆盖率 | 实测总口径比 CI 高 0.14pp（`src/` −0.1、`gui/` +0.6）—— 两个可选项各自改变一侧的分支走向 | 见下方「已知缺口（诚实记录）」的生成块，那是门禁认的唯一口径 |
+> | 离线套件 | 990 passed | 987 passed + 3 skipped（二维码解析 2 项、`.xlsx` 真读 1 项） |
+> | 覆盖率 | 总口径比 CI 高约 0.2pp（`src/` +0.1、`gui/` +0.6）—— 三个可选项各自改变一侧的分支走向 | 见下方「已知缺口（诚实记录）」的生成块，那是门禁认的唯一口径 |
 >
 > 覆盖率数字现在只有一个来源：`scripts/readme_coverage.py` 从 `coverage.json` 生成，
 > `ci.yml` 里 `--cov-fail-under=` 那个地板值是手写的另一边。写一位小数是因为
@@ -472,8 +484,8 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 
 | 范围 | 离线覆盖率 |
 |---|---|
-| 全部 | **83.6%** |
-| `src/` | 87.2%（2982 条语句剩 382 行） |
+| 全部 | **85.7%** |
+| `src/` | 89.1%（4334 条语句剩 473 行） |
 | `gui/` | 78.1%（1917 条语句剩 419 行） |
 
 #### 已补齐的缺口（v2.7 那五条）
@@ -482,7 +494,7 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 |---|---|---|---|
 | `src/logging_setup.py` | 0% | **100.0%**（剩 0 行） | `tests/test_logging_setup.py` |
 | `src/browser/driver_factory.py` | 9% | **98.4%**（剩 3 行） | `tests/test_driver_factory_offline.py` |
-| `src/pipeline.py` | 26% | **96.4%**（剩 6 行，v3.0 加了分页与弹窗诊断分支） | `tests/test_pipeline_core.py`、`tests/test_pipeline_waits.py` |
+| `src/pipeline.py` | 26% | **96.2%**（剩 7 行，v3.0 加了分页与弹窗诊断分支） | `tests/test_pipeline_core.py`、`tests/test_pipeline_waits.py` |
 | `src/verification.py` | 34% | **97.0%**（剩 3 行，非 Windows 降级桩本机不可达） | `tests/test_verification_flow.py` |
 | `gui/`（9 个文件合计） | 15% | **78.1%**（`log_view`、`theme` 已 100%） | `tests/test_gui_panels.py`、`tests/test_gui_proxies.py`、`tests/test_gui_run_loop.py` |
 
@@ -492,9 +504,9 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 |---|---|---|
 | `gui/controller.py` | 37.1% | 配置导出/导入与二维码选文件已可注入替身文件框（`tests/test_gui_user_data.py`），剩 37% 的坎是探测题目那条 worker —— 它要真实 driver（`on_detect_questions` 整段 300-403 行） |
 | `gui/app.py` | 71.1% | `WJX_USER_DATA_DIR` 把 `configs/` + `data/` 整棵挪走之后，整窗已能在测试里构造（`tests/test_gui_user_data.py`：构造、输入校验、续传决策、历史库接线）。剩 206 行是 canvas 重绘与 resize/关窗回调，要真实 paint 事件与 mainloop 才走得到 |
-| `src/pipeline_stages/question_stage.py` | 61.0% | 逐题 DOM 交互主干：等待、「哪道题调哪个填充器」的分发、带框选项只勾不填的降级都已有离线测试（`tests/test_question_stage_dispatch.py`），真实点击仍靠 E2E |
+| `src/pipeline_stages/question_stage.py` | 63.3% | 逐题 DOM 交互主干：等待、「哪道题调哪个填充器」的分发、带框选项只勾不填的降级都已有离线测试（`tests/test_question_stage_dispatch.py`），真实点击仍靠 E2E |
 | `src/interactions/sort.py` | 22.2% | 点击式排序（`js_fill_sort(mode="click")`，v3.1 真卷新形态）的清残留 / 逐项点击 / 超时三段分支只有真浏览器 E2E 走过（`tests/test_e2e_integration.py` 的 click-mode 两条），离线替身一次没执行过函数体；`_state` 的 JSON 解析降级同理 |
-| `src/cli.py` | 72.1% | `run_batch` 主干已测，剩余是 `--save-config` / 统计打印一类输出分支 |
+| `src/cli.py` | 71.3% | `run_batch` 主干已测，剩余是 `--save-config` / 统计打印一类输出分支 |
 | `src/browser/__init__.py` | 52.2% | `create_driver` 的 edge/chrome 分发与 `cleanup_browser_state` 整段 Cookie/Storage 清理没有离线替身（缺的正是那 11 行）—— `driver_factory` 有替身 driver，这层薄门面反而没人走一遍 |
 | `src/interactions/choices.py` | 58.8% | 三个 `@js_execute_retry` 包装函数的函数体一次都没在离线测试里执行（缺 21/31/42-46 行）—— 分发测到「该调哪个填充器」就停了，填充器自身的 `execute_script` 只有 E2E 覆盖 |
 
@@ -549,6 +561,12 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 ## 免责声明
 
 本工具仅供学习和研究 Selenium 自动化技术使用。请遵守问卷星平台的使用条款和相关法律法规，不得用于刷票、刷量等任何违规或违法用途。使用者需自行承担所有责任。
+
+> **v3.2 起这一条多了一层意思**：`--alpha-target` 让工具的能力边界从"填得完"扩到
+> "让造出来的数据通过信度检验"，`--replay-file` 则是把真实答卷搬进提交链路。这两件事
+> **只适用于自有或已获授权的测试问卷**（验证算法用），拿它们去生产环境里制造"看着像真
+> 研究数据"的样本，就是本段禁止的刷量本身。设计稿对这一条的表述见
+> `DESIGN_reliability_alpha.md` §0。
 
 ## License
 
