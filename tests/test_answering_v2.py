@@ -290,3 +290,47 @@ class TestWeightsFromConfigApply(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestDateQuestionAnswers(unittest.TestCase):
+    """v3.1 日期题：格式要对、区间要守（范围外会被平台自己的校验清掉）。"""
+
+    @staticmethod
+    def _mod() -> Any:
+        from src import answering_v2
+        return answering_v2
+
+    def test_default_date_is_iso_and_in_the_past(self) -> None:
+        from datetime import date
+
+        text = self._mod()._random_date_text()
+        parsed = date.fromisoformat(text)
+        self.assertLess(parsed.year, date.today().year - 10,
+                        f"默认应落在过去（题干常见是出生日期）: {text}")
+
+    def test_kind_changes_format(self) -> None:
+        self.assertRegex(self._mod()._random_date_text("month"), r"^\d{4}-\d{2}$")
+        self.assertRegex(self._mod()._random_date_text("datetime"),
+                         r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
+        self.assertRegex(self._mod()._random_date_text("time"), r"^\d{2}:\d{2}$")
+
+    def test_bounds_are_respected(self) -> None:
+        for _ in range(50):
+            text = self._mod()._random_date_text("date", "2001-3-1", "2001-3-5")
+            self.assertIn(text, {"2001-03-01", "2001-03-02", "2001-03-03",
+                                 "2001-03-04", "2001-03-05"}, f"越界: {text}")
+
+    def test_unparsable_bounds_fall_back_instead_of_raising(self) -> None:
+        self.assertRegex(self._mod()._random_date_text("date", "明天", "?"),
+                         r"^\d{4}-\d{2}-\d{2}$")
+
+    def test_reversed_bounds_are_swapped(self) -> None:
+        self.assertRegex(self._mod()._random_date_text("date", "2010-01-05", "2010-01-02"),
+                         r"^2010-01-0[2-5]$")
+
+    def test_generate_answer_routes_field_date(self) -> None:
+        ans = self._mod().generate_answer(
+            {"q": 15, "type": "text", "field": "date", "date_kind": "month"}
+        )
+        self.assertEqual(ans["type"], "text")
+        self.assertRegex(ans["text"], r"^\d{4}-\d{2}$")

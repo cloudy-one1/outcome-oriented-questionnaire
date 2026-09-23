@@ -95,8 +95,35 @@ def test_declared_packages_cover_every_imported_module(pyproject: dict) -> None:
 
 
 def test_dockerfile_is_referenced_honestly() -> None:
-    """镜像没进 CI 这件事必须写在 Dockerfile 自己身上，而不是只写在 README 里。"""
+    """Dockerfile 的构建状态必须写在文件自己身上，且与 CI 的真实配置对得上。
+
+    v3.1 之前这句话是"没有被构建验证过"；`docker-smoke.yml` 进来之后它反过来 ——
+    断言随之改成点名那条 workflow、并如实写明它**不在 push 的必填检查里**。
+    口径必须跟着配置走：这是全仓库唯一一份"镜像到底构建没构建"的说明。
+    """
     with open(os.path.join(ROOT, "Dockerfile"), encoding="utf-8") as f:
         text = f.read()
-    assert "没有被构建验证过" in text
+    assert "没有被构建验证过" not in text, "构建状态变了，头注释还停在旧口径"
+    assert "docker-smoke.yml" in text, "要说清是谁在构建它"
+    assert "不在 push" in text, "周报构建 ≠ 每次提交都构建，这句不能省"
     assert re.search(r"^FROM python:3\.\d+-slim", text, re.M)
+
+    with open(
+        os.path.join(ROOT, ".github", "workflows", "docker-smoke.yml"),
+        encoding="utf-8",
+    ) as f:
+        wf = f.read()
+    # 只看真正的 YAML 键，注释里出现"push"是正常的（头注释正是在解释它不在 push 里）
+    keys = [
+        ln.strip()
+        for ln in wf.split("jobs:")[0].splitlines()
+        if ln.strip() and not ln.lstrip().startswith("#")
+    ]
+    assert "schedule:" in keys and "workflow_dispatch:" in keys, "定时 + 手动，二者都得有"
+    assert not any(k.startswith("push:") or k.startswith("pull_request:") for k in keys), (
+        "docker 构建不该被每次提交触发 —— 那正是它单独成 workflow 的理由"
+    )
+    assert "docker build" in wf
+
+    with open(os.path.join(ROOT, ".github", "workflows", "ci.yml"), encoding="utf-8") as f:
+        assert "docker" not in f.read().lower(), "主 CI 里没有 docker，别让人以为有"

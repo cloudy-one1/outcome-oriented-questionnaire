@@ -16,15 +16,14 @@
     4. gui/log_view.py 的队列 → 终端渲染接缝、gui/qr_utils.py 的失败路径
        （不得弹窗阻塞、必须返回 None）。
 
-Tk 基座：同进程反复建/销 tk.Tk() 会在 Windows 上间歇性抛
-"TclError: this probably means that tk wasn't installed properly"（见
-tests/test_gui_run_loop.py 的同段说明），所以本模块**只建一个**已 withdraw 的
-根窗口，由 module 作用域 fixture 建、其 finalizer 销；全程不 mainloop()。
-根窗口建不出来（无显示的 CI runner）→ 整模块 skip，CI 保持绿。
+Tk 基座：根窗口由 ``conftest.py`` 的会话级 ``tk_root`` 夹具提供，全会话只建一个
+（Windows 上第二个 ``tk.Tk()`` 会抛 "Can't find a usable tk.tcl"，症状是后面的 GUI
+模块整片静默 skip）。它已 withdraw，全程不 mainloop()；根窗口建不出来（无显示的
+CI runner）→ 用它的用例整模块 skip，CI 保持绿。
 
-刻意不构造 SurveyGUI：它的 __init__ 会打开真实 data/history.db、启动动画 after
-循环并自动载入 configs/default_weight_config.json。所有需要 DB / 配置文件的
-地方一律走 pytest 的 tmp_path。
+刻意不构造 SurveyGUI：它的 ``__init__`` 会打开历史库并启动动画 after 循环，
+那套基座在 ``tests/test_gui_user_data.py`` 里（挂 Toplevel + 指 tmp 数据树）。
+所有需要 DB / 配置文件的地方一律走 pytest 的 tmp_path。
 """
 
 from __future__ import annotations
@@ -50,6 +49,7 @@ from gui.history_panel import HistoryPanel  # noqa: E402
 from gui.log_view import _LOG_TAG_PALETTE, LogView  # noqa: E402
 from gui.weight_panel import WeightPanel  # noqa: E402
 from src.history import SubmissionHistory  # noqa: E402
+from src import dialogs as dialogs_mod  # noqa: E402
 
 # gui/app.py 里 _log() 实际会写出的 5 个级别 —— 日志配色必须覆盖它们
 APP_LEVELS = ("INFO", "OK", "WARN", "FAIL", "HEADER")
@@ -60,28 +60,7 @@ MALICIOUS = "=CMD|' /C calc'!A0"
 # ---------------------------------------------------------------------------
 #  基座
 # ---------------------------------------------------------------------------
-@pytest.fixture(scope="module")
-def tk_root():
-    """整模块唯一的 Tk 根窗口。
-
-    withdraw：不显示窗口，但 widget 仍然真实创建（只有几何尺寸保持 1x1，
-    见 _fake_size）。finalizer 先取消尚未兑现的 after 任务再 destroy，避免
-    回调在解释器销毁后触发 TclError。
-    """
-    try:
-        root = tk.Tk()
-    except Exception as exc:  # 无 DISPLAY / 未装 tk → 整模块 skip
-        pytest.skip(f"无法创建 Tk 根窗口: {type(exc).__name__}: {exc}")
-    root.withdraw()
-    yield root
-    # `Tk.after_info()` 是 Python 3.11 才进 tkinter 的，3.10 上取它会 AttributeError
-    # （CI 的 3.10 那条腿就是这么红的）。3.10 枚举不出待兑现任务也无妨：本模块从不跑
-    # mainloop，root.destroy() 之后解释器自己会把它们连带丢掉，不存在回调打空的问题。
-    after_info = getattr(root, "after_info", None)
-    if after_info is not None:
-        for job in after_info():
-            root.after_cancel(job)
-    root.destroy()
+# tk_root 来自 conftest.py（会话级，全会话唯一）—— 见该夹具的 WHY。
 
 
 @pytest.fixture()
@@ -943,8 +922,7 @@ def test_export_csv_applies_injection_prefix_to_seeded_answer(
     out_dir = tmp_path / "exported"
     out_dir.mkdir()
     out = out_dir / "history_runs.csv"
-    monkeypatch.setattr(hp.filedialog, "asksaveasfilename",
-                        lambda **_kw: str(out))
+    monkeypatch.setattr(dialogs_mod, "_picker", lambda _kind, _opts: str(out))
     logs = LogRecorder()
     panel.log = logs
 
@@ -982,7 +960,7 @@ def test_export_csv_cancelled_dialog_writes_nothing(tmp_path, frame,
     panel, rec, _db, _ids = _seed(tmp_path)
     panel.build(frame)
     rec.drain()
-    monkeypatch.setattr(hp.filedialog, "asksaveasfilename", lambda **_kw: "")
+    monkeypatch.setattr(dialogs_mod, "_picker", lambda _kind, _opts: "")
     logs = LogRecorder()
     panel.log = logs
     panel.export_csv()
@@ -1126,13 +1104,29 @@ def test_has_cv2_returns_a_bool() -> None:
     assert isinstance(qr_utils.has_cv2(), bool)
 
 
+# kind → 旧 messagebox 函数名：保留这层映射，下面既有断言（showerror/showwarning/
+# showinfo）就不必跟着换口径。
+_KIND_TO_MESSAGEBOX = {
+    "info": "showinfo",
+    "warning": "showwarning",
+    "error": "showerror",
+    "confirm": "askyesno",
+}
+
+
 def _record_dialogs(monkeypatch) -> list[tuple[str, str]]:
+    """把 ``src.dialogs`` 的出口换成记录器。
+
+    这正是弹窗间接层的意义所在：不建 Tk、不等真人点掉，也能断言"失败路径提示了
+    几次、分别是哪一类"。
+    """
     dialogs: list[tuple[str, str]] = []
-    for fn in ("showerror", "showwarning", "showinfo"):
-        monkeypatch.setattr(
-            qr_utils.messagebox, fn,
-            lambda title, msg, _fn=fn: dialogs.append((_fn, msg)),
-        )
+
+    def handler(kind: str, _title: str, message: str) -> bool:
+        dialogs.append((_KIND_TO_MESSAGEBOX[kind], message))
+        return False
+
+    monkeypatch.setattr(dialogs_mod, "_handler", handler)
     return dialogs
 
 

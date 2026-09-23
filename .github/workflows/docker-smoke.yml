@@ -1,0 +1,40 @@
+name: Docker smoke
+
+# Dockerfile 的唯一防线：只构建、只跑 `--help`，不发布、不推 registry。
+#
+# 为什么单独一个 workflow 而不是塞进 ci.yml：这个镜像只在"构建不构建得起来"
+# 这一件事上有话说，挂进主 CI 会让每次 push 多花一两分钟装 chromium；
+# 而完全不管它，CHANGELOG 里那句「Dockerfile 未在本仓库 CI 里构建过」就会
+# 一直烂在那儿 —— 一条每周跑一次的定时任务正好把死文档变成活门禁。
+#
+# 它**不在** push 触发的必填检查里：镜像构建失败不该红掉一次正常的代码提交，
+# 但结果必须留在 Actions 页面上（schedule 那一栏红了就看得见）。
+on:
+  schedule:
+    - cron: "0 5 * * 1"  # 每周一 UTC 05:00
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t wjx-autofill:smoke .
+
+      - name: Entrypoint smoke
+        # ENTRYPOINT 是 wjx-fill：--help 退出码非 0 就说明控制台入口没装进去、
+        # 或缺共享库、或 apt 那层版本对不上。这三类都是"镜像看着建好了其实跑不了"
+        run: docker run --rm wjx-autofill:smoke --help
+
+      - name: Import smoke
+        # 绕过 ENTRYPOINT 直接 import 引擎链路，确认 pip install --no-deps . 真的
+        # 把包连同 src/ 装进了镜像（漏 COPY 目录是最常见的一种自毁）
+        run: >
+          docker run --rm --entrypoint python wjx-autofill:smoke
+          -c "import src.cli, src.pipeline, src.browser.driver_factory as m;
+              print('import ok', m.__name__)"
+
+      - name: Report image size
+        run: docker image inspect wjx-autofill:smoke --format 'size={{.Size}} bytes'

@@ -9,7 +9,10 @@ import importlib
 from typing import Any
 
 import numpy as np
-from tkinter import messagebox
+
+# 提示出口走 src.dialogs 间接层：本模块因此不再 import tkinter，在没有显示的
+# 环境里也能被导入，失败路径的"提示了几次、是哪一类"由离线测试钉住。
+from src.dialogs import popup_error, popup_info, popup_warning
 
 # OpenCV — 用于二维码解析（可选依赖）。
 # 用 importlib 而不是 "try: import cv2 / except ImportError + # type: ignore"：
@@ -35,7 +38,7 @@ def decode_qr_from_image(filepath: str) -> str | None:
     需要 pip install opencv-python；未安装时弹出提示框并返回 None。
     """
     if not _HAS_CV2:
-        messagebox.showwarning(
+        popup_warning(
             "缺少依赖",
             "二维码解析需要 OpenCV 库。\n\n请在终端中运行：\n  pip install opencv-python",
         )
@@ -47,11 +50,11 @@ def decode_qr_from_image(filepath: str) -> str | None:
             raw = bytearray(f.read())
         img = cv2.imdecode(np.asarray(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
     except Exception as e:
-        messagebox.showerror("错误", f"无法读取图片：\n{filepath}\n\n{type(e).__name__}: {e}")
+        popup_error("错误", f"无法读取图片：\n{filepath}\n\n{type(e).__name__}: {e}")
         return None
 
     if img is None:
-        messagebox.showerror(
+        popup_error(
             "错误",
             f"无法解析图片：\n{filepath}\n\n请确认文件是有效的图片格式（PNG/JPG/BMP）。",
         )
@@ -61,7 +64,7 @@ def decode_qr_from_image(filepath: str) -> str | None:
     data, _, _ = detector.detectAndDecode(img)
 
     if not data:
-        messagebox.showinfo("未识别", "未在图片中检测到二维码，请确认图片清晰且包含完整二维码。")
+        popup_info("未识别", "未在图片中检测到二维码，请确认图片清晰且包含完整二维码。")
         return None
 
     return data

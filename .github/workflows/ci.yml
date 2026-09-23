@@ -67,12 +67,12 @@ jobs:
   # E2E 用真实浏览器跑 mock 问卷，是唯一能验证"生成的 JS 在真 DOM 里成立"的环节
   # —— selector 被误拼进 JS 字符串字面量这类**语法合法、语义非法**的错误，
   # node --check 与所有离线 mock 都看不见，只有真浏览器能抓到。
-  # 作为非阻塞 job：浏览器驱动在 runner 上偶发启动失败，不该红掉主流程，
-  # 但结果必须出现在 CI 页面上（此前是被 --ignore 完全关掉、彻底不可见）。
+  # v3.1 起改为**阻塞**：浏览器/驱动自己起不来的那类失败由 tests/conftest.py 降级成
+  # skip（不会红），剩下的红只剩"代码回归"一种解释。而"整片 skip"看着也是绿的这种
+  # 假通过，由 scripts/e2e_gate.py 数 junit 的数字堵住。
   e2e:
     needs: test
     runs-on: windows-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -86,5 +86,10 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
 
-      - name: Run browser E2E (non-blocking)
-        run: pytest tests/ -m integration -v
+      - name: Run browser E2E
+        run: pytest tests/ -m integration -v --junitxml=e2e-junit.xml
+
+      - name: E2E 必须真的在浏览器里跑过
+        # 全 skip 时 pytest 退出码仍是 0，这一条把"驱动没起来 => job 永远绿"堵死。
+        # 退出码三态照 scripts/e2e_gate.py：0 通过 / 1 一条都没真跑 / 2 报告读不了
+        run: python scripts/e2e_gate.py e2e-junit.xml

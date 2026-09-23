@@ -17,7 +17,8 @@ import queue
 import sys
 import threading
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
+from typing import Any
 
 # 将项目根目录加入 sys.path，使得启动脚本放在任意位置都能 import src
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -57,6 +58,12 @@ from src.config import (  # noqa: E402
     WEIGHT_CONFIG,
 )
 from src.models import RunState  # noqa: E402  Step 9: 共用状态对象
+from src.dialogs import (  # noqa: E402  弹窗走间接层，离线测试才能钉住确认分支
+    popup_confirm,
+    popup_warning,
+    register_file_picker,
+    register_popup_handler,
+)
 # V2 新增：配置文件 IO / 历史记录
 try:
     from src.config_io import (  # noqa: E402
@@ -98,13 +105,31 @@ logger = logging.getLogger("wjx.gui.app")
 #  全局路径 & 版本（V2）
 # ============================================================================
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
-_DEFAULT_CONFIG_DIR = os.path.join(_PROJECT_ROOT, "configs")
-DEFAULT_WEIGHT_CONFIG_PATH = os.path.join(
-    _DEFAULT_CONFIG_DIR, "default_weight_config.json"
-)
-DEFAULT_HISTORY_DB_PATH = os.path.join(
-    _PROJECT_ROOT, "data", "history.db"
-)
+
+# 用户数据根（`configs/` 与 `data/` 的父目录）。之所以做成**调用时**解析的环境
+# 变量而不是模块级常量：测试在 import 之后再设环境变量也照样生效，一次
+# `WJX_USER_DATA_DIR=<tmp>` 就能把整棵数据树挪走 —— 过去 SurveyGUI 一建就打开
+# 真实 `data/history.db`、并可能覆写 `configs/default_weight_config.json`，
+# 所以谁也不敢在测试里实例化它（README「仍然没有防线的地方」里 app.py 那条理由）。
+USER_DATA_DIR_ENV = "WJX_USER_DATA_DIR"
+
+
+def user_data_root() -> str:
+    override = os.environ.get(USER_DATA_DIR_ENV)
+    return os.path.abspath(override) if override else _PROJECT_ROOT
+
+
+def default_config_dir() -> str:
+    return os.path.join(user_data_root(), "configs")
+
+
+def default_weight_config_path() -> str:
+    return os.path.join(default_config_dir(), "default_weight_config.json")
+
+
+def default_history_db_path() -> str:
+    return os.path.join(user_data_root(), "data", "history.db")
+
 # V2.4：版本号单一真相来自 src.__version__（模块顶部 import 处已 as APP_VERSION）
 
 
@@ -188,17 +213,29 @@ class SurveyGUI:
         self._run_thread: threading.Thread | None = None
         self._closing = False
 
+        # 弹窗与文件选择框的出口必须在任何可能用到它们的路径之前注入；CLI 与离线
+        # 测试不注入，于是拿到 src.dialogs 里的确定性默认值（见该模块 docstring）。
+        register_popup_handler(self._popup_handler)
+        register_file_picker(self._file_picker)
+
+        # 三处数据路径在构造时**一次性**解析完：跑到一半再改 `WJX_USER_DATA_DIR`
+        # 会让历史库与配置文件指向两棵不同的树。
+        self._user_data_root = user_data_root()
+        self._default_config_dir = default_config_dir()
+        self._default_weight_config_path = default_weight_config_path()
+        self._history_db_path = default_history_db_path()
+
         self._setup_theme()
         self._build_ui()
         self._controller = GuiController(
             host=self,
-            project_root=_PROJECT_ROOT,
+            project_root=self._user_data_root,
             has_config_io=_HAS_CONFIG_IO,
             save_weight_config=save_weight_config,
             load_weight_config=load_weight_config,
             validate_weight_config=validate_weight_config,
-            default_config_dir=_DEFAULT_CONFIG_DIR,
-            default_weight_config_path=DEFAULT_WEIGHT_CONFIG_PATH,
+            default_config_dir=self._default_config_dir,
+            default_weight_config_path=self._default_weight_config_path,
         )
         self._start_log_poller()
         self._start_animations()
@@ -783,7 +820,7 @@ class SurveyGUI:
                 log_fn=self._log,
                 has_history=_HAS_HISTORY,
                 submission_history_cls=SubmissionHistory,  # 未加载时为 None
-                history_db_path=DEFAULT_HISTORY_DB_PATH,
+                history_db_path=self._history_db_path,
                 make_card_fn=self._make_card,
                 make_icon_btn_fn=self._make_icon_button,
                 fonts={
@@ -1154,16 +1191,116 @@ class SurveyGUI:
             self.current_round = state.displayed_round
         self.total_rounds = state.total_target
 
+    def _popup_handler(self, kind: str, title: str, message: str) -> bool | None:
+        """``src.dialogs`` 的真实现：把统一出口映射回 tkinter messagebox。
+
+        带 ``parent=self.root`` —— 此前各处直调不传 parent，弹窗会落到主窗口背后，
+        用户看不见它、却已经被它挡住主窗口的点击。
+        """
+        if kind == "confirm":
+            return messagebox.askyesno(
+                title, message, icon=messagebox.QUESTION, parent=self.root,
+            )
+        show = {
+            "info": messagebox.showinfo,
+            "warning": messagebox.showwarning,
+            "error": messagebox.showerror,
+        }.get(kind)
+        if show is not None:
+            show(title, message, parent=self.root)
+        return None
+
+    def _file_picker(self, kind: str, options: dict[str, Any]) -> str | None:
+        """``src.dialogs`` 的文件选择框实现：选项原样透传给 tkinter filedialog。"""
+        ask = (
+            filedialog.askopenfilename if kind == "open"
+            else filedialog.asksaveasfilename
+        )
+        return ask(**options, parent=self.root) or None
+
+    def _apply_resumable_run(
+        self, state: RunState, url: str, db_for_resume: Any
+    ) -> None:
+        """问一次「是否接着上次中断的批次继续」，把结论就地写进 state。
+
+        从 `_on_start` 里拆出来只为了一件事：确认框之后那 5 个字段的赋值
+        （`resume_start_idx` / `run_id` / `success_count` / `total_target` /
+        `attempts_cap`）是全 GUI 最容易造成**重复提交**的地方，而它过去罩在一个
+        模态框底下，一次都没被测过。
+        """
+        try:
+            prev = db_for_resume.find_resumable_run(url[:500])
+            if prev is None:
+                return
+            done = int(prev["success_count"])
+            planned = int(prev["total_submissions"])
+            if not 0 < done < planned:
+                return
+            try:
+                restored_w = type(db_for_resume).deserialize_weight_config(prev)
+            except Exception:
+                restored_w = {}
+            if restored_w:
+                apply_weight_config(restored_w, replace=True)
+                state.weight_config_snapshot = (
+                    RunState.snapshot_weight_config(restored_w)
+                )
+                self._log(
+                    f"[续传] 已自动恢复上次权重配置：{len(restored_w)} 道题",
+                    "OK",
+                )
+                self._restore_weight_table_from_config(restored_w)
+
+            msg = (
+                f"检测到上次未完成的批次：\n\n"
+                f"  Run #{prev['id']} · 状态 = {prev['status']}\n"
+                f"  已成功 {done} / {planned} 份\n"
+                f"  开始时间 {str(prev['started_at'])[:19]}\n\n"
+            )
+            if state.weight_config_snapshot:
+                msg += (
+                    "✅ 上次权重已自动恢复到表格，\n"
+                    "    可在配置 Tab 检查 / 修改后再启动。\n\n"
+                )
+            msg += (
+                f"是否从第 {done + 1} 份继续？"
+                "（取消则从第 1 份重新开始，但权重恢复仍生效）"
+            )
+            if popup_confirm("断点续传", msg):
+                state.resume_start_idx = done + 1
+                state.run_id = int(prev["id"])
+                state.success_count = done  # 历史成功已计入，用于进度显示
+                state.total_target = planned
+                state.attempts_cap = planned - done  # 还要跑多少份
+                self._log(
+                    f"[续传] 恢复 Run #{state.run_id}："
+                    f"从第 {state.resume_start_idx} 份继续（共 {planned} 份，"
+                    f"剩余 {state.attempts_cap} 份待跑）",
+                    "OK",
+                )
+            else:
+                self._log(
+                    "[续传] 已忽略上次中断批次，从第 1 份重新开始"
+                    "（权重恢复仍生效）",
+                    "INFO",
+                )
+        except Exception as e:
+            self._log(
+                f"[续传] 检查可恢复批次失败（不影响运行）: "
+                f"{type(e).__name__}: {e}",
+                "WARN",
+            )
+
     def _on_start(self) -> None:
         if self.running:
             return
         url = self.url_var.get().strip()
         if not url:
-            messagebox.showwarning("提示", "请填写问卷 URL")
+            popup_warning("提示", "请填写问卷 URL")
             return
         total = self.count_var.get()
         if total < 1:
-            messagebox.showwarning("提示", "提交份数至少为 1")
+            popup_warning("提示", "提交份数至少为 1")
             return
 
         # ---- V2 权重配置（统一走 config_io.apply_weight_config，语义与 CLI 一致） ----
@@ -1195,69 +1332,7 @@ class SurveyGUI:
         # ---- V2 断点续传：检查可恢复的上次批次 ----
         db_for_resume = self._history_get_db()
         if db_for_resume is not None:
-            try:
-                prev = db_for_resume.find_resumable_run(url[:500])
-                if prev is not None:
-                    done = int(prev["success_count"])
-                    planned = int(prev["total_submissions"])
-                    if 0 < done < planned:
-                        try:
-                            restored_w = type(db_for_resume).deserialize_weight_config(prev)
-                        except Exception:
-                            restored_w = {}
-                        if restored_w:
-                            apply_weight_config(restored_w, replace=True)
-                            state.weight_config_snapshot = (
-                                RunState.snapshot_weight_config(restored_w)
-                            )
-                            self._log(
-                                f"[续传] 已自动恢复上次权重配置：{len(restored_w)} 道题",
-                                "OK",
-                            )
-                            self._restore_weight_table_from_config(restored_w)
-
-                        msg = (
-                            f"检测到上次未完成的批次：\n\n"
-                            f"  Run #{prev['id']} · 状态 = {prev['status']}\n"
-                            f"  已成功 {done} / {planned} 份\n"
-                            f"  开始时间 {str(prev['started_at'])[:19]}\n\n"
-                        )
-                        if state.weight_config_snapshot:
-                            msg += (
-                                "✅ 上次权重已自动恢复到表格，\n"
-                                "    可在配置 Tab 检查 / 修改后再启动。\n\n"
-                            )
-                        msg += (
-                            f"是否从第 {done + 1} 份继续？"
-                            "（取消则从第 1 份重新开始，但权重恢复仍生效）"
-                        )
-                        yes = messagebox.askyesno(
-                            "断点续传", msg, icon=messagebox.QUESTION,
-                        )
-                        if yes:
-                            state.resume_start_idx = done + 1
-                            state.run_id = int(prev["id"])
-                            state.success_count = done  # 历史成功已计入，用于进度显示
-                            state.total_target = planned
-                            state.attempts_cap = planned - done  # 还要跑多少份
-                            self._log(
-                                f"[续传] 恢复 Run #{state.run_id}："
-                                f"从第 {state.resume_start_idx} 份继续（共 {planned} 份，"
-                                f"剩余 {state.attempts_cap} 份待跑）",
-                                "OK",
-                            )
-                        else:
-                            self._log(
-                                "[续传] 已忽略上次中断批次，从第 1 份重新开始"
-                                "（权重恢复仍生效）",
-                                "INFO",
-                            )
-            except Exception as e:
-                self._log(
-                    f"[续传] 检查可恢复批次失败（不影响运行）: "
-                    f"{type(e).__name__}: {e}",
-                    "WARN",
-                )
+            self._apply_resumable_run(state, url, db_for_resume)
 
         # ---- 绑定 state + 初始化 UI 影子镜像 ----
         self._state = state

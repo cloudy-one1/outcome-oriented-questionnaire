@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>真卷形态 Mock（v3.1 排序点击式 + 日期题）</title>
+</head>
+<body>
+<!-- 逐题照抄 2026-09-22 那份真卷（wjx.cn/vm/rg3dg49.aspx）的实际投放形态，
+     与 mock_wjx.html 那套"我们想象中的 DOM"刻意不同：
+
+       Q1 排序题：ul.ui-controlgroup.ui-listview —— class 里**没有** sort，
+          每个 li 一个 span.sortnum（平台写名次的位置）+
+          input[type=hidden][name=q1][value=序号]。隐藏域的 value 恒为 1,2,3，
+          排名只写在 **li 的 DOM 顺序**里；提交时同名 input 按 DOM 顺序一起交上去
+          （真页面实测：按 3→1→2 点完之后 FormData.get('q12') == "3,1,2"）。
+       Q2 日期题：input.datebox[readonly][verify="日期"] —— 只读，但它确实是填空题
+          （平台题型码仍是 1），值是 laydate 面板选完后回写进这个框的。
+
+     底部那段 JS 是对 jqmobo2.js 点击行为的**复刻**，不是本工具的代码：它只为 E2E
+     提供一个能落名次的容器。真实平台行为以那份真卷为准 —— 复刻走样时先怀疑这里，
+     别急着改作答逻辑。 -->
+<h2>真卷形态 Mock</h2>
+
+<div id="div1" class="field ui-field-contain" topic="1" type="11" req="1">
+  <div class="field-label"><span class="req">*</span><div class="topicnumber">1.</div>
+    <div class="topichtml">请把下列渠道按使用频率从高到低排序：</div></div>
+  <ul class="ui-controlgroup ui-listview">
+    <li class="ui-li-static" serial="1" style="cursor:pointer">
+      <div style="position:absolute">
+        <input type="hidden" class="custom" value="1" id="q1_1" name="q1"><span class="sortnum"></span>
+      </div>
+      <div style="margin-left:40px"><span>微信</span></div>
+    </li>
+    <li class="ui-li-static" serial="2" style="cursor:pointer">
+      <div style="position:absolute">
+        <input type="hidden" class="custom" value="2" id="q1_2" name="q1"><span class="sortnum"></span>
+      </div>
+      <div style="margin-left:40px"><span>抖音</span></div>
+    </li>
+    <li class="ui-li-static" serial="3" style="cursor:pointer">
+      <div style="position:absolute">
+        <input type="hidden" class="custom" value="3" id="q1_3" name="q1"><span class="sortnum"></span>
+      </div>
+      <div style="margin-left:40px"><span>小红书</span></div>
+    </li>
+  </ul>
+</div>
+
+<div id="div2" class="field ui-field-contain" topic="2" type="1" req="1">
+  <div class="field-label"><span class="req">*</span><div class="topicnumber">2.</div>
+    <div class="topichtml">请输入您的出生日期：</div></div>
+  <div class="ui-input-text" style="position:relative;width:180px">
+    <input type="text" style="padding-left:25px" id="q2" name="q2"
+           readonly="readonly" data-role="datebox" class="datebox" verify="日期">
+  </div>
+</div>
+
+
+<div id="div3" class="field ui-field-contain" topic="3" type="6" req="1">
+  <div class="field-label"><span class="req">*</span><div class="topicnumber">3.</div>
+    <div class="topichtml">请对以下各项评分（矩阵量表）：</div></div>
+  <div class="tableWrap scaletablewrap scalemode103">
+    <table class="matrix-rating matrixtable" id="divRefTab3">
+      <tbody>
+        <tr class="trlabel"><td></td><td>很不满意</td><td>不满意</td><td>一般</td><td>满意</td><td>很满意</td></tr>
+        <tr id="drv3_1t" class="rowtitle"><td class="title" colspan="5"><span class="itemTitleSpan">外观</span></td></tr>
+        <tr tp="d" fid="q3_0" id="drv3_1" rowindex="0">
+          <td class="scalerowtitletd"><div class="rowtitlediv"><span class="itemTitleSpan">外观</span></div></td>
+          <td><a class="rate-off rate-offlarge" dval="1"></a></td>
+          <td><a class="rate-off rate-offlarge" dval="2"></a></td>
+          <td><a class="rate-off rate-offlarge" dval="3"></a></td>
+          <td><a class="rate-off rate-offlarge" dval="4"></a></td>
+          <td><a class="rate-off rate-offlarge" dval="5"></a></td>
+        </tr>
+        <tr id="drv3_2t" class="rowtitle"><td class="title" colspan="5"><span class="itemTitleSpan">功能</span></td></tr>
+        <tr tp="d" fid="q3_1" id="drv3_2" rowindex="1">
+          <td class="scalerowtitletd"><div class="rowtitlediv"><span class="itemTitleSpan">功能</span></div></td>
+          <td><a class="rate-off rate-offlarge" dval="1"></a></td>
+          <td><a class="rate-off rate-offlarge" dval="2"></a></td>
+          <td><a class="rate-off rate-offlarge" dval="3"></a></td>
+          <td><a class="rate-off rate-offlarge" dval="4"></a></td>
+          <td><a class="rate-off rate-offlarge" dval="5"></a></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <input type="text" id="q3_0" name="q3_0"><input type="text" id="q3_1" name="q3_1">
+</div>
+
+<script>
+// ---- jqmobo2.js 点击行为的复刻：点未勾项 → 挪到已勾块末尾（名次=DOM 顺序）；
+//      点已勾项 → 取消并退到未勾块。名次统一按"已勾项的 DOM 顺序"重写进 .sortnum。
+// 矩阵量表：点 a[dval] → 同步把分值写进 tr[fid] 指名的提交槽（真页面实测就是同步的）
+(function () {
+  document.querySelectorAll('tr[tp="d"][fid]').forEach(function (tr) {
+    var slot = document.querySelector('input[name="' + tr.getAttribute('fid') + '"]');
+    tr.querySelectorAll('a[dval]').forEach(function (a) {
+      a.addEventListener('click', function () {
+        if (!slot) return;
+        slot.value = a.getAttribute('dval');
+        a.className = 'rate-off rate-offlarge rate-on';
+      });
+    });
+  });
+})();
+(function () {
+  document.querySelectorAll('ul.ui-listview').forEach(function (ul) {
+    function lis() {
+      return Array.prototype.filter.call(ul.children, function (li) {
+        return li.tagName === 'LI';
+      });
+    }
+    function rerank() {
+      var n = 0;
+      lis().forEach(function (li) {
+        var s = li.querySelector('.sortnum');
+        if (!s) return;
+        if (li.getAttribute('check') === '1') {
+          n += 1;
+          s.textContent = String(n);
+        } else {
+          s.textContent = '';
+        }
+      });
+    }
+    ul.addEventListener('click', function (ev) {
+      var li = ev.target;
+      while (li && li.tagName !== 'LI') li = li.parentNode;
+      if (!li || li.parentNode !== ul) return;
+      if (li.getAttribute('check') === '1') {
+        li.removeAttribute('check');
+        li.classList.remove('check');
+        ul.appendChild(li);                       // 退到未勾块，名次由 rerank 收回
+      } else {
+        li.setAttribute('check', '1');
+        li.classList.add('check');
+        var checked = lis().filter(function (k) {
+          return k !== li && k.getAttribute('check') === '1';
+        });
+        var last = checked.length ? checked[checked.length - 1] : null;
+        if (last && last.nextSibling) ul.insertBefore(li, last.nextSibling);
+        else if (last) ul.appendChild(li);
+        else ul.insertBefore(li, ul.firstChild);   // 第一个点的排最前
+      }
+      rerank();
+    });
+  });
+})();
+</script>
+</body>
+</html>

@@ -76,6 +76,8 @@ def question_signature(q: dict) -> str:
         smin = q.get("scale_min", 1)
         smax = q.get("scale", 5)
         return f"scale:{smin}-{smax}"
+    if qtype == "matrix_scale":
+        return f"matrix_scale:{len(q.get('rows') or [])}x{len(q.get('cols') or [])}"
     if qtype in ("matrix", "matrix_multi"):
         n_rows = len(q.get("rows") or [])
         n_cols = len(q.get("cols") or [])

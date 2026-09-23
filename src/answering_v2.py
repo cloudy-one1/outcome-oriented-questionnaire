@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import random
 from typing import Any, Optional
 
@@ -162,6 +163,51 @@ def _random_sentence(min_len: int = 5) -> str:
     if len(s) >= min_len:
         return s
     return s + "，" + random.choice(_SHORT_SENTENCES)
+
+
+def _random_date_text(
+    kind: str = "date",
+    lo: Any = None,
+    hi: Any = None,
+) -> str:
+    """按 laydate 的粒度与区间生成一个日期串（v3.1 日期题）。
+
+    区间必须照守：探测把 ``datelimit`` 一起带回来，就是因为范围外的值会被平台自己的
+    校验清掉 —— 辛辛苦苦填一个，交上去那题还是空的。两端都没给时落在 **18~55 年前**：
+    真卷上这道题的题干是"请输入您的出生日期"，而 laydate 的默认边界宽到
+    1900~2099，随手随机到今天附近会答出一个婴儿的生日。
+    """
+    fmt_by_kind = {
+        "month": "%Y-%m",
+        "datetime": "%Y-%m-%d %H:%M",
+        "time": "%H:%M",
+    }
+    now = _dt.datetime.now()
+    if kind == "time":
+        return (now.replace(hour=random.randint(8, 21), minute=random.randrange(60))
+                ).strftime("%H:%M")
+
+    def _parse(raw: Any) -> _dt.datetime | None:
+        text = str(raw or "").strip().replace("T", " ")
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d",
+                    "%Y/%m/%d %H:%M", "%Y/%m/%d", "%Y-%m"):
+            try:
+                parsed = _dt.datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+            return parsed
+        return None
+
+    low = _parse(lo) or (now - _dt.timedelta(days=365 * 55))
+    high = _parse(hi) or (now - _dt.timedelta(days=365 * 18))
+    if high < low:
+        low, high = high, low
+    if high <= low:
+        picked = low
+    else:
+        span = int((high - low).total_seconds())
+        picked = low + _dt.timedelta(seconds=random.randint(0, max(span, 1)))
+    return picked.strftime(fmt_by_kind.get(kind, "%Y-%m-%d"))
 
 
 # 选项自带填空框（"其他____"）时填的短文本。
@@ -357,6 +403,12 @@ def generate_answer(question: dict) -> dict[str, Any]:
         elif field in ("age", "number"):
             # 年龄数字范围：16~70
             text = str(random.randint(int(question.get("min", 16)), int(question.get("max", 70))))
+        elif field == "date":
+            text = _random_date_text(
+                str(question.get("date_kind") or "date"),
+                question.get("date_min"),
+                question.get("date_max"),
+            )
         elif field in ("company", "org"):
             suffixes = "科技有限公司 信息咨询有限公司 贸易有限公司 文化传播有限公司 网络服务公司".split()
             prefixes = "中瑞 华盛 远景 星辰 蓝海 卓越 飞扬 鼎盛 合众 博远 天启 晨光".split()
@@ -382,6 +434,21 @@ def generate_answer(question: dict) -> dict[str, Any]:
             idx = _weighted_or_equal_choice(col_indices, list(w) if w else None)
             result[r] = cols[idx]
         return {"type": "matrix_single", "rows": result}
+
+    # --- 5a2. 矩阵量表（v3.1）-------------------------------------------
+    # rows 是**提交槽名**（平台标在 tr[fid] 上，形如 q7_0），cols 是 dval 分值。
+    # 与矩阵单选共用"每行一个标量"的形状，但控件完全不同（一排可点的 <a>），
+    # 所以单独一型：混进 matrix_single 会让探测与作答各走两套选择器。
+    if qtype == "matrix_scale":
+        rows = list(question.get("rows", []))
+        cols = list(question.get("cols", []))
+        col_indices = list(range(len(cols)))
+        w = _cfg_weights(question)
+        result_scale: dict[Any, Any] = {}
+        for r in rows:
+            idx = _weighted_or_equal_choice(col_indices, w)
+            result_scale[r] = cols[idx]
+        return {"type": "matrix_scale", "rows": result_scale}
 
     # --- 5b. 矩阵多选（v3.0）--------------------------------------------
     if qtype == "matrix_multi":

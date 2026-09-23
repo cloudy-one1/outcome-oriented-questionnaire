@@ -40,8 +40,24 @@
   跨页口径：判据用的是逐页**并集** `detected_all`，只看最后一页会把前面几页答过的必答题误判成漏答。
   测试：`tests/test_completeness.py` 13 项离线 + `test_pipeline_core.py` 加 5 项接线
   （含两页并集、"无信号不拦"、"非必答不拦"、对拍看本页 / 自检看整卷）+ E2E 1 项
-  （真 DOM 上只读 `datebox` 探测不到、而平台标 `req=1` → 缺口正好是那一题）。
+  （真 DOM 上文件上传题探测不到、而平台标 `req=1` → 缺口正好是那一题；没标 `req`
+  与 `req=""` 的题各占一条反例，确保"拦错"这件事不会发生）。
 
+- **新增题型：矩阵量表 `matrix_scale`**（`src/detection.py` 5c 节、`interactions/_scripts.py::
+  fill_matrix_scale_script`、`answering_v2`、`question_stage`、`models` 题型表、`platforms` 码表）。
+  问卷星的 `type=6` 同时覆盖三种形态：矩阵单选 / 多选（格子里是 radio/checkbox，v3.0 已支持）
+  与**矩阵量表**（格子里是一排 `<a dval="1..5">`，容器 `table.matrix-rating`）。真卷上那 3 道
+  矩阵量表原先被判成"一个 4 级量表"——因为容器 class 含 `rating`，被量表分支先抢走了。
+  两条判据按一手 DOM 事实写：行是 `tr[tp="d"][fid]`，**`fid` 就是这一行的提交槽名**（平台自己标的，
+  不用猜行号；5c 只在题型还是 `scale` 时才抢回来，别的人为判定的题型不动它）；格子是行内的
+  `a[dval]`。实测点击**同步**写回 `input[name=fid]`，所以填充脚本点完当场回读每个槽，
+  对不上就返回 False —— 不交一份"看起来点了"的量表。
+- **量表兼容 `ul.modlen*` 形态 + 填空不再捡隐藏框**（同一处真卷缺陷的两半，Q10）。
+  平台把评分条渲染成 `ul.modlen5`、每级一个 `<a>`，既没有隐藏 radio 也没有数字文本，
+  原先的"数格子"规则数不到它 → 级数算不出 → 而它旁边那 5 个 `display:none` 的
+  `textarea.wjxui-textage` 标注框被填空分支当成"填空题"捡走了。现在：`modlen` 列表的 li 数
+  即级数；填空探测只认**可见**控件（`offsetParent === null` 一律跳过 —— 量表/矩阵的存储框
+  全是这种）。两处必须一起改：只加后者会把这题从"判错型"变成"整题失踪"，反而更糟。
 - **README 的覆盖率口径改成生成物**（`scripts/readme_coverage.py`、`scripts/coverage_gaps.json`、
   `tests/test_doc_consistency.py`，CI 多一步 `--check`）。要补的是"口径同步"这条重复劳动本身：
   2026-09-22 一天里发过两次标题为「README / CHANGELOG / ci.yml 口径同步」的提交，只为把同一组
@@ -59,12 +75,80 @@
   `@js_execute_retry` 包装函数的 `execute_script` 那行离线一次都没执行）。**只登记，未修复。**
   ③ **只在 3.13 那条 leg 上比** —— 3.10 本机量不到，拿没量过的环境断言"数字必须等于 3.13 实测"
   等于把口径差异伪装成缺陷。`--write` 还会拒绝装了 `opencv-python` / `undetected_chromedriver`
-  的解释器（开发机口径实测比 CI 高 0.3pp，放任它写就会把口径悄悄换掉），确要如此用 `--force-env`。
+  的解释器（开发机口径实测比 CI 高 0.14pp —— v3.1 复量的数：`src/` −0.1、`gui/` +0.6，
+  两个可选项各自改变一侧的分支走向；放任它写就会把口径悄悄换掉），确要如此用 `--force-env`。
   顺带说实三句此前不实的话：`gui/` 是 **9** 个文件不是 8 个（合计行现在由脚本数）；
   正文抄来的 674 passed / 75.6% 在本轮就已过期（实测 740 passed + 2 skipped / 76.3%）；
   「离线覆盖率不等于验证过」那句保留。
   测试：`tests/test_doc_consistency.py` 16 项 —— 哨兵在位、生成块之外不许再出现一位小数的百分比
   或"剩 N 行"、清单指向的模块与契约测试文件必须真实存在、reason 非空、地板能从 `ci.yml` 读到且不低于 70。
+
+### 测试与门禁（对标 SurveyController 借来的四件事）
+
+第六个对标源：[SurveyController/SurveyController](https://github.com/SurveyController/SurveyController)
+—— 143★、GPL-3.0、86k 行 Python，适配问卷星 / 腾讯问卷 / Credamo 的**纯 HTTP 高并发**
+提交器（PySide6 + QFluentWidgets，发 .exe）。技术路线与本项目相反（绕开浏览器直接重放
+提交接口），所以**借下来的全部是工程分层，一行代码都没取**（GPL-3.0 的码不能进 MIT 仓库）。
+
+它同时也反向印证了三条既有口径：它的代理池里身份证前 6 位从 368 个市码里 `random.choice`、
+与出口代理省份互不知情（`software/core/questions/utils.py:212-223`）；提交判定是
+`"success" in text or text.startswith("10")` 这种子串且**没有"未知"态**
+（`wjx/provider/http_runtime.py:312-326`）；POST 超时按"代理不可用"换 IP 重跑整轮
+（`:279-287`）。三态判定 + 幂等写入正是对着这一类问题写的，不动。
+
+- **弹窗与文件框变成可注入的出口**（`src/dialogs.py`）。借它
+  `log_popup_*` + `register_popup_handler` 那层（`software/logging/log_utils.py:642,799-811`）：
+  GUI 启动时注册真 `messagebox` / `filedialog`，CLI 与测试不注册就拿到**确定性默认值**
+  （提示类无操作，确认类与选文件类都是"否 / 取消"—— 无人应答时不做需要人拍板的额外动作）。
+  宿主抛异常时按默认值走并记一条日志：关窗竞态下 Tk 已销毁，弹窗不该把 worker 线程带走。
+  替换掉 `gui/` 里 **13 处**模态框直调（9 处 `messagebox` + 4 处 `filedialog`），并顺手
+  给真实现补上了此前没传的 `parent=self.root`（弹窗落到主窗口背后、却挡住主窗口点击）。
+- **断点续传决策从 `_on_start` 里拆出来单独测**（`gui/app.py::_apply_resumable_run`）。
+  确认框点"是"之后那 5 个字段（`resume_start_idx` / `run_id` / `success_count` /
+  `total_target` / `attempts_cap`）必须互相自洽，是全 GUI 最容易造成**重复提交**的地方，
+  过去它罩在模态框底下一次没被测过。现在钉住：只问一次、答"是"后
+  `resume_start_idx + attempts_cap - 1 == total_target`、答"否"仍恢复权重、
+  查库抛错只记 WARN 不影响启动、查询键跟着 `url[:500]` 截断。
+- **`WJX_USER_DATA_DIR` 把用户数据树整棵挪走**（`gui/app.py::user_data_root` 等三个解析函数）。
+  借的是它 `CI/conftest.py:47-58` 那套"环境变量指到 tmp + autouse 夹具"的隔离做法。
+  于是 `SurveyGUI` **第一次能在测试里被真的构造出来**（`tests/test_gui_user_data.py`：
+  构造、两处输入校验、历史库接线、配置导出→导入往返、另存默认配置只写进被指到的那棵树），
+  并且测试结束时断言仓库里的 `data/history.db` 与 `configs/default_weight_config.json`
+  指纹没变过。路径解析刻意放在**调用时**而不是模块级常量 —— 否则测试 import 之后再设
+  环境变量就晚了。
+- **根窗口提到 `conftest.py` 做成会话级唯一**（顺带修掉一个既有隐患）。Windows 上一个进程
+  只能可靠地建**一个** `tk.Tk()`，第二个会抛 "Can't find a usable tk.tcl"；此前
+  `test_gui_panels.py` 自己建自己销，任何"先建根窗口的模块排在前面"的顺序都会让后面的
+  GUI 模块**整片静默 skip**（实测 51 条）。现在根窗口建一次、只 withdraw、不销毁，
+  需要整窗的用例挂在它的 `Toplevel` 上。
+- **E2E job 从非阻塞改成阻塞**（`tests/conftest.py` + `scripts/e2e_gate.py` + `ci.yml`）。
+  借它的回归白名单思路（`CI/live_tests/test_live_runtime_regression.py:16-22`）：命中
+  "浏览器/驱动自己起不来"那组正则的失败降级为 skip 并打出条目数，于是剩下的红只剩
+  "代码回归"一种解释，这个 job 才敢变成必填。它**没**借的另一半是"已知不支持题型"白名单 ——
+  那是给真卷准备的，我们的 E2E 跑本地 mock。配套堵住这套机制唯一的作弊面：
+  `e2e_gate.py` 数 junit 的数字，**全 skip 的 job 判红**（退出码三态：0 通过 / 1 一条都没
+  真跑 / 2 报告读不了）。
+- **类型抑制禁令**（`tests/test_ci_guards.py`）。借它 `CI/python_checks/common.py:32-41`
+  的"零豁免"，但改成基线制：`src/` + `gui/` + 入口里出现任何未登记的
+  `# type: ignore` / `# pyright:` 即红，现存 3 处各自带理由登记、**只准变小**（基线比
+  实际大同样判红，它在掩盖已经修好的东西）。用 tokenize 只认「注释本身以抑制指令开头」，
+  所以 `gui/qr_utils.py:15` 那种"解释为什么不用 ignore"的散文注释不会误伤。
+  没借的一条是它禁 `\uXXXX` 转义 —— 本仓库 `src/answering_v2.py` 用它判中日韩字符区间，
+  那是代码语义不是文案。
+- **Dockerfile 有了构建门禁**（`.github/workflows/docker-smoke.yml`）：每周一 + 手动
+  跑 `docker build` → `wjx-fill --help` → `import src.*`，只构建不发布。CHANGELOG 3.0.0
+  末尾"未在本仓库 CI 里构建过"那条已知限制就此解除，代价是它不在 push 的必填检查里 ——
+  这句话同时写在 `Dockerfile` 头上和 `tests/test_packaging.py` 的断言里，两边口径以
+  workflow 的真实触发键为准。
+
+效果：离线覆盖率 **76.3% → 83.7%**（CI 口径；`gui/` 58.4% → 78.1%，其中
+`gui/app.py` 25.0% → 71.1%、`gui/controller.py` 13.5% → 37.1%，`src/dialogs.py` 100%），
+用例 758 → 799。地板**仍留在 70** —— 与 README 那句话说的一致：3.10 那条 leg 本机量不到
+就不抬。`src/interactions/sort.py` 22.2% 是新登记的一条缺口（v3.1 点击式排序的函数体
+只有 E2E 走过），本轮不替别人的批次编理由，只把账记下。
+
+没借的方向也说清楚：并发 slot 池、Nuitka + Velopack 安装包与自动更新链路（本项目不发
+.exe）、`answer_datetime_window`（Credamo 专有配额参数）。
 
 ### 修复
 
@@ -82,6 +166,37 @@
   674 passed + 2 skipped）」与 7 行之后「离线 742」自相矛盾，实测 742。新增的
   `test_doc_consistency.py` 只禁止**生成块之外**出现一位小数的百分比，整数计数不在其列，
   所以这个洞没被拦住 —— 已按实测改为 742，并去掉无法本地复验的「CI 口径 674 passed」那半句。
+  （同一周期内下面的题型修复又加了 30 项，本批结束时最新实测是 **758 离线 / 20 E2E**；
+  这正是"手抄数字"的病：只要它还是手抄的，一个周期内就会再过期一次。）
+- **排序题在真页面上整题认不出来**（当时写作「八类题型全覆盖」，其中排序题那半句被真卷证伪）。
+  探测要求列表 class 含 `sort`（照老页面 `ul.lisort` 写的），而 2026-09-22 那份真卷的
+  排序控件是 `ul.ui-controlgroup.ui-listview` + 每个 `li` 一个 `span.sortnum` 与
+  `input[type=hidden][name=qN][value=序号]` —— class 里没有 sort，于是这道题连进不了
+  探测结果，症状是"必答题静默失踪"。现在 5b 认两种形态并用 `sort_mode` 分开：
+  `"value"`（老形态，一个隐藏域装逗号串）与 `"click"`（新形态）。
+  **新形态只能按目标顺序点击**：那些隐藏域的 `value` 恒为 1,2,3 不变，排名只写在
+  **li 的 DOM 顺序**里，提交时同名 input 按 DOM 顺序一起交上去 —— 照老办法往第一个
+  input 写 `"3,1,2"`，等于把选项 1 的身份换成一串数字，交上去是脏数据，
+  比"整题没答"更难发现。
+  验证方式（不动服务端一行数据）：`FormData.get('q12')` 就是点提交时服务端会收到的
+  那一列 —— 真卷上按 `3,1,2` 与 `2,3,1` 两种顺序各走一遍本工具的作答路径，
+  `FormData` 读数与目标序逐位一致、`.sortnum` 名次 1..3 落位、三个隐藏域的 value
+  仍是 `1,2,3`。E2E 另加两条：一条用 `mock_wjx_real_widgets.html`（内含 jqmobo2.js
+  点击行为的**复刻**，注释里写明它不是我们的代码、复刻走样时先怀疑它）；
+  一条把点击吃掉后要求返回 False —— 名次没落地点不交，与既有底线一致。
+- **日期题被"只读就跳过"这条规则误伤，整题失踪**。真卷上是
+  `input#q15.datebox[data-role=datebox][verify=日期][readonly]`：值由 laydate 面板
+  选完回填，所以它天生只读，而探测的填空那一步开头就是 `if (el.disabled || el.readOnly) return;`
+  —— 那条规则是用来挡量表 / 矩阵的隐藏存储框的，**不能整体放宽**。现在只放日期框过去
+  （`class=datebox` / `data-role=datebox` / `verify` 含日期时间，三种信号任一命中），
+  并把它标成 `field="date"`（平台题型码仍是 `1`，它本来就是填空题，码表不用动）。
+  字段类型现在**先问平台的 `verify` 属性、再用题干正则猜** —— 真卷上"出生日期"那个框
+  的题干不含日期正则的关键词，靠猜是猜不出来的。
+  同时把 laydate 的边界一起带回来（`datelimit` = "min|max"、`datelimittype` = 月 / 日 / 时分），
+  因为**范围外的值会被平台自己的校验清掉**：辛辛苦苦填一个，交上去那题还是空的。
+  两端都没有时默认落在 18~55 年前 —— 题干是"请输入您的出生日期"，
+  随机到今天附近会答出一个婴儿的生日。真卷实测：生成 `1991-05-12` → 写入 →
+  `FormData` 读数一致。
 
 ## [3.0.0] - 2026-09-22
 

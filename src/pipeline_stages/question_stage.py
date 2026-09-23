@@ -31,7 +31,11 @@ from ..interactions.choices import (
     js_fill_option_blank,
 )
 from ..interactions.dropdown import js_select_dropdown
-from ..interactions.matrix import js_fill_matrix_multi, js_fill_matrix_single
+from ..interactions.matrix import (
+    js_fill_matrix_multi,
+    js_fill_matrix_scale,
+    js_fill_matrix_single,
+)
 from ..interactions.scale import js_set_scale
 from ..interactions.sort import js_fill_sort
 from ..interactions.text import js_fill_text
@@ -222,6 +226,18 @@ def _answer_one_question(
                         if isinstance(v, int) or (isinstance(v, str) and v.isdigit())
                     ]
 
+            elif ans_type == "matrix_scale":
+                # v3.1：键是提交槽名（tr[fid]）、值是 dval 分值 —— 落库明细与矩阵单选
+                # 同为"每行一个标量"，所以摊平方式一致
+                row_map = ans.get("rows") or {}
+                is_ok = js_fill_matrix_scale(driver, qnum, row_map)
+                if isinstance(row_map, dict):
+                    options_selected = [
+                        v if isinstance(v, int) else int(v)
+                        for v in row_map.values()
+                        if isinstance(v, int) or (isinstance(v, str) and v.isdigit())
+                    ]
+
             elif ans_type == "matrix_multi":
                 # v3.0：每行的值是列表 → 落库时把各行勾中的列值摊平成一维，
                 # 与 options_selected 列既有的"JSON 数组"形状保持一致。
@@ -237,8 +253,11 @@ def _answer_one_question(
 
             elif ans_type == "sort":
                 # v3.0：order 是 item id 序列（探测回来的都是字符串）
+                # v3.1：控件形态由探测判定 —— 点击式那套写逗号串会污染选项身份
                 order = [str(x) for x in (ans.get("order") or [])]
-                is_ok = js_fill_sort(driver, qnum, order)
+                is_ok = js_fill_sort(
+                    driver, qnum, order, mode=str(q.get("sort_mode") or "value")
+                )
                 options_selected = [
                     int(v) if v.lstrip("-").isdigit() else v for v in order
                 ]

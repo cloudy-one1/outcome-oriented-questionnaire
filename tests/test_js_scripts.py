@@ -331,6 +331,13 @@ def _script_cases() -> dict[str, str]:
         ),
         "fill_sort_script__basic": S.fill_sort_script(q=13, order=["3", "1", "2"]),
         "fill_sort_script__empty": S.fill_sort_script(q=13, order=[]),
+        # v3.1 点击式排序：一个是"读当前名次"，一个是"按选项值点某一项"
+        "fill_matrix_scale_script__basic": S.fill_matrix_scale_script(
+            q=3, row_selections={"q3_0": 4, "q3_1": 2}),
+        "fill_matrix_scale_script__empty": S.fill_matrix_scale_script(q=3, row_selections={}),
+        "sort_state_script__basic": S.sort_state_script(q=1),
+        "click_sort_item_script__basic": S.click_sort_item_script(q=1, value="3"),
+        "click_sort_item_script__quote": S.click_sort_item_script(q=1, value='a"b'),
         "option_blank_helper_script__noargs": S.option_blank_helper_script(),
         "fill_option_blank_script__basic": S.fill_option_blank_script(
             q=2, choice=5, text="其他原因"

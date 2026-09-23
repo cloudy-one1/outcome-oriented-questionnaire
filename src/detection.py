@@ -18,7 +18,11 @@ JS 识别逻辑简述 ::
     │ dropdown           │ select[name~=qN] 或 select#selectqN              │
     │ scale              │ div[class~=rate] 或 ul[class~=star] + 子项计数   │
     │ text / textarea    │ input[type=text]#qN 或 textarea#qN              │
+    │                    │ （只读框一般跳过，**日期题例外** —— 见下面 field）│
     │ matrix_single      │ table/div 矩阵容器：每行内有一组同 name 的 radio │
+    │ sort               │ 两种控件形态，用 sort_mode 区分（作答方式不同）： │
+    │                    │  value = ul.lisort + 一个逗号串隐藏域            │
+    │                    │  click = ui-listview + 每 li 一个 sortnum/隐藏域 │
     └────────────────────┴─────────────────────────────────────────────────┘
 """
 
@@ -147,8 +151,19 @@ def detect_questions(driver: Any) -> list[dict]:
           # 量表打分：scale=N 表示 1..N 分
           {"q": 4, "type": "scale", "scale": 5}
 
-          # 填空题：field 表示字段类型（name/phone/email/address/None），供 answering_v2 匹配
+          # 填空题：field 表示字段类型（name/phone/email/address/age/company/
+          # date/None），供 answering_v2 匹配。field="date" 的是**日期题**：
+          # 平台把它做成只读框（值由 laydate 面板回填），所以它是这批里唯一
+          # 允许 readOnly 通过的一条；date_kind / date_min / date_max 来自
+          # 框上的 datelimittype / datelimit，生成范围外的值会被平台自己的校验清掉。
           {"q": 5, "type": "text",  "field": "name"}
+          {"q": 15, "type": "text", "field": "date", "date_kind": "date"}
+
+          # 排序题：items 是选项值（DOM 顺序），sort_mode 区分两种控件形态 ——
+          # "value" 是老页面那种一个隐藏域装逗号串，"click" 是真卷那种
+          # **排名只写在 li 的 DOM 顺序里**、只能按序点击的形态。作答走
+          # interactions/sort.py 的另一条腿，写逗号串会污染选项身份。
+          {"q": 13, "type": "sort", "items": ["1", "2", "3"], "sort_mode": "click"}
 
           # 矩阵单选：rows 为行标签数组 / 索引，cols 为列标签数组 / 索引
           {"q": 6, "type": "matrix_single",
@@ -252,6 +267,27 @@ return (function() {
             if (!qid || seen.has(qid)) return;
             seen.add(qid);
 
+            // 真卷里评分条还有这一种长相：``ul.modlen5``，每个 li 一个 <a>，
+            // 既没有隐藏 radio 也没有数字文本 —— 下面的"数格子"规则数不到它，
+            // 于是级数算不出来、这题会被后面的填空分支捡走（2026-09-22 真卷 Q10）。
+            // li 的个数就是级数。
+            var modLenUl = (area.tagName === 'UL' && /modlen/i.test(area.className || ''))
+                ? area : (area.querySelector ? area.querySelector('ul[class*="modlen"]') : null);
+            if (modLenUl) {
+                var modLis = modLenUl.children;
+                var modLinks = 0;
+                for (var mi = 0; mi < modLis.length; mi++) {
+                    if (modLis[mi].tagName === 'LI' && modLis[mi].querySelector('a')) modLinks += 1;
+                }
+                if (modLinks >= 2 && modLinks <= 12) {
+                    var ms = slot(qid);
+                    ms.type = 'scale';
+                    ms.scale = modLinks;
+                    ms.scale_min = 1;
+                    return;
+                }
+            }
+
             // ---- 量表边界：优先读隐藏 radio 的真实 value 区间 ----
             // 此前这里写死 s.scale_min = 1 且 s.scale = 选项个数，
             // 于是 2~10 分的量表被识别成 scale=9 / scale_min=1：
@@ -305,8 +341,25 @@ return (function() {
             'input[type="text"], input[type="tel"], input[type="number"], input:not([type]), textarea'
         );
         fillables.forEach(function(el) {
-            if (el.disabled || el.readOnly) return;
+            if (el.disabled) return;
+            // 只读框里只把**日期题**放过去。真卷（2026-09-22 实测）的日期题长这样：
+            //   <input id="q15" name="q15" class="datebox" data-role="datebox"
+            //          verify="日期" readonly>
+            // 值是 laydate 面板选完后回写进这个框的，所以它天生只读 ——
+            // 一并跳过等于整题从探测结果里消失，症状是"必答题没答上"。
+            // 其余只读框（量表 / 矩阵的隐藏存储框）仍按老规则挡掉，不能放宽到这里。
+            var cls = (el.className || '').toString();
+            var verify = (el.getAttribute('verify') || '').trim();
+            var isDate = /(^|\s)datebox(\s|$)/.test(cls)
+                      || el.getAttribute('data-role') === 'datebox'
+                      || /日期|时间/.test(verify);
+            if (el.readOnly && !isDate) return;
             if (pageHidden(el)) return;
+            // 不可见的文本控件不是给人填的：真卷上量表每级的标注文字装在一个
+            // display:none 的 textarea 里，被它勾走就把一道量表题判成填空
+            // （2026-09-22 真卷 Q10 的实际错法）。offsetParent 为 null 表示
+            // "没有任何可渲染的祖先"，比读 inline style 可靠 —— 隐藏常常来自 CSS 类。
+            if (el.offsetParent === null) return;
             var id = el.id || '';
             var name = el.name || '';
             var m = id.match(/^q(\d+)$/) || id.match(/^answerq(\d+)$/) ||
@@ -328,6 +381,15 @@ return (function() {
             var s = slot(qi);
             s.type = 'text';
 
+            // 字段类型先问平台，再猜题干：``verify`` 是问卷星明写在输入框上的
+            // 校验语义（真卷上见到 "日期"，同类项目还见过 "城市单选"）。
+            // 题干正则留着兜底 —— 大多数填空框根本没有 verify 属性。
+            var field = null;
+            if (isDate || /日期|时间/.test(verify)) field = 'date';
+            else if (/邮箱/.test(verify)) field = 'email';
+            else if (/手机|电话/.test(verify)) field = 'phone';
+            else if (/数字|数值/.test(verify)) field = 'age';   // 纯数字框：按年龄档生成最安全
+
             // 猜字段类型：从 placeholder / 标签文字 / 前导 label
             var txt = (el.placeholder || '') + '|' +
                       (el.getAttribute('aria-label') || '') + '|';
@@ -336,14 +398,31 @@ return (function() {
             if (wrap) txt += (wrap.textContent || '').substring(0, 80);
             txt = txt.toLowerCase();
 
-            var field = null;
-            if (/姓名|名字|name|您的称呼|称呼/.test(txt)) field = 'name';
-            else if (/手机|电话|mobile|phone|tel|联系方式/.test(txt)) field = 'phone';
-            else if (/邮箱|e-mail|email|mail/.test(txt)) field = 'email';
-            else if (/地址|住址|地址|addr|address|所在地区/.test(txt)) field = 'address';
-            else if (/年龄|岁数|age/.test(txt)) field = 'age';
-            else if (/公司|单位|学校|工作|org|company/.test(txt)) field = 'company';
+            if (field === null) {
+                if (/姓名|名字|name|您的称呼|称呼/.test(txt)) field = 'name';
+                else if (/手机|电话|mobile|phone|tel|联系方式/.test(txt)) field = 'phone';
+                else if (/邮箱|e-mail|email|mail/.test(txt)) field = 'email';
+                else if (/地址|住址|地址|addr|address|所在地区/.test(txt)) field = 'address';
+                else if (/年龄|岁数|age/.test(txt)) field = 'age';
+                else if (/公司|单位|学校|工作|org|company/.test(txt)) field = 'company';
+            }
             s.field = field;
+
+            if (field === 'date') {
+                // laydate 的渲染参数就挂在这个框上（wjxdate.js 读的就是这两个属性）：
+                // ``datelimit`` 是 "min|max"，``datelimittype`` 1=月 / 3=日期时间 / 4=时间，
+                // 其余按日期。生成**范围外**的值会被平台自己的校验清掉，等于白答，
+                // 所以把边界一起带回去，让 answering_v2 照着格式与区间生成。
+                var kind = 'date';
+                var dlt = (el.getAttribute('datelimittype') || '').trim();
+                if (dlt === '1') kind = 'month';
+                else if (dlt === '3') kind = 'datetime';
+                else if (dlt === '4') kind = 'time';
+                s.date_kind = kind;
+                var lim = (el.getAttribute('datelimit') || '').split('|');
+                if (lim[0] && lim[0].trim()) s.date_min = lim[0].trim();
+                if (lim[1] && lim[1].trim()) s.date_max = lim[1].trim();
+            }
         });
     })();
 
@@ -389,21 +468,105 @@ return (function() {
         });
     })();
 
-    // ---------- 5b. 排序题（v3.0：ul/ol 带 sort 类名，li 逐个可拖） ----------
-    // 结构前提：容器 class 含 "sort"（问卷星实际是 ul.lisort），且里面 ≥2 个 li；
-    // 题号按 隐藏 input 的 name → 容器自身 id → 分页/题目容器 id 的顺序找。
-    // 三条都找不到就不认这题 —— 认错了比认不到更糟（会去重排别人的列表）。
+    // ---------- 5c. 矩阵量表（真卷 type=6 的另一形态：格子里不是 radio 而是一排 <a>） ----------
+    // 结构（2026-09-22 真卷实测）：``table.matrix-rating`` 里每个数据行是
+    // ``<tr tp="d" fid="q7_0" id="drv7_1">``，行内一格一个 ``<a dval="1..5">``，
+    // 而**提交槽名就写在行的 fid 上** —— 平台自己标的，不用像同类项目那样按
+    // "容器子元素数 - 3" 去猜行数。
+    // 为什么必须显式认下来：这种 table 的 class 含 "rating"，会被上面的量表分支
+    // 先抢走 —— "两行各 5 级"于是被判成一个 4 级量表，作答点到根本不存在的控件上，
+    // 症状要延后到提交那一步才暴露。
+    (function() {
+        var tables = document.querySelectorAll('table[class*="matrix-rating"], table[class*="matrixtable"]');
+        tables.forEach(function(tb) {
+            if (pageHidden(tb)) return;
+            var dataRows = tb.querySelectorAll('tr[tp="d"][fid]');
+            if (dataRows.length < 1) return;
+            var host = tb.closest ? tb.closest('[topic], .field, .div_question, div[id^="div"]') : null;
+            var idm = (host && host.id) ? host.id.match(/div(\d+)/) : null;
+            if (!idm) return;
+            var qi = parseInt(idm[1]);
+            var existing = map[qi];
+            // 只从量表手里抢（那是本分支要修的错判）；别的题型已经认领就不动
+            if (existing && existing.type && existing.type !== 'scale') return;
+
+            var slots = [], cols = null, bad = false;
+            for (var r = 0; r < dataRows.length; r++) {
+                var fid = dataRows[r].getAttribute('fid');
+                var dv = Array.prototype.map.call(
+                    dataRows[r].querySelectorAll('a[dval]'),
+                    function (a) {
+                        var raw = a.getAttribute('dval');
+                        var n = parseInt(raw, 10);
+                        return String(raw) === String(n) ? n : raw;
+                    });
+                if (!fid || dv.length < 2) { bad = true; return; }   // 宁缺毋滥：整表不认
+                slots.push(String(fid));
+                if (cols === null) cols = dv;
+                else if (dv.length !== cols.length) cols = null;      // 行间列数不齐，不是规整量表
+            }
+            if (bad || cols === null) return;
+
+            var s = slot(qi);
+            s.type = 'matrix_scale';
+            s.rows = slots;         // 提交槽名（fid），不是行号
+            s.cols = cols;
+            // 量表分支留下的痕迹必须清掉：留着会让结构签名与作答都读错
+            delete s.scale;
+            delete s.scale_min;
+            delete s.choices;
+            delete s.blank_options;
+        });
+    })();
+
+    // ---------- 5b. 排序题（两种控件形态，作答方式不同，见 src/interactions/sort.py） ----------
+    // ① 逗号串形态（v3.0 认的那种）：ul 的 class 含 "sort"（老页面是 ul.lisort），
+    //    提交值装在同域那**一个** ``input[name=qN]`` 里，形如 "3,1,2"。
+    // ② 点击形态（2026-09-22 真卷实测）：``ul.ui-controlgroup.ui-listview``，
+    //    每个 li 带一个 ``span.sortnum``（平台自己写名次的地方）和一个
+    //    ``input[type=hidden][name=qN][value=序号]``。这些隐藏域的 value **恒为 1,2,3 不变**，
+    //    排名只活在 **li 的 DOM 顺序**里；提交时同名 input 按 DOM 顺序一起交出去 ——
+    //    实测按 3→1→2 点完之后 ``FormData.get('q12')`` 就是 "3,1,2"。
+    //    所以这种形态**只能按目标顺序点击**：往第一个 input 里写 "3,1,2"，
+    //    等于把选项 1 的身份换成了一串数字，交上去是脏数据。
+    // 认不出题号就不认这题 —— 认错了比认不到更糟（会去重排别人的列表）。
     (function() {
         var lists = document.querySelectorAll('ul, ol');
         lists.forEach(function(ul) {
             if (pageHidden(ul)) return;
-            var cls = (ul.className || '').toString();
-            if (!/sort/i.test(cls)) return;
             var lis = [];
             for (var i = 0; i < ul.children.length; i++) {
                 if (ul.children[i].tagName === 'LI') lis.push(ul.children[i]);
             }
             if (lis.length < 2) return;
+
+            // 点击形态的判据：每个 li 都有 sortnum + 一个 name=qN 的隐藏域。
+            // 要求"每个"而不是"有"，是为了不把别的带序号的列表认成排序题。
+            var clickQ = null, clickItems = [];
+            var allClick = lis.every(function(li) {
+                var num = li.querySelector('span.sortnum');
+                var hid = li.querySelector('input[type="hidden"]');
+                var m = hid ? (hid.name || hid.id || '').match(/^q(\d+)(?:_\d+)?$/) : null;
+                if (!num || !hid || !m) return false;
+                if (clickQ === null) clickQ = parseInt(m[1]);
+                else if (clickQ !== parseInt(m[1])) return false;
+                clickItems.push(hid.value !== '' ? String(hid.value) : String(clickItems.length + 1));
+                return true;
+            });
+
+            var cls = (ul.className || '').toString();
+            var s = null, q = null;
+
+            if (clickQ !== null && allClick) {
+                q = clickQ;
+                s = slot(q);
+                if (s.type && s.type !== 'sort') return;
+                s.type = 'sort';
+                s.items = clickItems;
+                s.sort_mode = 'click';
+                return;
+            }
+            if (!/sort/i.test(cls)) return;
 
             var items = lis.map(function(li, idx) {
                 var v = li.getAttribute('value')
@@ -412,7 +575,6 @@ return (function() {
                 return v !== null && v !== '' ? v : String(idx + 1);
             });
 
-            var q = null;
             // ① 容器自身 id：问卷星常用 q13_list / sortq13 这类带题号前缀的 id
             var um = (ul.id || '').match(/^q(\d+)(?:$|[^0-9])/);
             if (um) q = parseInt(um[1]);
@@ -432,10 +594,11 @@ return (function() {
             }
             if (q === null) return;
 
-            var s = slot(q);
+            s = slot(q);
             if (s.type && s.type !== 'sort') return;   // 已被别的题型占用 → 不覆盖
             s.type = 'sort';
             s.items = items;
+            s.sort_mode = 'value';
         });
     })();
 
@@ -477,7 +640,8 @@ return (function() {
     Object.keys(map).forEach(function(q) {
         var it = map[q];
         if (it.type === 'scale' || it.type === 'text'
-                || it.type === 'matrix_single' || it.type === 'matrix_multi') {
+                || it.type === 'matrix_single' || it.type === 'matrix_multi'
+                || it.type === 'matrix_scale') {
             delete it.choices;
             // 矩阵/量表的控件 name 也带 qN，第 1 步会把它们先记成选择题；
             // 题型改判后这些"哪一项要填空"的结论不再适用于本体的定位方式。

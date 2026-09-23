@@ -100,7 +100,9 @@ WJX_TYPE_CODES: Mapping[str, QuestionTypeCode] = {
     "3": QuestionTypeCode("单选", frozenset({"single"})),
     "4": QuestionTypeCode("多选", frozenset({"multi"})),
     "5": QuestionTypeCode("量表", frozenset({"scale"})),
-    "6": QuestionTypeCode("矩阵", frozenset({"matrix_single", "matrix_multi"})),
+    # 6 在真卷上同时覆盖三种形态：矩阵单选、矩阵多选、矩阵量表（格子里是 <a dval>）
+    "6": QuestionTypeCode("矩阵", frozenset(
+        {"matrix_single", "matrix_multi", "matrix_scale"})),
     "7": QuestionTypeCode("下拉", frozenset({"dropdown"})),
     "9": QuestionTypeCode("多空填空", frozenset({"text"})),
     "11": QuestionTypeCode("排序", frozenset({"sort"})),
