@@ -93,6 +93,11 @@ class SurveyPlatform:
 
 
 WJX_TYPE_CODES: Mapping[str, QuestionTypeCode] = {
+    # 这套码是**页面容器 `type` 属性**的码，与问卷星官方 OpenAPI 的 `q_type` 不是一套：
+    # 官方 1/2 是分页栏与段落说明，而这里 1/2 实测是填空与多行文本；下拉、量表、矩阵、
+    # 排序、多空填空五处也各不相同。别拿官方码表来"修正"它 —— 结构对拍会因此每卷刷假警。
+    # 两套码的对照快照与断言见 scripts/official_qtypes_0_4_5.json +
+    # tests/test_official_qtype_taxonomy.py。
     # 码表来源：2026-09-22 在真卷（wjx.cn/vm/rg3dg49.aspx，15 题覆盖 1/2/3/4/5/6/7/9/11）
     # 上把 ``#fieldset1 > div`` 的 topic / type 与容器内实际控件形状逐题对过。
     "1": QuestionTypeCode("填空", frozenset({"text"})),

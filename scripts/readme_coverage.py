@@ -13,7 +13,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
@@ -22,6 +22,12 @@ BEGIN = "<!-- BEGIN AUTO-GENERATED 覆盖率口径 · scripts/readme_coverage.py
 END = "<!-- END AUTO-GENERATED 覆盖率口径 -->"
 FLOOR_RE = re.compile(r"--cov-fail-under=(\d+(?:\.\d+)?)")
 NUM_RE = re.compile(r"\d+(?:\.\d+)?%?")
+
+
+def usage_fail(message: str) -> NoReturn:
+    """跑不动（不是口径漂移）：退出码 2，与"漂移即红"的 1 分开 —— 参照 CLI 的 0/1/2 约定。"""
+    print(message, file=sys.stderr)
+    raise SystemExit(2)
 
 
 @dataclass(frozen=True)
@@ -65,14 +71,14 @@ def load_coverage(path: Path) -> dict[str, Stat]:
 def load_floor() -> str:
     match = FLOOR_RE.search(CI_YML.read_text(encoding="utf-8"))
     if match is None:
-        raise SystemExit(f"FAIL: {CI_YML.name} 里没有 --cov-fail-under=，地板无从生成")
+        usage_fail(f"FAIL: {CI_YML.name} 里没有 --cov-fail-under=，地板无从生成")
     return match.group(1)
 
 
 def under(stats: dict[str, Stat], prefix: str) -> Stat:
     members = [stat for name, stat in stats.items() if name.startswith(prefix)]
     if not members:
-        raise SystemExit(f"FAIL: coverage.json 里 {prefix} 一个文件都没有")
+        usage_fail(f"FAIL: coverage.json 里 {prefix} 一个文件都没有")
     return Stat.of(members)
 
 
@@ -171,7 +177,7 @@ def render(spec: dict[str, Any], stats: dict[str, Stat], floor: str) -> str:
 def splice(readme: str, block: str) -> str:
     start, end = readme.find(BEGIN), readme.find(END)
     if start < 0 or end <= start:
-        raise SystemExit("FAIL: README 里找不到生成块哨兵，块被删掉了")
+        usage_fail("FAIL: README 里找不到生成块哨兵，块被删掉了")
     head = readme[: start + len(BEGIN)]
     tail = readme[end:]
     newline = "" if head.endswith("\n") else "\n"
@@ -221,14 +227,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if not args.coverage.exists():
-        raise SystemExit(
+        usage_fail(
             f"FAIL: 找不到 {args.coverage}，先跑：pytest tests/ -m \"not integration\" "
             f"--cov=src --cov=gui --cov-report=json"
         )
     if args.write and not args.force_env:
         extras = optional_deps_present()
         if extras:
-            raise SystemExit(
+            usage_fail(
                 f"FAIL: 当前解释器装了 {', '.join(extras)}，而 README 的口径是不装可选依赖的 CI 环境。"
                 f"在干净 venv 里跑本脚本（coverage.json 也要是那个环境产出的），确实要写就加 --force-env"
             )
@@ -255,4 +261,5 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     raise SystemExit(main())
