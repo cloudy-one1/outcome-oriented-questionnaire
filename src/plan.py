@@ -1,4 +1,4 @@
-"""信度计划矩阵的**数学内核**（``DESIGN_reliability_alpha.md`` §5 P1 的前半段）。
+"""信度计划矩阵的**数学内核**（``docs/design/DESIGN_reliability_alpha.md`` §5 P1 的前半段）。
 
 职责边界（先说清，免得顺手把接线也做了）
     输入「每道参与题的目标选项配额 + 目标 Cronbach α」，输出一张
