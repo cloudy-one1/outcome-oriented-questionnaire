@@ -47,8 +47,22 @@ def _requirement_pins(name: str) -> list[str]:
 
 def test_project_version_matches_package_version(pyproject: dict) -> None:
     assert pyproject["project"]["version"] == __version__, (
-        "pyproject 与 src.__version__ 漂了：装出来的包和 --version 报的不是一个版本"
+        "pyproject 与 src.__version__ 漂了：装出来的包元数据，与 CLI --help 那行"
+        " `v{__version__}` 和 GUI 窗口标题报的不是一个版本"
+        "（本工具没有 --version 参数，版本号只出现在这两处）"
     )
+
+
+def test_readme_version_badge_matches_package_version(pyproject: dict) -> None:
+    """同一个版本号有**三处**手写：pyproject、``src.__version__``、README 顶上的徽章。
+
+    前两处由上面那条钉住了，徽章这一处一直是散的 —— 定版时漏改它，CI 照样全绿，
+    而访客在仓库首页看到的还是上一个版本。故一并纳入门禁（本轮定 v3.3.0 时就是
+    按这条挨个改的三处）。
+    """
+    badge = f"Version-{pyproject['project']['version']}-brightgreen"
+    with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
+        assert badge in f.read(), f"README 的版本徽章与包版本不一致：找 {badge!r}"
 
 
 def test_required_python_floor_matches_readme(pyproject: dict) -> None:
