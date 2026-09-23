@@ -232,7 +232,7 @@ def _stub_flow_up_to_step3(monkeypatch, order: list[str]) -> ScriptDriver:
         lambda _d: order.append("hook") or True,
     )
     monkeypatch.setattr(
-        pipeline, "_answer_current_page", lambda *a, **k: ("failed", set(), 0)
+        pipeline, "_answer_current_page", lambda *a, **k: ("failed", set(), 0, set())
     )
     return d
 
@@ -265,7 +265,7 @@ def test_unknown_submit_reports_the_alert_as_the_reason(monkeypatch, capsys) -> 
     order: list[str] = []
     d = _stub_flow_up_to_step3(monkeypatch, order)
     monkeypatch.setattr(
-        pipeline, "_answer_current_page", lambda *a, **k: ("ok", {1, 2, 3}, 0)
+        pipeline, "_answer_current_page", lambda *a, **k: ("ok", {1, 2, 3}, 0, set())
     )
     monkeypatch.setattr(pipeline, "advance_to_next_page", lambda *a, **k: ("no_more", ""))
     monkeypatch.setattr(

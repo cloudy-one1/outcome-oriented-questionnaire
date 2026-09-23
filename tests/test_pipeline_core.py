@@ -1016,3 +1016,124 @@ def test_real_consent_probe_stays_silent_in_the_wiring(
         assert "[协议]" not in capsys.readouterr().out
     finally:
         detection.reset_consent_notice()
+
+
+# ---------------------------------------------------------------------------
+#  v3.3 逐题作答回执：把 `_answer_one_question` 的返回值收上来
+#
+#  这条线的全部意义是"别再让 mystery failure 出现"：回执 False 的题过去被直接丢掉，
+#  于是症状推迟到点提交之后（平台弹"第 N 题未答"）。锁的三件事：
+#    1. 收到、并报出来（题号要对得上）；
+#    2. 报归报，**判定与提交行为一个字都不变** —— 回执可能只是没读到；
+#    3. 只有开了 ``--rescue-gaps`` 才把这类题一起交给人工等，等不到也照提交。
+#  续填跳过的题不算回执失败（我们根本没动手）。
+# ---------------------------------------------------------------------------
+def test_per_question_receipt_is_collected_and_named(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Q2 的作答返回 False → 点提交之前就把 Q2 报出来（而不是等平台说）。"""
+    answer = mock.Mock(name="_answer_one_question", side_effect=[True, False])
+    with stages(detect_questions=_questions(1, 2), _answer_one_question=answer):
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+
+    out = capsys.readouterr().out
+    assert "[作答回执]" in out and "Q2" in out, out
+    assert "Q1" not in out.split("[作答回执]")[1].splitlines()[0], "落上的那题不许被牵连进来"
+
+
+def test_resume_skipped_questions_are_not_reported_as_receipt_failures(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """续填跳过的题压根没动手，不许出现在回执里。"""
+    answer = mock.Mock(name="_answer_one_question", return_value=True)
+    with stages(
+        detect_questions=_questions(1, 2),
+        detect_answered_questions={2},
+        _answer_one_question=answer,
+    ):
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+
+    assert "[作答回执]" not in capsys.readouterr().out
+    assert _answered_nums(answer) == [1], "已答题应当被跳过而不是重答"
+
+
+def test_receipt_failures_never_block_the_submit_by_default(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """默认关：一行说明 + 照常点提交。拦错一次 = 一单本来能交的问卷被判失败。"""
+    answer = mock.Mock(name="_answer_one_question", return_value=False)
+    with stages(detect_questions=_questions(1), _answer_one_question=answer) as st:
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+
+    assert "[作答回执]" in capsys.readouterr().out
+    st.find_and_click_submit.assert_called_once()
+
+
+def test_clean_run_says_nothing_about_receipts(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    answer = mock.Mock(name="_answer_one_question", return_value=True)
+    with stages(detect_questions=_questions(1), _answer_one_question=answer):
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+    assert "[作答回执]" not in capsys.readouterr().out
+
+
+def test_rescue_gaps_waits_for_receipt_failures_too(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """开了补漏轮：没有"整题没探测到"的缺口，也要为回执失败的题等人工。"""
+    answer = mock.Mock(name="_answer_one_question", return_value=False)
+    hold = mock.Mock(name="hold_for_manual_fill", return_value=[1])
+    scroll = mock.Mock(name="scroll_question_into_view")
+    with stages(
+        detect_questions=_questions(1),
+        _answer_one_question=answer,
+        hold_for_manual_fill=hold,
+        scroll_question_into_view=scroll,
+    ) as st:
+        assert _core(FakeDriver(), ManualHoldLock(), rescue_gaps=True,
+                     stop_check=lambda: False) == SUBMIT_SUCCESS
+
+    # 等的是那道题（滚进视野的就是它），停止谓词照旧透传（等着期间点"停止"不许提交）
+    assert scroll.call_args.args[1] == 1
+    assert hold.call_args.kwargs["stop_check"] is not None
+    assert st.find_and_click_submit.call_count == 1
+    out = capsys.readouterr().out
+    assert "[补漏]" in out and "照提交" in out, out
+
+
+def test_rescue_gaps_submits_quietly_once_the_human_discharges_them(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """人工补齐（复检空了）→ 提交，且不再补一句"照提交"的解释。"""
+    answer = mock.Mock(name="_answer_one_question", return_value=False)
+    with stages(
+        detect_questions=_questions(1),
+        _answer_one_question=answer,
+        hold_for_manual_fill=mock.Mock(name="hold_for_manual_fill", return_value=[]),
+    ):
+        assert _core(FakeDriver(), ManualHoldLock(),
+                     rescue_gaps=True) == SUBMIT_SUCCESS
+    assert "照提交" not in capsys.readouterr().out
+
+
+def test_recheck_discharges_receipt_failures_by_reading_the_page() -> None:
+    """复检对第二类的消解条件只有一个：已答扫描现在读得到那格的值。"""
+    base: dict[str, Any] = {
+        "detect_questions": _questions(1, 2),
+        "detect_platform_questions": [],
+    }
+    with stages(**{**base, "detect_answered_questions": {2}}):
+        assert pipeline._recheck_gap(FakeDriver(), {1, 2}, {2}) == []
+    with stages(**{**base, "detect_answered_questions": set()}):
+        assert pipeline._recheck_gap(FakeDriver(), {1, 2}, {2}) == [2]
+
+
+def test_recheck_receipt_channel_survives_a_failed_answered_scan() -> None:
+    """已答扫描抖一下 → 按"没有新证据"处理：第二类继续挂着等，不许在这里放行。"""
+    with stages(
+        detect_questions=_questions(1, 2),
+        detect_answered_questions=StaleElementReferenceException("page moved"),
+        detect_platform_questions=[],
+    ):
+        assert pipeline._recheck_gap(FakeDriver(), {1, 2}, {2}) == [2]
