@@ -2,30 +2,70 @@
   "_comment": "README 覆盖率口径块的数据源。reason 必填（留空即门禁红），模块名必须能在 coverage.json 里找到。",
   "caliber": "`pytest tests/ -m \"not integration\" --cov=src --cov=gui`，依赖只装 `requirements*.txt`（即 CI 两条 leg 的环境）",
   "closed_gaps": {
-    "title": "已补齐的缺口（v2.7 那五条）",
+    "title": "已补齐的缺口（\"补齐前\"一列是登记时的实测）",
     "baseline_header": "补齐前",
     "rows": [
       {
         "module": "src/logging_setup.py",
         "baseline": "0%",
-        "covered_by": ["tests/test_logging_setup.py"]
+        "covered_by": [
+          "tests/test_logging_setup.py"
+        ]
       },
       {
         "module": "src/browser/driver_factory.py",
         "baseline": "9%",
-        "covered_by": ["tests/test_driver_factory_offline.py"]
+        "covered_by": [
+          "tests/test_driver_factory_offline.py"
+        ]
       },
       {
         "module": "src/pipeline.py",
         "baseline": "26%",
         "note": "v3.0 加了分页与弹窗诊断分支",
-        "covered_by": ["tests/test_pipeline_core.py", "tests/test_pipeline_waits.py"]
+        "covered_by": [
+          "tests/test_pipeline_core.py",
+          "tests/test_pipeline_waits.py"
+        ]
       },
       {
         "module": "src/verification.py",
         "baseline": "34%",
         "note": "非 Windows 降级桩本机不可达",
-        "covered_by": ["tests/test_verification_flow.py"]
+        "covered_by": [
+          "tests/test_verification_flow.py"
+        ]
+      },
+      {
+        "module": "src/browser/__init__.py",
+        "baseline": "52.2%",
+        "covered_by": [
+          "tests/test_browser_facade_offline.py"
+        ]
+      },
+      {
+        "module": "src/interactions/choices.py",
+        "baseline": "58.8%",
+        "covered_by": [
+          "tests/test_choices_interaction.py"
+        ]
+      },
+      {
+        "module": "src/interactions/sort.py",
+        "baseline": "22.2%",
+        "covered_by": [
+          "tests/test_sort_interaction.py"
+        ]
+      },
+      {
+        "module": "src/cli.py",
+        "baseline": "74.3%",
+        "note": "剩余是 run_batch 内的浏览器接线与降级分支",
+        "covered_by": [
+          "tests/test_cli_exit_and_reports.py",
+          "tests/test_cli_main.py",
+          "tests/test_cli_batch.py"
+        ]
       },
       {
         "group": "gui/",
@@ -52,22 +92,6 @@
       {
         "module": "src/pipeline_stages/question_stage.py",
         "reason": "逐题 DOM 交互主干：等待、「哪道题调哪个填充器」的分发、带框选项只勾不填的降级都已有离线测试（`tests/test_question_stage_dispatch.py`），真实点击仍靠 E2E"
-      },
-      {
-        "module": "src/interactions/sort.py",
-        "reason": "点击式排序（`js_fill_sort(mode=\"click\")`，v3.1 真卷新形态）的清残留 / 逐项点击 / 超时三段分支只有真浏览器 E2E 走过（`tests/test_e2e_integration.py` 的 click-mode 两条），离线替身一次没执行过函数体；`_state` 的 JSON 解析降级同理"
-      },
-      {
-        "module": "src/cli.py",
-        "reason": "`run_batch` 主干已测，剩余是 `--save-config` / 统计打印一类输出分支"
-      },
-      {
-        "module": "src/browser/__init__.py",
-        "reason": "`create_driver` 的 edge/chrome 分发与 `cleanup_browser_state` 整段 Cookie/Storage 清理没有离线替身（缺的正是那 11 行）—— `driver_factory` 有替身 driver，这层薄门面反而没人走一遍"
-      },
-      {
-        "module": "src/interactions/choices.py",
-        "reason": "三个 `@js_execute_retry` 包装函数的函数体一次都没在离线测试里执行（缺 21/31/42-46 行）—— 分发测到「该调哪个填充器」就停了，填充器自身的 `execute_script` 只有 E2E 覆盖"
       }
     ]
   },

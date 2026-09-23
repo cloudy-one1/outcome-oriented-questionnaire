@@ -16,6 +16,12 @@
 - **浏览器反检测** — CDP 注入 Stealth JS 隐藏 `navigator.webdriver`，随机化 UA / 屏幕分辨率 / 硬件指纹，可选 `undetected-chromedriver` 增强模式
 - **人类行为模拟** — 所有点击与停顿均为「正态分布 + 区间截断」采样，完整鼠标事件链，偶发长停顿，周期性重启浏览器释放内存
 - **九类题型全覆盖** — 单选 / 多选 / 下拉 / 量表（含 NPS）/ 填空 / 矩阵单选 / **矩阵多选** / **矩阵量表** / **排序题**，填空题自动识别姓名、手机、邮箱、年龄、地址、**所在地区（省市）**、公司等字段并按类型生成；字段类型**先问平台的 `verify` 属性**再用题干正则猜（v3.1）
+  这九类全部落在问卷星官方 OpenAPI 题型清单的 **stable 档（12 种，官方"无需预检即可创建"那一档）**；
+  清单共 110 种，其余 86 种 advanced、7 种框架草稿、5 种创建接口直接拒 —— 那 98 种我们不做，也不说成做。
+  **注意官方 `q_type` 与页面容器上的 `type` 属性不是一套码**（官方 1/2 是分页栏与段落说明，而真卷实测
+  页面上的 1/2 是填空与多行文本；下拉、量表、矩阵、排序、多空填空五处也各不相同），所以本项目的码表
+  只认真卷。快照与这些边界由 `scripts/official_qtypes_0_4_5.json` + `tests/test_official_qtype_taxonomy.py`
+  看着；日期与时间在官方映射里同样没有数字码，本工具对它只探测不作答
 - **一份问卷 = 一个人** — 姓名 / 性别 / 年龄 / 学历 / 职业 / 收入 / 婚姻 / 子女 / 省市 一次抽定，其余字段全部从这份画像派生：身份证前 6 位就是画像那个省市、出生日期与年龄同一、第 17 位奇偶对得上性别、校验位是真算的（ISO 7064 MOD 11-2）、邮箱前缀是姓氏拼音、住址与地区题同省。此前是四个各自随机的池子，同一份卷里能长出「女名池的张伟 · 深圳地址 · 3 岁 · 乌鲁木齐公司」这种不存在的人（v3.2，`src/persona.py`）
 - **真实答卷回放**（`--replay-file`） — 拿一份已收集到的答卷表（CSV，装了 openpyxl 时也可 .xlsx）逐份回放：表里有的题按表答，认不到列 / 解析不出的格子**照旧随机**并说明为什么。第 N 份用第 N 行，**只有提交成功才推进队列**（失败重投拿到同一行，避免出现两份一模一样的真实答卷）。多选 / 排序 / 矩阵多选本版本明确不支持（v3.2，`src/reverse_fill.py`）
 - **投递分布在线纠正**（`--drift-correct`，默认关） — 加权随机只管每次抽样的期望，管不了"失败与 UNKNOWN 吃掉几份之后落地还剩什么比例"。开启后按**已提交成功**的实际比例对目标权重做小幅指数修正（因子夹 ±1/3、前 8 份完全不纠正）。它改变答题结果，所以不是默认行为（v3.2，`src/distribution.py`）
@@ -231,7 +237,7 @@ python run_gui.py
         ↓
 启动 Stealth 浏览器（指纹随机化 + 反检测 JS 注入）
         ↓
-打开问卷页面 → JS 注入探测 8 类题型结构（只看当前可见页 + 题干）
+打开问卷页面 → JS 注入探测九类题型结构（只看当前可见页 + 题干）
         ↓
 （启用续传时）按归一化键查找同一问卷的未完成批次 → 复用批次号与权重快照
         ↓
@@ -427,14 +433,14 @@ pip install -r requirements-dev.txt
 # 全量测试（含依赖真实浏览器驱动的 E2E）
 python -m pytest tests/ -v
 
-# 离线套件（无浏览器环境 / CI，1108 项；只装 requirements*.txt 的口径下会有若干 skip）
+# 离线套件（无浏览器环境 / CI，1189 项；只装 requirements*.txt 的口径下会有若干 skip）
 python -m pytest tests/ -m "not integration" -q
 
 # 仅浏览器 E2E（需本机 Edge / Chrome + WebDriver，25 项）
 python -m pytest tests/ -m integration -q
 ```
 
-当前测试全部通过：**1133 项**（离线 1108 + E2E 25）。
+当前测试全部通过：**1214 项**（离线 1189 + E2E 25）。
 
 > **类型门禁不随环境变**：`src/` + `gui/` + 入口在两种环境下都是 **0 error
 > 0 warning**。三处可选依赖（`opencv-python`、`undetected_chromedriver`、`openpyxl`）
@@ -447,7 +453,7 @@ python -m pytest tests/ -m integration -q
 >
 > | 门禁 | 装齐可选依赖（开发机） | 未装（CI / 干净 venv） |
 > |---|---|---|
-> | 离线套件 | 1108 passed | 1104 passed + 4 skipped（二维码解析 2 项、`.xlsx` 真读 1 项，外加全新检出时 `coverage.json` 还不存在 —— 文档口径比对那一项也 skip，它是同一次运行**末尾**才产出的） |
+> | 离线套件 | 1189 passed | 1185 passed + 4 skipped（二维码解析 2 项、`.xlsx` 真读 1 项，外加全新检出时 `coverage.json` 还不存在 —— 文档口径比对那一项也 skip，它是同一次运行**末尾**才产出的） |
 > | 覆盖率 | 总口径比 CI 高约 0.2pp（`src/` +0.1、`gui/` +0.6）—— 三个可选项各自改变一侧的分支走向 | 见下方「已知缺口（诚实记录）」的生成块，那是门禁认的唯一口径 |
 >
 > 覆盖率数字现在只有一个来源：`scripts/readme_coverage.py` 从 `coverage.json` 生成，
@@ -523,11 +529,11 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 
 | 范围 | 离线覆盖率 |
 |---|---|
-| 全部 | **86.2%** |
-| `src/` | 89.6%（4599 条语句剩 478 行） |
+| 全部 | **87.9%** |
+| `src/` | 91.9%（4600 条语句剩 371 行） |
 | `gui/` | 78.1%（1917 条语句剩 419 行） |
 
-#### 已补齐的缺口（v2.7 那五条）
+#### 已补齐的缺口（"补齐前"一列是登记时的实测）
 
 | 模块 | 补齐前 | 现在 | 契约测试 |
 |---|---|---|---|
@@ -535,6 +541,10 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 | `src/browser/driver_factory.py` | 9% | **98.4%**（剩 3 行） | `tests/test_driver_factory_offline.py` |
 | `src/pipeline.py` | 26% | **97.0%**（剩 7 行，v3.0 加了分页与弹窗诊断分支） | `tests/test_pipeline_core.py`、`tests/test_pipeline_waits.py` |
 | `src/verification.py` | 34% | **97.0%**（剩 3 行，非 Windows 降级桩本机不可达） | `tests/test_verification_flow.py` |
+| `src/browser/__init__.py` | 52.2% | **100.0%**（剩 0 行） | `tests/test_browser_facade_offline.py` |
+| `src/interactions/choices.py` | 58.8% | **100.0%**（剩 0 行） | `tests/test_choices_interaction.py` |
+| `src/interactions/sort.py` | 22.2% | **100.0%**（剩 0 行） | `tests/test_sort_interaction.py` |
+| `src/cli.py` | 74.3% | **84.6%**（剩 81 行，剩余是 run_batch 内的浏览器接线与降级分支） | `tests/test_cli_exit_and_reports.py`、`tests/test_cli_main.py`、`tests/test_cli_batch.py` |
 | `gui/`（9 个文件合计） | 15% | **78.1%**（`log_view`、`theme` 已 100%） | `tests/test_gui_panels.py`、`tests/test_gui_proxies.py`、`tests/test_gui_run_loop.py` |
 
 #### 仍然没有防线的地方
@@ -544,10 +554,6 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 | `gui/controller.py` | 37.1% | 配置导出/导入与二维码选文件已可注入替身文件框（`tests/test_gui_user_data.py`），剩 37% 的坎是探测题目那条 worker —— 它要真实 driver（`on_detect_questions` 整段 300-403 行） |
 | `gui/app.py` | 71.1% | `WJX_USER_DATA_DIR` 把 `configs/` + `data/` 整棵挪走之后，整窗已能在测试里构造（`tests/test_gui_user_data.py`：构造、输入校验、续传决策、历史库接线）。剩 206 行是 canvas 重绘与 resize/关窗回调，要真实 paint 事件与 mainloop 才走得到 |
 | `src/pipeline_stages/question_stage.py` | 63.3% | 逐题 DOM 交互主干：等待、「哪道题调哪个填充器」的分发、带框选项只勾不填的降级都已有离线测试（`tests/test_question_stage_dispatch.py`），真实点击仍靠 E2E |
-| `src/interactions/sort.py` | 22.2% | 点击式排序（`js_fill_sort(mode="click")`，v3.1 真卷新形态）的清残留 / 逐项点击 / 超时三段分支只有真浏览器 E2E 走过（`tests/test_e2e_integration.py` 的 click-mode 两条），离线替身一次没执行过函数体；`_state` 的 JSON 解析降级同理 |
-| `src/cli.py` | 74.3% | `run_batch` 主干已测，剩余是 `--save-config` / 统计打印一类输出分支 |
-| `src/browser/__init__.py` | 52.2% | `create_driver` 的 edge/chrome 分发与 `cleanup_browser_state` 整段 Cookie/Storage 清理没有离线替身（缺的正是那 11 行）—— `driver_factory` 有替身 driver，这层薄门面反而没人走一遍 |
-| `src/interactions/choices.py` | 58.8% | 三个 `@js_execute_retry` 包装函数的函数体一次都没在离线测试里执行（缺 21/31/42-46 行）—— 分发测到「该调哪个填充器」就停了，填充器自身的 `execute_script` 只有 E2E 覆盖 |
 
 > 本块由 `python scripts/readme_coverage.py --write` 从 `coverage.json` 生成，`--check` 已进 CI 当门禁
 > —— 手改这里的数字会在下次推送时红掉。`--write` 会拒绝装了 `opencv-python` /
