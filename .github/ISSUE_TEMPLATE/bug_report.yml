@@ -1,0 +1,101 @@
+name: 缺陷报告
+description: 探测、作答或提交链路上出现了不该出现的行为
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请先确认两件事，它们能省掉一轮往返：
+
+        1. **问卷是 PC 版还是移动端投放**（`/jq/`、`/m/` 那一类）。移动端本仓库未适配，
+           "一道题都探测不到"在那个形态下是预期行为。
+        2. **版本是否是当前 `main` 或最新发布版**：
+           `python -c "import src; print(src.__version__)"`。`1.x` / `2.x` 不再修。
+
+        请填写**脱敏**内容：问卷地址换成 `<url>`，答案原文里的姓名 / 手机 / 邮箱删掉。
+        涉及数据外泄的风险请走私有漏洞报告，见 `SECURITY.md`。
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 上面那条命令打印的值，或 commit 短 sha
+      placeholder: "3.3.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: entry
+    attributes:
+      label: 入口
+      multiple: true
+      options:
+        - CLI
+        - GUI
+    validations:
+      required: true
+  - type: dropdown
+    id: page-form
+    attributes:
+      label: 问卷投放形态
+      description: 这一项决定它是缺陷还是未适配 —— 移动端目前不支持
+      options:
+        - PC 版（桌面端分享地址）
+        - 移动端（`/jq/`、`/m/` 之类）
+        - 不确定 / 只用了仓库内的 mock 问卷
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现方式
+      description: 完整命令行（地址请写成 `<url>`）或 GUI 的点击路径
+      render: shell
+      placeholder: |
+        wjx-fill -u <url> -n 5 --manual-submit
+    validations:
+      required: true
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: 现象与期望
+      description: 现象请带上工具实际说出来的那一句 —— 那句话会指明是哪一层判的
+      value: |
+        **现象**
+
+        **期望**
+    validations:
+      required: true
+  - type: textarea
+    id: question-structure
+    attributes:
+      label: 题目结构（仅题型判断类问题需要）
+      description: |
+        请附**真卷实测**：题目容器上的 `type` / `topic` 属性值、控件的 class 与关键属性。
+        本仓库的题型码表只认真卷 —— 问卷星官方 OpenAPI 的 `q_type` 与页面上的 `type`
+        不是一套码，拿官方文档当页面依据会判错。
+      render: html
+  - type: textarea
+    id: logs
+    attributes:
+      label: 关键日志
+      description: 删掉任何真实姓名 / 手机 / 邮箱 / 完整答案原文
+      render: text
+  - type: input
+    id: env
+    attributes:
+      label: 运行环境
+      description: Python 版本 / 操作系统 / 浏览器与版本
+      placeholder: "Python 3.13.2 / Windows 11 26100 / Edge 141"
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: 确认
+      options:
+        - label: 我已读过 README 的「免责声明」，这一单只在自有或已获授权的测试问卷上复现
+          required: true
+        - label: 贴出的日志与结构里没有任何真实个人信息
+          required: true
+        - label: 我能稳定复现（不能稳定复现请在现象里写明出现频率）
+          required: false
