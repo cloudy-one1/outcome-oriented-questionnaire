@@ -21,7 +21,11 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from src.completeness import describe_gap, unanswered_required  # noqa: E402
+from src.completeness import (
+    describe_gap,
+    describe_not_written,
+    unanswered_required,
+)  # noqa: E402
 
 
 def _items(*pairs: tuple[int, bool]) -> list[dict]:
@@ -71,3 +75,21 @@ def test_description_names_the_questions_and_the_action() -> None:
 def test_empty_gap_produces_no_line_from_caller() -> None:
     """空集合时调用方根本不该出声（这里只锁住判据本身返回空）。"""
     assert unanswered_required(_items((1, True)), {1}) == []
+
+
+# ---------------------------------------------------------------------------
+#  v3.3 第二类缺口：探测到了、回执说没落上（只报不拦）
+# ---------------------------------------------------------------------------
+def test_receipt_line_names_questions_and_refuses_to_block() -> None:
+    line = describe_not_written([3, 7])
+    assert "Q3" in line and "Q7" in line
+    assert "[作答回执]" in line
+    # 这一行必须自己讲清"为什么不拦"，否则下一个人会顺手把它接成拦停判据
+    assert "不拦停" in line and "不是网络问题" in line
+
+
+def test_receipt_line_does_not_claim_we_never_saw_the_question() -> None:
+    """两类缺口的话术不许互换：把"没落上"说成"没探测到"是假话。"""
+    assert "没探测到" not in describe_not_written([3])
+    assert "没落上" in describe_gap.__doc__ or "没落上" in describe_not_written([3])
+

@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wjx-autofill"
-version = "3.0.0"
+version = "3.3.0"
 description = "基于 Selenium Stealth 的问卷星批量填写工具（加权随机作答 + 人类行为模拟 + CLI/GUI 双入口）"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -774,6 +774,46 @@ def test_submit_clicks_once_and_detects_ajax_success(driver):
     assert clicks == 1, f"提交按钮必须恰好点一次，实际 {clicks} 次（重复提交风险）"
 
 
+def test_manual_submit_never_clicks_for_the_human_in_a_real_dom(driver):
+    """真 DOM 上锁住这个开关的立命之处：**工具一次都不许点提交按钮**。
+
+    为什么只能放 E2E：``__submitClicks`` 这个计数器只有真页面才有，而"我在等待循环里
+    其实没有偷偷点下去"这句话用离线替身断言不出来（替身想返回什么返回什么）。
+    这条同时钉住另一半：没人点 → 判失败，且平台上什么都没交出去。
+    """
+    from src.interactions.submit import SUBMIT_FAILED
+    from src.pipeline_stages.manual_submit import wait_for_manual_submit
+    from src.utils import ManualHoldLock
+
+    assert driver.execute_script("return window.__submitClicks;") == 0
+
+    result = wait_for_manual_submit(driver, ManualHoldLock(), timeout=1.5)
+
+    assert result == SUBMIT_FAILED, f"没人点就该是这一份没交出去，实际 {result!r}"
+    assert driver.execute_script("return window.__submitClicks;") == 0, (
+        "人工提交路径里出现了一次程序点击 —— 那份问卷已经替人交出去了"
+    )
+
+
+def test_manual_submit_recognises_a_real_human_click_with_the_shared_verdict(driver):
+    """人（这里由测试代点）点下去之后，同一套成功判据要认得出这份提交。
+
+    与 ``test_submit_clicks_once_and_detects_ajax_success`` 用的是同一个 AJAX 式页面：
+    URL 不变、成功文案稍后才出现。判据不同源的话，人工提交的那一份会与自动提交的
+    那一份在历史里不可比 —— 而那正是"把最后一下交给人"必须付出的代价之外的部分。
+    """
+    from src.interactions.submit import SUBMIT_SUCCESS
+    from src.pipeline_stages.manual_submit import wait_for_manual_submit
+    from src.utils import ManualHoldLock
+
+    driver.find_element("id", "submit_button").click()
+
+    assert wait_for_manual_submit(driver, ManualHoldLock(), timeout=6.0) == SUBMIT_SUCCESS
+    assert driver.execute_script("return window.__submitClicks;") == 1, (
+        "成功之外还多点了一下 —— 等待路径必须只读不点"
+    )
+
+
 def test_submit_does_not_reclick_when_page_is_busy(driver):
     """点击后页面跳转期间读 current_url 抛错，绝不能导致重新点击。
 

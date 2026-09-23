@@ -95,7 +95,10 @@ def test_timeout_returns_the_last_gap(clock: FakeTime,
     ) == [2, 9]
     assert len(clock.slept) == 3, "6s / 每片 2s → 三片之后收工"
     out = capsys.readouterr().out
-    assert "维持判失败" in out and "Q2、Q9" in out
+    assert "仍然读不到答案" in out and "Q2、Q9" in out
+    # 这里不许宣布判定：调用方手里两类题的处置不同（整题没探测到的拦停，
+    # 作答回执说没落上的照提交），判定归 pipeline 那两句各自说自己的
+    assert "维持判失败" not in out, out
     assert lock.is_holding is False
 
 

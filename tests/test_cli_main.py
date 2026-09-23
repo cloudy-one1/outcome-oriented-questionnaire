@@ -165,6 +165,25 @@ def test_main_rescue_gaps_defaults_off_and_forwarded(db_path: str) -> None:
     assert _run_main(["-u", URL, "--rescue-gaps"])["rescue_gaps"] is True
 
 
+def test_main_manual_submit_defaults_off_and_forwarded(db_path: str) -> None:
+    """v3.3 人工提交：不写就是 False（默认路径 = 自动提交），写了必须传到 run_batch。"""
+    assert _run_main(["-u", URL])["manual_submit"] is False
+    assert _run_main(["-u", URL, "--manual-submit"])["manual_submit"] is True
+
+
+def test_main_manual_submit_rejects_headless(db_path: str) -> None:
+    """无头窗口里没有可点的人 —— 两个开关同时给是配置错了，必须动手前退掉。
+
+    取其一（比如"无头时自动降级成不等待"）会静默交出一份没人核对过的问卷，
+    而那正是这个开关要避免的事。
+    """
+    with mock.patch.object(cli, "run_batch") as rb:
+        with pytest.raises(SystemExit) as exc:
+            cli.main(["-u", URL, "-H", db_path, "--manual-submit", "--headless"])
+    assert exc.value.code == 2
+    rb.assert_not_called()
+
+
 def test_main_exit_code_nonzero_when_failures(db_path: str) -> None:
     """CLI 常被 cron 调用，失败必须反映到退出码。"""
     with mock.patch.object(cli, "run_batch") as rb:

@@ -491,7 +491,7 @@ def test_run_one_submission_never_retries_a_successful_core() -> None:
     core.assert_called_once_with(
         driver, SURVEY_URL, lock,
         history_db=None, run_id=None, submission_index=None, no_record_text=False,
-        stop_check=None, rescue_gaps=False,
+        stop_check=None, rescue_gaps=False, manual_submit=False,
     )
 
 
@@ -893,7 +893,9 @@ def test_rescue_gaps_submits_only_after_the_recheck_comes_back_empty() -> None:
     assert callable(hold.call_args.args[0]), "复检是以回调形式交给等待循环的"
 
 
-def test_rescue_gaps_keeps_failed_verdict_when_the_human_fills_nothing() -> None:
+def test_rescue_gaps_keeps_failed_verdict_when_the_human_fills_nothing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """人工没补齐（这里模拟等待到超时）→ 维持今天的判失败，不发明第三种结果。"""
     result, st, driver, _scroll = _rescue_run(
         _waiting([2]), core_kw={"rescue_gaps": True},
@@ -902,6 +904,8 @@ def test_rescue_gaps_keeps_failed_verdict_when_the_human_fills_nothing() -> None
     assert result == SUBMIT_FAILED
     st.find_and_click_submit.assert_not_called()
     assert driver.switch_to.calls == 1
+    # 这句话由拿到拦停判据的这一层说（等待那两句只报读数，不报判定）
+    assert "维持判失败" in capsys.readouterr().out
 
 
 def test_rescue_gaps_reports_the_ask_and_keeps_the_gap_line(
@@ -1016,3 +1020,188 @@ def test_real_consent_probe_stays_silent_in_the_wiring(
         assert "[协议]" not in capsys.readouterr().out
     finally:
         detection.reset_consent_notice()
+
+
+# ---------------------------------------------------------------------------
+#  v3.3 逐题作答回执：把 `_answer_one_question` 的返回值收上来
+#
+#  这条线的全部意义是"别再让 mystery failure 出现"：回执 False 的题过去被直接丢掉，
+#  于是症状推迟到点提交之后（平台弹"第 N 题未答"）。锁的三件事：
+#    1. 收到、并报出来（题号要对得上）；
+#    2. 报归报，**判定与提交行为一个字都不变** —— 回执可能只是没读到；
+#    3. 只有开了 ``--rescue-gaps`` 才把这类题一起交给人工等，等不到也照提交。
+#  续填跳过的题不算回执失败（我们根本没动手）。
+# ---------------------------------------------------------------------------
+def test_per_question_receipt_is_collected_and_named(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Q2 的作答返回 False → 点提交之前就把 Q2 报出来（而不是等平台说）。"""
+    answer = mock.Mock(name="_answer_one_question", side_effect=[True, False])
+    with stages(detect_questions=_questions(1, 2), _answer_one_question=answer):
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+
+    out = capsys.readouterr().out
+    assert "[作答回执]" in out and "Q2" in out, out
+    assert "Q1" not in out.split("[作答回执]")[1].splitlines()[0], "落上的那题不许被牵连进来"
+
+
+def test_resume_skipped_questions_are_not_reported_as_receipt_failures(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """续填跳过的题压根没动手，不许出现在回执里。"""
+    answer = mock.Mock(name="_answer_one_question", return_value=True)
+    with stages(
+        detect_questions=_questions(1, 2),
+        detect_answered_questions={2},
+        _answer_one_question=answer,
+    ):
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+
+    assert "[作答回执]" not in capsys.readouterr().out
+    assert _answered_nums(answer) == [1], "已答题应当被跳过而不是重答"
+
+
+def test_receipt_failures_never_block_the_submit_by_default(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """默认关：一行说明 + 照常点提交。拦错一次 = 一单本来能交的问卷被判失败。"""
+    answer = mock.Mock(name="_answer_one_question", return_value=False)
+    with stages(detect_questions=_questions(1), _answer_one_question=answer) as st:
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+
+    assert "[作答回执]" in capsys.readouterr().out
+    st.find_and_click_submit.assert_called_once()
+
+
+def test_clean_run_says_nothing_about_receipts(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    answer = mock.Mock(name="_answer_one_question", return_value=True)
+    with stages(detect_questions=_questions(1), _answer_one_question=answer):
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+    assert "[作答回执]" not in capsys.readouterr().out
+
+
+def test_rescue_gaps_waits_for_receipt_failures_too(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """开了补漏轮：没有"整题没探测到"的缺口，也要为回执失败的题等人工。"""
+    answer = mock.Mock(name="_answer_one_question", return_value=False)
+    hold = mock.Mock(name="hold_for_manual_fill", return_value=[1])
+    scroll = mock.Mock(name="scroll_question_into_view")
+    with stages(
+        detect_questions=_questions(1),
+        _answer_one_question=answer,
+        hold_for_manual_fill=hold,
+        scroll_question_into_view=scroll,
+    ) as st:
+        assert _core(FakeDriver(), ManualHoldLock(), rescue_gaps=True,
+                     stop_check=lambda: False) == SUBMIT_SUCCESS
+
+    # 等的是那道题（滚进视野的就是它），停止谓词照旧透传（等着期间点"停止"不许提交）
+    assert scroll.call_args.args[1] == 1
+    assert hold.call_args.kwargs["stop_check"] is not None
+    assert st.find_and_click_submit.call_count == 1
+    out = capsys.readouterr().out
+    assert "[补漏]" in out and "照提交" in out, out
+
+
+def test_rescue_gaps_headless_with_only_receipt_failures_still_submits(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """无头 + 只有回执失败：没等到人，但它没有拦停资格 → 照提交，也不许说"维持判失败"。
+
+    等人工的那两句（无头不等待 / 等满 300s）一度自己宣布判定，可它们手里只有一份
+    混着两类的题号清单 —— 于是同一次运行里前一行说维持失败、后一行说照提交。
+    """
+    d = FakeDriver()
+    d.wjx_headless = True
+    answer = mock.Mock(name="_answer_one_question", return_value=False)
+    with stages(detect_questions=_questions(1), _answer_one_question=answer) as st:
+        assert _core(d, ManualHoldLock(), rescue_gaps=True) == SUBMIT_SUCCESS
+
+    out = capsys.readouterr().out
+    assert "维持判失败" not in out, out
+    assert "照提交" in out
+    st.find_and_click_submit.assert_called_once()
+
+
+def test_rescue_gaps_submits_quietly_once_the_human_discharges_them(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """人工补齐（复检空了）→ 提交，且不再补一句"照提交"的解释。"""
+    answer = mock.Mock(name="_answer_one_question", return_value=False)
+    with stages(
+        detect_questions=_questions(1),
+        _answer_one_question=answer,
+        hold_for_manual_fill=mock.Mock(name="hold_for_manual_fill", return_value=[]),
+    ):
+        assert _core(FakeDriver(), ManualHoldLock(),
+                     rescue_gaps=True) == SUBMIT_SUCCESS
+    assert "照提交" not in capsys.readouterr().out
+
+
+def test_recheck_discharges_receipt_failures_by_reading_the_page() -> None:
+    """复检对第二类的消解条件只有一个：已答扫描现在读得到那格的值。"""
+    base: dict[str, Any] = {
+        "detect_questions": _questions(1, 2),
+        "detect_platform_questions": [],
+    }
+    with stages(**{**base, "detect_answered_questions": {2}}):
+        assert pipeline._recheck_gap(FakeDriver(), {1, 2}, {2}) == []
+    with stages(**{**base, "detect_answered_questions": set()}):
+        assert pipeline._recheck_gap(FakeDriver(), {1, 2}, {2}) == [2]
+
+
+def test_recheck_receipt_channel_survives_a_failed_answered_scan() -> None:
+    """已答扫描抖一下 → 按"没有新证据"处理：第二类继续挂着等，不许在这里放行。"""
+    with stages(
+        detect_questions=_questions(1, 2),
+        detect_answered_questions=StaleElementReferenceException("page moved"),
+        detect_platform_questions=[],
+    ):
+        assert pipeline._recheck_gap(FakeDriver(), {1, 2}, {2}) == [2]
+
+
+# ---------------------------------------------------------------------------
+#  Step 8 的另一半：--manual-submit（v3.3）—— 只把"点这一下"交给人
+#
+#  分叉点必须只有一处：走人工路径时 ``find_and_click_submit`` 一次都不许被调用
+#  （那是"替人交卷"，正是这个开关要消灭的动作），而提交后的三态判定、必填诊断、
+#  上下文复原必须**完全共用** —— 否则人提交的那一份与自动提交的那一份在历史里不可比。
+# ---------------------------------------------------------------------------
+def test_manual_submit_never_clicks_the_submit_button() -> None:
+    wait = mock.Mock(name="wait_for_manual_submit", return_value=SUBMIT_SUCCESS)
+    with stages(wait_for_manual_submit=wait) as st:
+        assert _core(FakeDriver(), ManualHoldLock(),
+                     manual_submit=True) == SUBMIT_SUCCESS
+
+    st.find_and_click_submit.assert_not_called()
+    wait.assert_called_once()
+
+
+def test_manual_submit_timeout_is_reported_as_failure_without_a_click() -> None:
+    """等到超时 = 这一份没交出去 → 判失败，而且不去"补一次自动提交"。"""
+    wait = mock.Mock(name="wait_for_manual_submit", return_value=SUBMIT_FAILED)
+    with stages(wait_for_manual_submit=wait) as st:
+        assert _core(FakeDriver(), ManualHoldLock(),
+                     manual_submit=True) == SUBMIT_FAILED
+    st.find_and_click_submit.assert_not_called()
+
+
+def test_manual_submit_off_does_not_touch_the_wait_path() -> None:
+    """默认关：连问都不问（一次 execute_script 都不该多），行为与此前逐位一致。"""
+    wait = mock.Mock(name="wait_for_manual_submit",
+                     side_effect=AssertionError("没开开关不该等人工"))
+    with stages(wait_for_manual_submit=wait) as st:
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+    st.find_and_click_submit.assert_called_once()
+
+
+def test_manual_submit_forwards_the_stop_predicate() -> None:
+    """停止谓词必须传进等待循环 —— 否则"停止"要等满 180s 才生效。"""
+    wait = mock.Mock(name="wait_for_manual_submit", return_value=SUBMIT_SUCCESS)
+    chk = lambda: False  # noqa: E731
+    with stages(wait_for_manual_submit=wait):
+        _core(FakeDriver(), ManualHoldLock(), stop_check=chk, manual_submit=True)
+    assert wait.call_args.kwargs["stop_check"] is chk

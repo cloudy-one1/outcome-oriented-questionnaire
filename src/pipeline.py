@@ -39,7 +39,7 @@ from .anchoring import report_unmatched_anchors
 # v3.1 结构对拍：我们的探测结果 ↔ 平台在题目容器上自报的 topic/type
 from .crosscheck import crosscheck_questions, report_structure_drift
 # v3.1 提交前完整度自检：平台标了必填、我们整题没探测到的那些，别点提交
-from .completeness import describe_gap, unanswered_required
+from .completeness import describe_gap, describe_not_written, unanswered_required
 # v3.2 一份问卷一个人：填空题的人口学字段全从这份画像派生
 from .persona import new_persona
 # v3.2 投递分布在线纠正：只有提交成功的那份才计入统计（见该模块 docstring）
@@ -64,6 +64,8 @@ from .pipeline_stages import (
     GAP_HOLD_TIMEOUT,
     hold_for_manual_fill,
     scroll_question_into_view,
+    # v3.3 人工提交（--manual-submit）：停在提交按钮前，把"交上去"那一下交给人
+    wait_for_manual_submit,
 )
 # 题目探测（断点续填/题目结构识别）来自 detection 模块，不属于 pipeline 职责
 from .detection import (
@@ -153,10 +155,10 @@ def _answer_current_page(
     run_id: int | None = None,
     submission_index: int | None = None,
     no_record_text: bool = False,
-) -> tuple[str, set[int], int]:
+) -> tuple[str, set[int], int, set[int]]:
     """等题 → 探测 → 断点续填扫描 → 逐题作答，只管**当前可见的那一页**。
 
-    :return: ``(status, 本页题号集合, 跳过已答数)``；
+    :return: ``(status, 本页题号集合, 跳过已答数, 回执说没落上的题号)``；
              status 为 ``"ok"`` 表示这一页该答的都过了，``"failed"`` 表示
              等待/探测环节就没过（调用方负责切回默认上下文并计本轮失败）。
     """
@@ -164,7 +166,7 @@ def _answer_current_page(
     if not _wait_for_questions(
         driver, QUESTION_DETECT_TIMEOUT, hold_lock=lock, stop_check=stop_check
     ):
-        return "failed", set(), 0
+        return "failed", set(), 0, set()
 
     # Step 5 探测题目结构
     questions = detect_questions(driver)
@@ -176,7 +178,7 @@ def _answer_current_page(
         _layout = mobile_layout_notice(driver)
         if _layout:
             print("  " + _layout)
-        return "failed", set(), 0
+        return "failed", set(), 0, set()
 
     # v3.2 信度计划：第一页探测完就把整批的计划矩阵建出来（只建一次），并告诉它
     # "现在在答第几份"。计划必须覆盖整批而不是每页各建一份 —— 第二页再建会把第一页
@@ -213,6 +215,10 @@ def _answer_current_page(
         ))
         answered_set = set()
     skipped_count = 0
+    # 逐题作答的回执。此前 `_answer_one_question` 的返回值在这里被直接丢掉 ——
+    # 于是"我们照这道题动了手、页面上其实没落上"这件事，只有在点提交之后、
+    # 平台弹出"第 N 题未答"时才看得见，而那时候日志里只剩一条看不出原因的失败。
+    failed_writes: set[int] = set()
 
     # Step 6 逐题作答
     for qi, q in enumerate(questions):
@@ -221,21 +227,22 @@ def _answer_current_page(
 
         if qi > 0 and qi % VERIFY_EVERY_N_QUESTIONS == 0:
             if not _check_verification_with_lock(driver, lock, stop_check):
-                return "failed", qnums, skipped_count
+                return "failed", qnums, skipped_count, failed_writes
 
         q_num = int(q["q"])
         if q_num in answered_set:
             skipped_count += 1
             continue
 
-        _answer_one_question(
+        if not _answer_one_question(
             driver,
             q,
             history_db=history_db,
             run_id=run_id,
             submission_index=submission_index,
             no_record_text=no_record_text,
-        )
+        ):
+            failed_writes.add(q_num)
 
         # 每题之间的「思考时间」+ 偶发长停顿
         # stop_check 作为 abort_check 传入：停顿被分片成 ≤0.2s，点停止后不必
@@ -253,7 +260,7 @@ def _answer_current_page(
         _abort_if_stopped(stop_check, "逐题停顿期间收到停止请求，本份问卷不提交",
                           question=q_num)
 
-    return "ok", qnums, skipped_count
+    return "ok", qnums, skipped_count, failed_writes
 
 
 # ---------------------------------------------------------------------------
@@ -274,19 +281,30 @@ def _report_submit_diagnostics(driver: Any) -> None:
 # ---------------------------------------------------------------------------
 #  v3.1 补漏轮（--rescue-gaps）：完整度自检拦下之后，把人工接进来
 # ---------------------------------------------------------------------------
-def _recheck_gap(driver: Any, detected_all: set[int]) -> list[int]:
-    """人工补答之后的复检：**判据不变**，只是把"现在读得到的答案"也算成见过这道题。
+def _recheck_gap(
+    driver: Any,
+    detected_all: set[int],
+    not_written: set[int] | frozenset[int] = frozenset(),
+) -> list[int]:
+    """人工补答之后的复检：**拦停判据不变**，只是把两类"还缺"一起报回来。
 
     缺口题按定义不在我们的探测里，只重跑 ``detect_questions`` 的复检永远不会变空，
     等人工就等成了形式。所以这里额外并进出题探测与已答扫描两个读数 —— 二者都只能
     让缺口变小，不能凭空造出缺口。读不到就当没有新证据（原样返回缺口的口径由
     ``unanswered_required`` 保证），复检自身出问题绝不把本轮改成失败以外的样子。
+
+    ``not_written`` 是第二类：探测到了、也照着答了，但交互层回话说没落上。它**只能
+    进等待集合，不能进拦停集合**（``describe_not_written`` 讲了为什么回执不够硬），
+    所以调用方拿到返回值后要按 ``_gap`` 那一类自己筛。这里把它并进来只为了一件事：
+    让"人已经补齐了"这个判断对两类题都成立 —— 已答扫描现在读得到值，就算消解。
     """
     seen: set[int] = set(detected_all)
+    answered: set[int] = set()
     try:
         seen |= {int(q["q"]) for q in detect_questions(driver)
                  if isinstance(q.get("q"), int)}
-        seen |= detect_answered_questions(driver)
+        answered = detect_answered_questions(driver)
+        seen |= answered
     except TRANSIENT_DOM_EXCEPTIONS:
         pass
     except Exception as _e:
@@ -294,9 +312,12 @@ def _recheck_gap(driver: Any, detected_all: set[int]) -> list[int]:
         print("  " + format_exc_log(
             _e, action="补漏复检：读人工已补的题", recovery="按「没有新证据」处理",
         ))
-    return unanswered_required(
+    still = set(unanswered_required(
         _platform_structure(driver, visible_only=False), seen
-    )
+    ))
+    # 第二类消解条件：页面上现在读得到值。读不到就继续挂着等，等不到也只是照旧提交
+    still |= {q for q in not_written if q not in answered}
+    return sorted(still)
 
 
 def _rescue_gap(
@@ -306,20 +327,21 @@ def _rescue_gap(
     gap: list[int],
     detected_all: set[int],
     stop_check: Callable[[], bool] | None,
+    not_written: set[int] | frozenset[int] = frozenset(),
 ) -> list[int]:
-    """把缺口交给人工补，返回复检后的缺口（空 = 可以点提交）。
+    """把缺口交给人工补，返回复检后仍未消解的题号（空 = 可以点提交）。
 
     无头模式在这里直接跳过：等的是一个不存在的人，与验证码那处的取舍同一条线。
     """
     nums = "、".join(f"Q{n}" for n in gap)
     if driver_is_headless(driver):
-        print(f"  [补漏] 无头模式下没有能补答的人 → 不等待，维持判失败（{nums}）")
+        print(f"  [补漏] 无头模式下没有能补答的人 → 不等待（{nums}）")
         return gap
     print(f"  [补漏] 请在浏览器窗口里手动补答 {nums}，"
           f"最长等 {GAP_HOLD_TIMEOUT:.0f}s（停止/Ctrl+C 可中断，期间不会点提交）")
     scroll_question_into_view(driver, gap[0])
     return hold_for_manual_fill(
-        lambda: _recheck_gap(driver, detected_all),
+        lambda: _recheck_gap(driver, detected_all, not_written),
         lock=lock, stop_check=stop_check,
     )
 
@@ -338,6 +360,7 @@ def _do_one_submission_core(
     no_record_text: bool = False,
     stop_check: Callable[[], bool] | None = None,
     rescue_gaps: bool = False,
+    manual_submit: bool = False,
 ) -> SubmitOutcome:
     """单次提交的真正实现（无外层重试，由调用者包 retry）。
 
@@ -353,6 +376,11 @@ def _do_one_submission_core(
     :param rescue_gaps: v3.1 补漏轮开关。默认 False —— 完整度自检判出的缺口直接
         维持"判失败、不点提交"。打开后先把缺口交给在场的人工补答，补上了才点提交
         （无头模式下不等待，行为与默认一致）。
+    :param manual_submit: v3.3 人工提交开关。默认 False —— 照常由本工具点提交。
+        打开后答完、跑完三道提交前判据就停住，把**那一下点击**交给在场的人
+        （半份问卷交上去就是平台上一条收不回来的真实回收记录）。
+        成功与否仍走同一套三态判定；等到超时没人点是"这一份没交出去"，计失败。
+        与 ``--headless`` 互斥，互斥在 argparse 就拒掉，这里没有无头分支。
     """
 
     # Step 0 换一个人。放在这里（而不是 CLI/GUI 的批次循环里）是为了同时满足两件事：
@@ -410,6 +438,10 @@ def _do_one_submission_core(
     # 整份问卷（跨所有页）探测到的题号并集：完整度自检要的是"这一份从头到尾见过哪些
     # 题"，只看最后那一页会把前面几页的必答题误判成漏答。
     detected_all: set[int] = set()
+    # 整份问卷里"我们答过、但交互层回话说没落上"的题号并集（跨页累计）。
+    # 只用来报一行和（开了 ``--rescue-gaps`` 时）交给人工 —— 不做拦停依据，理由见
+    # ``completeness.describe_not_written``。
+    not_written_all: set[int] = set()
     while True:
         page_index += 1
         if page_index > MAX_SURVEY_PAGES:
@@ -418,7 +450,7 @@ def _do_one_submission_core(
             driver.switch_to.default_content()
             return SUBMIT_FAILED
 
-        page_status, qnums, page_skipped = _answer_current_page(
+        page_status, qnums, page_skipped, page_not_written = _answer_current_page(
             driver, lock,
             stop_check=stop_check,
             history_db=history_db,
@@ -429,6 +461,7 @@ def _do_one_submission_core(
         skipped_total += page_skipped
         detected_total += len(qnums)
         detected_all |= qnums
+        not_written_all |= page_not_written
         if page_status != "ok":
             driver.switch_to.default_content()
             return SUBMIT_FAILED
@@ -462,14 +495,32 @@ def _do_one_submission_core(
     )
     if _gap:
         print("  " + describe_gap(_gap))
-        # v3.1 补漏轮：这类题我们答不了，但在场的人能。默认关 —— 不开就是
-        # "判失败、不点提交"，一行都不多打。
-        if rescue_gaps:
-            _gap = _rescue_gap(
-                driver, lock, gap=_gap, detected_all=detected_all,
-                stop_check=stop_check,
-            )
-        if _gap:
+    if not_written_all:
+        # v3.3 逐题作答回执：说，但不拦。回执 False 有两种形状（控件真没找到 /
+        # 作答中途抛异常被降级），后一种下页面可能已经落上了一部分。
+        print("  " + describe_not_written(sorted(not_written_all)))
+    if _gap and not rescue_gaps:
+        driver.switch_to.default_content()
+        return SUBMIT_FAILED
+    if rescue_gaps and (_gap or not_written_all):
+        # v3.1 补漏轮：整题没探测到的我们答不了、探测到而回执说没落上的我们没答上，
+        # 两种都是在场的人点两下就能补的东西。等着集合两类都要看，**拦停只认第一类**。
+        _await = sorted(set(_gap) | not_written_all)
+        _after = _rescue_gap(
+            driver, lock, gap=_await, detected_all=detected_all,
+            stop_check=stop_check, not_written=not_written_all,
+        )
+        _blocking = sorted(set(_after) & set(_gap))
+        _leftover = sorted(set(_after) - set(_blocking))
+        if _leftover:
+            print("  [补漏] " + "、".join(f"Q{n}" for n in _leftover)
+                  + " 等了还是读不到值 —— 它不在拦停判据里（回执不等于没答上）→ 照提交，"
+                  "平台要拦自然会把提交拦下，那时失败原因写在 [必填校验] 那几行里")
+        if _blocking:
+            # 判定由拿到判据的这一层说，不由等待的那两句顺嘴说 —— 那两句分不清
+            # "整题没探测到"与"回执说没落上"，一起讲就成了自相矛盾
+            print("  [补漏] " + "、".join(f"Q{n}" for n in _blocking)
+                  + " 是整题没探测到的那类，没人补 → 维持判失败，不点提交")
             driver.switch_to.default_content()
             return SUBMIT_FAILED
 
@@ -482,7 +533,10 @@ def _do_one_submission_core(
 
     # Step 8 点击提交 + 提交后快进
     _abort_if_stopped(stop_check, "点击提交前收到停止请求")
-    submit_result = find_and_click_submit(driver)
+    # v3.3 --manual-submit：只把"点这一下"交给人，提交后的三态判定、诊断与快进
+    # 全部共用同一条路径 —— 人提交的那一份必须和自动提交的那一份可比。
+    submit_result = (wait_for_manual_submit(driver, lock, stop_check=stop_check)
+                     if manual_submit else find_and_click_submit(driver))
     if submit_result == SUBMIT_FAILED:
         _report_submit_diagnostics(driver)
         driver.switch_to.default_content()
@@ -554,6 +608,7 @@ def run_one_submission(
     no_record_text: bool = False,
     stop_check: Callable[[], bool] | None = None,
     rescue_gaps: bool = False,
+    manual_submit: bool = False,
 ) -> SubmitOutcome:
     """外层 retry + 清理 + 重抛异常（供 GUI / CLI 批处理循环调用）。
 
@@ -563,6 +618,7 @@ def run_one_submission(
     - ``stop_check`` 返回 True 时抛 ``SubmissionAborted``（BaseException 派生，
       既不被本函数的 ``except Exception`` 清理分支吞掉，也不在重试范围内）
     - ``rescue_gaps``：v3.1 补漏轮，见 :func:`_do_one_submission_core`
+    - ``manual_submit``：v3.3 人工提交，见 :func:`_do_one_submission_core`
     """
     try:
         outcome = _do_one_submission_core(
@@ -575,6 +631,7 @@ def run_one_submission(
             no_record_text=no_record_text,
             stop_check=stop_check,
             rescue_gaps=rescue_gaps,
+            manual_submit=manual_submit,
         )
     except Exception as e:
         # Ctrl+C/SystemExit 直接上抛（不做任何清理尝试以免吞）
