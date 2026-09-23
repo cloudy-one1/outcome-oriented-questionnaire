@@ -50,6 +50,9 @@ PROJ = Path(__file__).resolve().parent.parent
 FIXTURE_HTML = PROJ / "tests" / "fixtures" / "mock_wjx.html"
 MP_FIXTURE_HTML = PROJ / "tests" / "fixtures" / "mock_wjx_multipage.html"
 GAP_FIXTURE_HTML = PROJ / "tests" / "fixtures" / "mock_wjx_required_gap.html"
+REAL_WIDGETS_HTML = PROJ / "tests" / "fixtures" / "mock_wjx_real_widgets.html"
+REGION_FIXTURE_HTML = PROJ / "tests" / "fixtures" / "mock_wjx_region.html"
+CONSENT_FIXTURE_HTML = PROJ / "tests" / "fixtures" / "mock_wjx_consent_box.html"
 
 sys.path.insert(0, str(PROJ))
 
@@ -435,11 +438,12 @@ def test_platform_probe_reads_markers_and_crosscheck_stays_silent(driver):
 def test_required_but_undetected_question_becomes_a_pre_submit_gap(driver):
     """真 DOM 上锁住完整度自检的判据：平台标了必答、我们整题没探测到 → 缺口 = [那一题]。
 
-    fixture 复现的是真卷上的日期题（``input.datebox`` 是只读的，被填空那一步的
-    ``readOnly`` 跳过规则挡掉，于是整题不进探测结果）。为什么只能放在 E2E：
-    判据的一半是"探测**看不见**这道题"，而那取决于真实 DOM 与 CSS ——
-    手工 dict 里怎么构造都行，到了真页面上未必不可。
-    另一半是"没标 ``req`` 的题不许拦" —— 拦错一次就是一单本来能交的问卷被判失败。
+    fixture 用的是**文件上传题** —— 它不在本工具的作答能力内，永远不会被"顺手修好"，
+    所以这条反例不会哪天变成假测试（先前这里拿日期题举例，而 v3.1 已经把日期题
+    探测修好了，反例就失效了）。为什么只能放在 E2E：判据的一半是"探测看不见这道题"，
+    那取决于真实 DOM 与 CSS —— 手工 dict 里怎么构造都行，到了真页面上未必不可。
+    另一半是"没标 ``req``（含 ``req=""``）的题不许拦" —— 拦错一次就是一单
+    本来能交的问卷被判失败。
     """
     from src.completeness import describe_gap, unanswered_required
     from src.detection import detect_platform_questions, detect_questions
@@ -449,7 +453,7 @@ def test_required_but_undetected_question_becomes_a_pre_submit_gap(driver):
 
     ours = detect_questions(driver)
     assert [q["q"] for q in ours] == [1, 4], (
-        f"只读 datebox（Q2/Q3）本该探测不到，而 req=\"\" 的 Q4 该探测到: {ours}"
+        f"上传题（Q2/Q3）本该探测不到，而 req 为空串的 Q4 该探测到: {ours}"
     )
 
     items = detect_platform_questions(driver, WJX, visible_only=False)
@@ -460,6 +464,57 @@ def test_required_but_undetected_question_becomes_a_pre_submit_gap(driver):
     gap = unanswered_required(items, {int(q["q"]) for q in ours})
     assert gap == [2], f"缺口应该正好是那道必答题: {gap}"
     assert "Q2" in describe_gap(gap)
+
+
+def test_consent_box_is_reported_once_and_question_options_are_not(driver):
+    """真 DOM 上锁协议框诊断的三条判据：认出框、只数一处、不把题目选项当协议框。
+
+    为什么只能放在 E2E：这三条全靠元素之间的真实关系 —— ``label[for]`` 的关联、
+    ``closest('div[topic]')`` 的祖先链、``checked`` 的当前值。离线 FakeDriver 只喂得出
+    一个返回值，喂不出这棵树；而"是不是把多选题的一个选项报成了协议框"这类错，
+    恰恰只有在真 DOM 里才暴露得出来（本条第一次跑就抓到了 id 命中与文案命中重复计数）。
+    """
+    from src import detection
+    from src.detection import consent_notice
+
+    detection.reset_consent_notice()
+    try:
+        driver.get("file:///" + CONSENT_FIXTURE_HTML.as_posix())
+        line = consent_notice(driver)
+        assert line is not None and line.startswith("[协议]"), (
+            f"未勾选的 #checkxiexi 必须被说出来，实际: {line!r}"
+        )
+        # 计数只该有 1：它的相邻文案同样含「同意」「协议」，两条判据不去重就会数成两处
+        assert "1 处" in line, f"提示里的处数不对（重复计数？）: {line}"
+        assert "#checkxiexi" in line, f"点名的该是那个平台固定 id 的框: {line}"
+        # Q1 的选项「我同意接收后续邮件」在题目容器里，一次都不该被提起
+        assert line.count("邮件") == 0, f"题目选项被当成协议框了: {line}"
+    finally:
+        detection.reset_consent_notice()
+
+
+def test_checked_consent_box_is_not_reported(driver):
+    """已经勾上了就不许出声：这行话要说的是"提交会被拦"，而勾上之后不会。
+
+    与上一条共用 fixture 里那个 **未勾** 的 ``#checkxiexi`` 与已勾的 ``#agreed``：
+    本页初始状态报 1 处，勾掉它之后整页再无缺口 —— 报的必须是"没有"。
+    """
+    from src import detection
+    from src.detection import consent_notice
+
+    detection.reset_consent_notice()
+    try:
+        driver.get("file:///" + CONSENT_FIXTURE_HTML.as_posix())
+        assert consent_notice(driver) is not None, "初始页面本该报出 #checkxiexi"
+
+        driver.execute_script(
+            "document.getElementById('checkxiexi').checked = true"
+        )
+        detection.reset_consent_notice()
+        again = consent_notice(driver)
+        assert again is None, f"框已勾上就不该再报: {again}"
+    finally:
+        detection.reset_consent_notice()
 
 
 def test_full_pipeline_fill_and_history(driver, history_db):
@@ -853,3 +908,172 @@ def test_full_submission_roundtrip_through_pipeline(driver, history_db):
     assert texts and all(t is None for t in texts), (
         f"--no-record-text 下填空文本应全为 NULL，实际 {texts[:3]}"
     )
+
+
+# ----------------------- 真卷形态（v3.1 排序点击式 + 日期题）-----------------------
+
+def _load_real_widgets(driver) -> None:
+    driver.get("file:///" + REAL_WIDGETS_HTML.as_posix())
+
+
+def test_real_markup_sort_and_date_are_detected(driver):
+    """真卷那两种形态必须进得了探测 —— 当天它们**整题都没被认出来**。
+
+    排序题的 ul class 是 ``ui-controlgroup ui-listview``（不含 sort），日期题的
+    输入框是 ``readonly``。两者原先分别被 ``/sort/i`` 和 ``el.readOnly`` 两条判据
+    挡在门外，症状不是报错而是"这题不存在"。
+    """
+    from src.crosscheck import crosscheck_questions
+    from src.detection import detect_platform_questions, detect_questions
+    from src.platforms import WJX
+
+    _load_real_widgets(driver)
+    by_q = {q["q"]: q for q in detect_questions(driver)}
+
+    assert by_q[1]["type"] == "sort", f"排序题没认出来: {by_q.get(1)}"
+    assert by_q[1]["sort_mode"] == "click", f"控件形态判错了: {by_q[1]}"
+    assert by_q[1]["items"] == ["1", "2", "3"], f"选项值不对: {by_q[1]}"
+    assert by_q[2]["type"] == "text" and by_q[2]["field"] == "date", (
+        f"日期题应当是『填空 + date 字段』，实际: {by_q.get(2)}"
+    )
+
+    # 平台自报 11=排序、1=填空，与我们认出来的对得上 → 对拍该闭嘴
+    items = detect_platform_questions(driver, WJX)
+    assert crosscheck_questions(list(by_q.values()), items, WJX) == []
+
+
+def test_click_mode_sort_is_filled_by_clicking_and_keeps_option_values(driver):
+    """点击式排序：按目标顺序点，名次要落进 ``.sortnum``，而**不能碰隐藏域的 value**。
+
+    这是这条修复最要命的一条断言：老办法往第一个 ``input[name=q1]`` 写 "3,1,2"，
+    在真页面上等于把选项 1 的身份换成一串数字 —— 交上去的是脏数据，
+    比"整题没答"更难发现。
+    """
+    from src.interactions.sort import js_fill_sort
+
+    _load_real_widgets(driver)
+    assert js_fill_sort(driver, 1, ["3", "1", "2"], mode="click") is True
+
+    lis = driver.execute_script(
+        "return JSON.stringify(Array.prototype.map.call("
+        "document.querySelectorAll('#div1 ul li'), function (li) {"
+        "  var i = li.querySelector('input[type=hidden]');"
+        "  var s = li.querySelector('.sortnum');"
+        "  return [i.value, (s.textContent || '').trim()];}));"
+    )
+    state = json.loads(lis)
+    assert [v for v, _ in state] == ["3", "1", "2"], f"DOM 顺序不是点击顺序: {state}"
+    assert [r for _, r in state] == ["1", "2", "3"], f"名次没落进 sortnum: {state}"
+
+    raw = driver.execute_script(
+        "return JSON.stringify(['q1_1','q1_2','q1_3'].map("
+        "function (id) { return document.getElementById(id).value; }));"
+    )
+    assert json.loads(raw) == ["1", "2", "3"], f"隐藏域的选项身份被写坏了: {raw}"
+
+
+def test_click_mode_sort_times_out_instead_of_lying(driver):
+    """点不动（名次不落地）时返回 False，而不是交一份"看起来答了"的排序题。"""
+    from src.interactions.sort import js_fill_sort
+
+    _load_real_widgets(driver)
+    driver.execute_script(
+        "document.querySelectorAll('#div1 ul').forEach(function (u) {"
+        "  u.addEventListener('click', function (e) { e.stopPropagation(); }, true);});"
+    )
+    assert js_fill_sort(driver, 1, ["2", "3", "1"], mode="click",
+                        timeout=0.6, _sleep=lambda _s: None) is False
+
+
+def test_readonly_datebox_receives_a_date_shaped_value(driver):
+    """只读日期框：探测认出 date 字段，答案按日期格式生成并真的写进框里。
+
+    JS 赋值不受 ``readonly`` 限制（readonly 只挡用户键入），而平台自己也是
+    laydate 选好之后回写 value 再触发 blur —— 走的是同一条路。
+    """
+    import re
+
+    from src.answering_v2 import generate_answer
+    from src.detection import detect_questions
+    from src.interactions.text import js_fill_text
+
+    _load_real_widgets(driver)
+    qdate = next(q for q in detect_questions(driver) if q["q"] == 2)
+    text = generate_answer(qdate)["text"]
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", text), f"日期题答成了别的: {text!r}"
+    assert js_fill_text(driver, 2, text) is True
+    assert driver.find_element("id", "q2").get_attribute("value") == text
+
+
+def test_matrix_scale_is_not_mistaken_for_a_single_scale(driver):
+    """v3.1 矩阵量表：真卷上它被判成一个 4 级量表，因为容器 class 含 "rating"。
+
+    这条要同时锁三件事，缺一件都会回到原来的静默错答：
+      1. 探测最终落在 ``matrix_scale`` 上（量表分支先抢过，5c 必须抢回来并清掉残留）；
+      2. 行按平台标的 ``tr[fid]`` 认，不是数行号 —— 行数算错时同类项目会静默漏行；
+      3. 作答真的把分值写进提交槽，且 [对拍] 不再出声（码表里 6 现在接受三种矩阵形态）。
+    """
+    from src.crosscheck import crosscheck_questions
+    from src.detection import detect_platform_questions, detect_questions
+    from src.interactions.matrix import js_fill_matrix_scale
+    from src.platforms import WJX
+
+    _load_real_widgets(driver)
+    q3 = next(q for q in detect_questions(driver) if q["q"] == 3)
+    assert q3["type"] == "matrix_scale", f"又被判成量表了: {q3}"
+    assert q3["rows"] == ["q3_0", "q3_1"], f"提交槽名不对: {q3}"
+    assert q3["cols"] == [1, 2, 3, 4, 5], f"分值列不对: {q3}"
+    assert "scale" not in q3 and "scale_min" not in q3, f"量表残留没清: {q3}"
+
+    assert js_fill_matrix_scale(driver, 3, {"q3_0": 4, "q3_1": 2}) is True
+    got = driver.execute_script(
+        "return JSON.stringify([document.getElementById('q3_0').value,"
+        " document.getElementById('q3_1').value]);")
+    assert json.loads(got) == ["4", "2"], f"提交槽没写上: {got}"
+
+    ours = [q for q in detect_questions(driver) if q["q"] == 3]
+    plat = [p for p in detect_platform_questions(driver, WJX) if p["q"] == 3]
+    assert crosscheck_questions(ours, plat, WJX) == []
+
+
+def test_matrix_scale_fill_reports_missing_rows(driver):
+    """槽或格子找不到时必须返回 False —— 不交一份"看起来点了"的量表。"""
+    from src.interactions.matrix import js_fill_matrix_scale
+
+    _load_real_widgets(driver)
+    assert js_fill_matrix_scale(driver, 3, {"q3_0": 9}) is False      # 没有 dval=9 这格
+    assert js_fill_matrix_scale(driver, 3, {"q9_9": 3}) is False      # 根本没有这一行
+
+
+def test_region_signals_are_detected_and_answered_by_one_persona(driver):
+    """地区题三条识别信号 + 答案必须与画像同省（v3.2 persona 绑定）。
+
+    这一条只能在真浏览器里验：判据是探测注入 JS 里的 DOM 事实，离线替身看不见
+    ``classList`` / ``onclick`` / ``verify``。
+    """
+    from src.answering_v2 import generate_answer
+    from src.detection import detect_questions
+    from src.interactions.text import js_fill_text
+    from src.persona import active_persona, new_persona
+
+    driver.get("file:///" + REGION_FIXTURE_HTML.as_posix())
+    new_persona()
+    p = active_persona()
+    fields = {q["q"]: q.get("field") for q in detect_questions(driver)}
+    assert fields[1] == "region", f"class=get_Local + onclick=opencitybox 没认出来: {fields}"
+    assert fields[2] == "region", f"verify=省市 没认出来: {fields}"
+    assert fields[3] == "region", f"题干兜底没认出来: {fields}"
+    assert fields[4] == "address", f"真地址题被抢判成 region: {fields}"
+    assert fields[5] == "name", fields
+
+    qs = {q["q"]: q for q in detect_questions(driver)}
+    regions = [generate_answer(qs[i])["text"] for i in (1, 2, 3)]
+    assert regions == [f"{p.province} {p.city}"] * 3, f"三道地区题答出三个地方: {regions}"
+
+    addr = generate_answer(qs[4])["text"]
+    assert addr.startswith(p.city if p.municipality else p.province), (addr, p.province)
+    assert generate_answer(qs[5])["text"] == p.name, "同一份问卷里换人了"
+
+    assert js_fill_text(driver, 1, regions[0]) is True
+    got = driver.find_element("id", "q1").get_attribute("value")
+    assert got == f"{p.province} {p.city}", f"页面上留下的是 {got!r}"

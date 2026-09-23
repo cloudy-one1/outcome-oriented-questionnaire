@@ -20,7 +20,9 @@ from __future__ import annotations
 import csv
 import os
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import ttk
+
+from src.dialogs import pick_save_path  # 文件框走间接层，离线测试可注入替身
 from typing import TYPE_CHECKING, Any, Callable
 
 from collections.abc import Mapping as _FONTS_KIND  # 局部别名：字体参数字典类型
@@ -339,7 +341,7 @@ class HistoryPanel:
         if db is None:
             self.log("未加载 src.history，无法导出", "WARN")
             return
-        path = filedialog.asksaveasfilename(
+        path = pick_save_path(
             title="导出历史记录 CSV",
             defaultextension=".csv",
             initialfile="history_runs.csv",

@@ -5,13 +5,17 @@
 <title>必答题漏探测 Mock（v3.1 完整度自检）</title>
 </head>
 <body>
-<!-- 复现 2026-09-22 真卷上的那一类缺口：日期题的输入框是
-     <input class="datebox" type="text" readonly>，而 detect_questions 的填空那一步
-     开头就 `if (el.disabled || el.readOnly) return;`（那条规则是挡量表/矩阵的隐藏
-     存储框用的，不能简单去掉）—— 于是整道题连出现在探测结果里都没有。
-     平台侧它仍是 topic=2、type=1、req=1 的必答题。
-     本 fixture 要锁的是：这种题在**点提交之前**就被完整度自检挑出来，而不是
-     交上去换一句平台的"第 2 题未答"。Q3 同样探测不到，但它没标必答 → 不许拦。 -->
+<!-- 完整度自检要拦的那一类：**平台标了必答，而我们这道题根本不做**。
+     文件上传题不在本工具的作答能力内（探测里没有它，也不打算有），
+     所以每次跑到它都是"照样点提交 → 被平台必填校验拦下 → 整份计一次失败"。
+     这一步在点提交之前把它挑出来并说出题号。
+
+     曾经这里用的是日期题（input.datebox[readonly]）当例子 —— 那是探测缺陷，
+     v3.1 已经修掉了（见 mock_wjx_real_widgets.html），拿修好的东西当反例会误导人，
+     所以换成一个能力边界外的题型：它永远不会被"修好"，这条测试也就不会烂掉。
+
+     Q3 同样探测不到，但**没标必答** → 不许拦（拦错一次就是一单本来能交的问卷被判失败）。
+     Q4 的 req 是空串，同样算不必答。 -->
 <h2>必答题漏探测 Mock</h2>
 
 <div id="div1" class="div_question" topic="1" type="3" req="1">
@@ -22,23 +26,20 @@
   </div>
 </div>
 
-<div id="div2" class="div_question" topic="2" type="1" req="1">
-  <div class="qtitle"><span class="idx">2.</span>您的出生日期（日期题，只读输入框）</div>
+<div id="div2" class="div_question" topic="2" type="12" req="1">
+  <div class="qtitle"><span class="idx">2.</span>请上传证件照（本工具不支持上传题）</div>
   <div class="field">
-    <input type="text" id="q2" name="q2" class="datebox" readonly placeholder="请选择日期">
+    <input type="file" id="q2" name="q2" accept="image/*">
   </div>
 </div>
 
-<div id="div3" class="div_question" topic="3" type="1">
-  <div class="qtitle"><span class="idx">3.</span>选填备注（同样探测不到，但没标必答）</div>
+<div id="div3" class="div_question" topic="3" type="12">
+  <div class="qtitle"><span class="idx">3.</span>选填附件（同样不支持，但没标必答）</div>
   <div class="field">
-    <input type="text" id="q3" name="q3" class="datebox" readonly placeholder="选填">
+    <input type="file" id="q3" name="q3">
   </div>
 </div>
 
-<!-- req="" 是"空属性"而不是"值为 0"：缺信号时必须朝**不拦**的方向降级，
-     拦错一次就是一单本来能交的问卷被判失败。这道题探测得到，顺带确认
-     空 req 不会被算进缺口。 -->
 <div id="div4" class="div_question" topic="4" type="3" req="">
   <div class="qtitle"><span class="idx">4.</span>是否愿意回访（req 为空串）</div>
   <div class="field">

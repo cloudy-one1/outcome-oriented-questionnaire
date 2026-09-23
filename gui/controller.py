@@ -25,8 +25,13 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from tkinter import filedialog, messagebox
 from typing import TYPE_CHECKING, Any, Callable
+
+from src.dialogs import (  # 弹窗与文件框都走间接层，离线测试可注入替身
+    pick_open_path,
+    pick_save_path,
+    popup_warning,
+)
 
 from selenium.webdriver.support.ui import WebDriverWait
 
@@ -148,7 +153,7 @@ class GuiController:
         if not cfg:
             self._log("当前没有可导出的权重配置（请先探测题目）", "WARN")
             return
-        filepath = filedialog.asksaveasfilename(
+        filepath = pick_save_path(
             title="导出权重配置",
             defaultextension=".json",
             initialfile="weight_config.json",
@@ -202,7 +207,7 @@ class GuiController:
             self._log("未加载 src/config_io，无法导入配置", "FAIL")
             return
         if path is None:
-            path = filedialog.askopenfilename(
+            path = pick_open_path(
                 title="导入权重配置",
                 filetypes=[("JSON 配置", "*.json"), ("所有文件", "*.*")],
                 initialdir=(
@@ -270,7 +275,7 @@ class GuiController:
         if decode_qr_from_image is None:
             self._log("二维码模块未加载，无法导入", "FAIL")
             return
-        filepath = filedialog.askopenfilename(
+        filepath = pick_open_path(
             title="选择二维码图片",
             filetypes=[
                 ("图片文件", "*.png *.jpg *.jpeg *.bmp *.gif"),
@@ -300,7 +305,7 @@ class GuiController:
             return
         url = self.host.url_var.get().strip()
         if not url:
-            messagebox.showwarning("提示", "请先填写问卷 URL")
+            popup_warning("提示", "请先填写问卷 URL")
             return
         try: self.host.detect_btn.configure(state="disabled")
         except Exception:

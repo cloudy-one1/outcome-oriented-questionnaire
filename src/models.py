@@ -72,6 +72,7 @@ class QuestionType(str, enum.Enum):
     MATRIX_SINGLE = "matrix_single"  # 矩阵单选
     MATRIX_MULTI = "matrix_multi"    # 矩阵多选（v3.0）
     SORT = "sort"                    # 排序题（v3.0）
+    MATRIX_SCALE = "matrix_scale"    # 矩阵量表（v3.1：格子里是一排 <a dval>，不是 radio）
 
     @property
     def storage_name(self) -> str:
@@ -118,6 +119,9 @@ _STORAGE_NAMES: dict[QuestionType, str] = {
     # （标量 vs 每行一个列表），共用短名会让历史明细无法判别是哪种。
     QuestionType.MATRIX_MULTI: "matrix_multi",
     QuestionType.SORT: "sort",
+    # 矩阵量表与矩阵选择的答案形状不同（每行一个标量分值 vs 每行一个列表），
+    # 落库短名必须区分开，否则历史明细分不出来。
+    QuestionType.MATRIX_SCALE: "matrix_scale",
 }
 
 # 每个题型接受的别名（不含自己的 value，value 由 _build_tables 自动登记）
@@ -132,6 +136,8 @@ _ALIASES: dict[QuestionType, tuple[str, ...]] = {
     QuestionType.MATRIX_SINGLE: ("matrix",),
     QuestionType.MATRIX_MULTI: ("matrix_checkbox", "multi_matrix"),
     QuestionType.SORT: ("ordering", "rank"),
+    # 平台把这种题叫"矩阵量表"，页面上的容器 class 是 matrix-rating / scaletablewrap
+    QuestionType.MATRIX_SCALE: ("matrix_rating", "scale_matrix"),
 }
 
 
@@ -181,7 +187,7 @@ class QuestionData:
     各题型字段说明:
         - SINGLE / MULTI / DROPDOWN: ``choices`` 必填,元素为选项值（int 或 str）
         - SCALE: ``scale`` 必填（量表最大值,如 5 或 10）, ``scale_min`` 默认 1
-        - TEXT: ``field`` 可选（name/phone/email/address/age/company 或 None）
+        - TEXT: ``field`` 可选（name/phone/email/address/age/company/date 或 None）
         - MATRIX_SINGLE: ``rows`` 与 ``cols`` 必填
     """
 

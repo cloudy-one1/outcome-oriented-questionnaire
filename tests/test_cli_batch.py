@@ -96,6 +96,67 @@ class TestRunBatchSmoke(unittest.TestCase):
         self.assertEqual(row["success_count"], 0)
         self.assertEqual(row["fail_count"], 2)
 
+    def test_run_batch_clears_stale_distribution_statistics(self) -> None:
+        """每份问卷各自清零分布统计，且失败的一份绝不进统计（v3.2 在线纠正）。
+
+        假驱动找不到题目 → 这一份判 FAIL：`run_batch` 开头的 start_run 要把上一份
+        问卷留下的账清掉，`run_one_submission` 的失败分支要把这一份的缓冲丢掉。
+        两条都失守的症状是同一种：纠正对着一个不存在的目标收敛。
+        """
+        from src import distribution
+
+        with SubmissionHistory(":memory:") as db:
+            distribution.enable(True)
+            try:
+                distribution.buffer_answer(1, [0], 2)
+                distribution.commit_buffer()
+                self.assertTrue(distribution.drift_report(), "先造一份脏统计")
+                with mock.patch("src.browser.create_driver",
+                                side_effect=_fake_driver_factory), \
+                     mock.patch("src.utils.human_pause", return_value=0.0):
+                    cli.run_batch(SURVEY_URL, 1, history_db=db)
+                self.assertEqual(distribution.drift_report(), {}, "批次开始时没清零")
+                self.assertEqual(distribution._buffer, {}, "失败的一份的缓冲没丢掉")
+            finally:
+                distribution.enable(False)
+                distribution.start_run()
+
+    def test_run_batch_resets_the_alpha_plan_for_the_next_survey(self) -> None:
+        """换一份问卷时清掉信度计划矩阵（v3.2 ``--url-file`` 队列接线）。
+
+        ``ensure_plan`` 的 built 门是为**一份问卷的分页**设的，跨问卷不清的症状是
+        第二份卷沿用上一份的配额（题号撞上时）或静默不建（撞不上时）—— 两种都没有
+        一句提示。这里只认"跑完一批之后旧计划答不了新题"这个事实。
+        """
+        from src import config as cfg_mod
+        from src import plan
+
+        saved = dict(cfg_mod.WEIGHT_CONFIG)
+        cfg_mod.WEIGHT_CONFIG.clear()
+        cfg_mod.WEIGHT_CONFIG.update(
+            {q: {"dimension": "d"} for q in (1, 2, 3)}
+        )
+        plan.configure(0.8, 40)
+        try:
+            qs = [{"q": q, "type": "single", "choices": [1, 2, 3], "title": f"第{q}题"}
+                  for q in (1, 2, 3)]
+            assert any("计划已建" in n for n in plan.ensure_plan(qs))
+            plan.begin_submission(1)
+            assert plan.forced_choice(1) is not None, "先造一份接上的计划"
+
+            with SubmissionHistory(":memory:") as db:
+                with mock.patch("src.browser.create_driver",
+                                side_effect=_fake_driver_factory), \
+                     mock.patch("src.utils.human_pause", return_value=0.0):
+                    cli.run_batch(SURVEY_URL, 1, history_db=db)
+
+            plan.begin_submission(1)
+            assert plan.forced_choice(1) is None, "run_batch 没清掉上一份问卷的计划"
+        finally:
+            plan.end_session()
+            cfg_mod.WEIGHT_CONFIG.clear()
+            cfg_mod.WEIGHT_CONFIG.update(saved)
+
     def test_keyboard_interrupt_marks_interrupted(self) -> None:
         """Ctrl+C → status='interrupted'（find_resumable_run 可恢复）。"""
         with SubmissionHistory(":memory:") as db:
@@ -262,6 +323,40 @@ class TestRunBatchStopWithinRound(unittest.TestCase):
             cli.run_batch(SURVEY_URL, 1, stop_check=chk)
 
         self.assertIs(captured["stop_check"], chk)
+
+    def test_rescue_gaps_is_forwarded_into_the_round(self) -> None:
+        """接线契约（v3.1 补漏轮）：--rescue-gaps 必须真的落到那一轮的参数上。
+
+        开关只在批次这一层"看着生效"是没用的：漏传一次的症状是照旧判失败，
+        而用户以为自己已经给了人工补答的机会。
+        """
+        captured: dict = {}
+
+        def _spy(driver, url, lock, **kw):
+            captured.update(kw)
+            return "failed"
+
+        with mock.patch("src.browser.create_driver", side_effect=_fake_driver_factory), \
+             mock.patch("src.utils.human_pause", return_value=0.0), \
+             mock.patch("src.pipeline.run_one_submission", side_effect=_spy):
+            cli.run_batch(SURVEY_URL, 1, rescue_gaps=True)
+
+        self.assertIs(captured["rescue_gaps"], True)
+
+    def test_rescue_gaps_off_is_still_passed_explicitly(self) -> None:
+        """默认关时传下去的也是 False —— 别让"没传"和"传了 False"两种写法共存。"""
+        captured: dict = {}
+
+        def _spy(driver, url, lock, **kw):
+            captured.update(kw)
+            return "failed"
+
+        with mock.patch("src.browser.create_driver", side_effect=_fake_driver_factory), \
+             mock.patch("src.utils.human_pause", return_value=0.0), \
+             mock.patch("src.pipeline.run_one_submission", side_effect=_spy):
+            cli.run_batch(SURVEY_URL, 1)
+
+        self.assertIs(captured["rescue_gaps"], False)
 
 
 if __name__ == "__main__":

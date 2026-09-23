@@ -40,6 +40,14 @@ from .anchoring import report_unmatched_anchors
 from .crosscheck import crosscheck_questions, report_structure_drift
 # v3.1 提交前完整度自检：平台标了必填、我们整题没探测到的那些，别点提交
 from .completeness import describe_gap, unanswered_required
+# v3.2 一份问卷一个人：填空题的人口学字段全从这份画像派生
+from .persona import new_persona
+# v3.2 投递分布在线纠正：只有提交成功的那份才计入统计（见该模块 docstring）
+from . import distribution
+# v3.2 真实答卷回放：逐题覆盖 + 成功才推进队列
+from . import reverse_fill
+# v3.2 信度控制：整批计划矩阵（--alpha-target），逐题按秩映射兑现
+from . import plan
 # V2.3 第 1 章第 3 条：下沉各阶段实现到 pipeline_stages 子包
 from .pipeline_stages import (
     _answer_one_question,
@@ -52,13 +60,21 @@ from .pipeline_stages import (
     collect_blocked_alerts,
     describe_blocked_alerts,
     install_alert_recorder,
+    # v3.1 补漏轮（--rescue-gaps）：完整度自检拦下之后接人工补答
+    GAP_HOLD_TIMEOUT,
+    hold_for_manual_fill,
+    scroll_question_into_view,
 )
 # 题目探测（断点续填/题目结构识别）来自 detection 模块，不属于 pipeline 职责
 from .detection import (
+    consent_notice,
     detect_answered_questions,
     detect_platform_questions,
     detect_questions,
+    mobile_layout_notice,
 )
+# 无头判定：补漏轮等的是"坐在窗口前的人"，无头下没有这个人
+from .browser.driver_factory import driver_is_headless
 # v3.1 结构对拍的题型码表在平台常量层（对拍读的是问卷星 DOM 上的 topic/type）
 from .platforms import WJX
 # 提交三态 + 查找提交按钮来自 interactions.submit（第一章第 2 条已拆分）
@@ -153,7 +169,21 @@ def _answer_current_page(
     # Step 5 探测题目结构
     questions = detect_questions(driver)
     if not questions:
+        # v3.1 整页形态诊断：一道题都没有有两种完全不同的原因 —— 我们的适配问题，
+        # 或者这一页根本就是移动端投放形态（本工具只适配 PC）。症状一模一样，
+        # 处置方式完全不同（等改版 vs 换 PC 链接），所以在这里说一句。只提示，
+        # 判定不变、不拦停、更不因此去加第二套选择器。
+        _layout = mobile_layout_notice(driver)
+        if _layout:
+            print("  " + _layout)
         return "failed", set(), 0
+
+    # v3.2 信度计划：第一页探测完就把整批的计划矩阵建出来（只建一次），并告诉它
+    # "现在在答第几份"。计划必须覆盖整批而不是每页各建一份 —— 第二页再建会把第一页
+    # 已经兑现过的行改掉，症状是配额被兑了两次。
+    plan.begin_submission(submission_index)
+    for _plan_line in plan.ensure_plan(questions):
+        print("  " + _plan_line)
 
     # v3.0 权重锚定：带了 anchor 却认不到题的条目**不会**退回答题号（见 anchoring 契约 1），
     # 但必须说出来 —— 静默走等权，和用户没配一样，只是没人知道预设其实没生效。
@@ -242,6 +272,59 @@ def _report_submit_diagnostics(driver: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
+#  v3.1 补漏轮（--rescue-gaps）：完整度自检拦下之后，把人工接进来
+# ---------------------------------------------------------------------------
+def _recheck_gap(driver: Any, detected_all: set[int]) -> list[int]:
+    """人工补答之后的复检：**判据不变**，只是把"现在读得到的答案"也算成见过这道题。
+
+    缺口题按定义不在我们的探测里，只重跑 ``detect_questions`` 的复检永远不会变空，
+    等人工就等成了形式。所以这里额外并进出题探测与已答扫描两个读数 —— 二者都只能
+    让缺口变小，不能凭空造出缺口。读不到就当没有新证据（原样返回缺口的口径由
+    ``unanswered_required`` 保证），复检自身出问题绝不把本轮改成失败以外的样子。
+    """
+    seen: set[int] = set(detected_all)
+    try:
+        seen |= {int(q["q"]) for q in detect_questions(driver)
+                 if isinstance(q.get("q"), int)}
+        seen |= detect_answered_questions(driver)
+    except TRANSIENT_DOM_EXCEPTIONS:
+        pass
+    except Exception as _e:
+        raise_non_recoverable(_e)
+        print("  " + format_exc_log(
+            _e, action="补漏复检：读人工已补的题", recovery="按「没有新证据」处理",
+        ))
+    return unanswered_required(
+        _platform_structure(driver, visible_only=False), seen
+    )
+
+
+def _rescue_gap(
+    driver: Any,
+    lock: ManualHoldLock,
+    *,
+    gap: list[int],
+    detected_all: set[int],
+    stop_check: Callable[[], bool] | None,
+) -> list[int]:
+    """把缺口交给人工补，返回复检后的缺口（空 = 可以点提交）。
+
+    无头模式在这里直接跳过：等的是一个不存在的人，与验证码那处的取舍同一条线。
+    """
+    nums = "、".join(f"Q{n}" for n in gap)
+    if driver_is_headless(driver):
+        print(f"  [补漏] 无头模式下没有能补答的人 → 不等待，维持判失败（{nums}）")
+        return gap
+    print(f"  [补漏] 请在浏览器窗口里手动补答 {nums}，"
+          f"最长等 {GAP_HOLD_TIMEOUT:.0f}s（停止/Ctrl+C 可中断，期间不会点提交）")
+    scroll_question_into_view(driver, gap[0])
+    return hold_for_manual_fill(
+        lambda: _recheck_gap(driver, detected_all),
+        lock=lock, stop_check=stop_check,
+    )
+
+
+# ---------------------------------------------------------------------------
 #  核心编排：单次提交真正实现（无外层重试）
 # ---------------------------------------------------------------------------
 def _do_one_submission_core(
@@ -254,6 +337,7 @@ def _do_one_submission_core(
     submission_index: int | None = None,
     no_record_text: bool = False,
     stop_check: Callable[[], bool] | None = None,
+    rescue_gaps: bool = False,
 ) -> SubmitOutcome:
     """单次提交的真正实现（无外层重试，由调用者包 retry）。
 
@@ -266,7 +350,16 @@ def _do_one_submission_core(
         等待题目渲染、验证码人工等待都会以 ≈0.2s 的粒度问一次；返回 True 即抛
         ``SubmissionAborted`` —— **绝不**继续答下一题，更不点提交按钮。
         不传时行为与 v2.8 逐位一致（CLI/GUI 不传即不变）。
+    :param rescue_gaps: v3.1 补漏轮开关。默认 False —— 完整度自检判出的缺口直接
+        维持"判失败、不点提交"。打开后先把缺口交给在场的人工补答，补上了才点提交
+        （无头模式下不等待，行为与默认一致）。
     """
+
+    # Step 0 换一个人。放在这里（而不是 CLI/GUI 的批次循环里）是为了同时满足两件事：
+    # 一次真实提交 = 一个画像，而**重试的每一次尝试**也算一次 —— 本函数第一步就
+    # 重新导航到问卷页（Step 1），DOM 是干净的，不存在"半份问卷里混进两个人"。
+    # 姓名 / 身份证 / 手机 / 邮箱 / 地址 / 年龄 / 生日之后全从这份画像取，见 src.persona。
+    new_persona()
 
     # Step 1 打开页面 + 等 ready
     _robust_driver_get(driver, survey_url)
@@ -369,8 +462,23 @@ def _do_one_submission_core(
     )
     if _gap:
         print("  " + describe_gap(_gap))
-        driver.switch_to.default_content()
-        return SUBMIT_FAILED
+        # v3.1 补漏轮：这类题我们答不了，但在场的人能。默认关 —— 不开就是
+        # "判失败、不点提交"，一行都不多打。
+        if rescue_gaps:
+            _gap = _rescue_gap(
+                driver, lock, gap=_gap, detected_all=detected_all,
+                stop_check=stop_check,
+            )
+        if _gap:
+            driver.switch_to.default_content()
+            return SUBMIT_FAILED
+
+    # Step 7.6 提交区协议框：这类框不在题目容器里，上面三道判据都看不见它。
+    # 只提示、不拦停，也不代勾 —— 判据是文案关键词，认错一次的代价是一单本来能交成的
+    # 问卷被判失败；而"替被调查者签协议"这个动作本身就不在本工具的权限里。
+    _consent = consent_notice(driver)
+    if _consent:
+        print("  " + _consent)
 
     # Step 8 点击提交 + 提交后快进
     _abort_if_stopped(stop_check, "点击提交前收到停止请求")
@@ -445,6 +553,7 @@ def run_one_submission(
     submission_index: int | None = None,
     no_record_text: bool = False,
     stop_check: Callable[[], bool] | None = None,
+    rescue_gaps: bool = False,
 ) -> SubmitOutcome:
     """外层 retry + 清理 + 重抛异常（供 GUI / CLI 批处理循环调用）。
 
@@ -453,9 +562,10 @@ def run_one_submission(
     - 正常时：返回三态 SubmitOutcome
     - ``stop_check`` 返回 True 时抛 ``SubmissionAborted``（BaseException 派生，
       既不被本函数的 ``except Exception`` 清理分支吞掉，也不在重试范围内）
+    - ``rescue_gaps``：v3.1 补漏轮，见 :func:`_do_one_submission_core`
     """
     try:
-        return _do_one_submission_core(
+        outcome = _do_one_submission_core(
             driver,
             survey_url,
             lock,
@@ -464,9 +574,11 @@ def run_one_submission(
             submission_index=submission_index,
             no_record_text=no_record_text,
             stop_check=stop_check,
+            rescue_gaps=rescue_gaps,
         )
     except Exception as e:
         # Ctrl+C/SystemExit 直接上抛（不做任何清理尝试以免吞）
+        distribution.discard_buffer()
         raise_non_recoverable(e)
         print("  " + format_exc_log(
             e, action="单次提交核心流程", recovery="尝试回到默认上下文并重抛给外层重试",
@@ -481,3 +593,17 @@ def run_one_submission(
             raise_non_recoverable(_e2)
             pass
         raise  # 重抛异常，让 retry_with_backoff 判定是否重试
+    except BaseException:
+        # 停止信号 / Ctrl+C：这一份永远不会有结果，缓冲必须丢掉 —— 留着它，
+        # 下一份的 commit 会把本题一起算进去，实际份额就虚增了。
+        distribution.discard_buffer()
+        raise
+
+    # 分布统计与回放队列都只认**真的提交成功**的那几份：failed / unknown 的一份
+    # 可能压根没入库，把它们算进去等于往一个不存在的目标上收敛。
+    if outcome == "success":
+        distribution.commit_buffer()
+        reverse_fill.mark_consumed(submission_index)
+    else:
+        distribution.discard_buffer()
+    return outcome

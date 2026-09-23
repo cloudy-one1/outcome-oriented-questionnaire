@@ -5,7 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from ._common import js_execute_retry
-from ._scripts import fill_matrix_multi_script, fill_matrix_single_script
+from ._scripts import (
+    fill_matrix_multi_script,
+    fill_matrix_scale_script,
+    fill_matrix_single_script,
+)
 
 
 @js_execute_retry()
@@ -33,3 +37,17 @@ def js_fill_matrix_multi(
     见 ``_scripts._fill_matrix_script``。
     """
     return driver.execute_script(fill_matrix_multi_script(q, row_selections))
+
+
+@js_execute_retry()
+def js_fill_matrix_scale(
+    driver: Any,
+    q: int,
+    row_selections: dict[Any, Any],
+) -> bool:
+    """矩阵量表：``row_selections`` 的键是**提交槽名**（``tr[fid]``），值是分值 ``dval``。
+
+    与另外两种矩阵题分开，因为控件形态完全不同：这题的格子里是一排可点的
+    ``<a dval>``，值由平台同步写回 ``input[name=fid]``。
+    """
+    return driver.execute_script(fill_matrix_scale_script(q, row_selections))

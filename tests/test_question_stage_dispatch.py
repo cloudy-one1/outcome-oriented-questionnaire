@@ -217,3 +217,55 @@ def test_blank_fill_exception_is_swallowed_as_failure(monkeypatch) -> None:
         RecordingDriver(),
         {"q": 2, "type": "multi", "choices": [1, 2, 3], "blank_options": [3]},
     ) is False
+
+
+def test_replayed_single_overrides_the_weight_config(monkeypatch) -> None:
+    """答卷表说选第 2 项，权重配置就得靠边站 —— 覆盖只发生在"生成答案"那一步。
+
+    点击、DOM 回读、落盘走的仍是原路径：回放的答案同样要在真 DOM 里落上才算成功，
+    否则"表里有但页面没写进去"会被记成一份成功提交。
+    """
+    clicked: list[list] = []
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.reverse_fill.answer_for_question",
+        lambda q, idx: {"type": "single", "selected": [2]},
+    )
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.js_click_question_options",
+        lambda _d, _q, _t, vals: clicked.append(list(vals)) or True,
+    )
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.build_answer_strategy",
+        lambda _q: pytest.fail("回放覆盖生效时不该再问生成策略"),
+    )
+    q = {"q": 1, "type": "single", "choices": [1, 2, 3]}
+    assert _answer_one_question(RecordingDriver(), q, submission_index=1) is True
+    assert clicked == [[2]], clicked
+
+
+def test_replayed_text_lands_in_the_dom_and_history(monkeypatch) -> None:
+    """填空题被回放覆盖时，落库的 text_answer 必须是表里那个值。"""
+    from src import config as _c  # noqa: F401  （只要模块可导入即可）
+
+    filled: list[tuple[int, str]] = []
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.reverse_fill.answer_for_question",
+        lambda q, idx: {"type": "text", "text": "李娜", "field": "name"},
+    )
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.js_fill_text",
+        lambda _d, qnum, text: filled.append((qnum, text)) or True,
+    )
+    recorded: list = []
+
+    class _Db:
+        def record_answer(self, **kw):
+            recorded.append(kw)
+            return 1
+
+    assert _answer_one_question(
+        RecordingDriver(), {"q": 3, "type": "text", "field": "name"},
+        history_db=_Db(), run_id=1, submission_index=1,
+    ) is True
+    assert filled == [(3, "李娜")], filled
+    assert recorded and recorded[0]["text_answer"] == "李娜", recorded

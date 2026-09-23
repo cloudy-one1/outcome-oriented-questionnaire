@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>提交区协议框 Mock（v3.1 协议框诊断）</title>
+</head>
+<body>
+<!-- 锁 detection.consent_notice 在**真 DOM** 上的四条判据。为什么只能放 E2E：
+     这四条全靠元素之间的真实关系（label[for] 关联、closest 的祖先链、checked 的
+     当前值），离线 FakeDriver 只喂得出一个返回值，喂不出这棵树。
+
+       1. Q1 选项「我同意接收后续邮件」**在题目容器里** → 不许报（少了容器条件，
+          一个正经多选题的选项会被当成协议框）；
+       2. #checkxiexi 未勾、不在题目容器里 → 报，且只算**一处**（它的相邻文案
+          同样含「同意」「协议」，id 那条与文案那条若不去重就会数成两处）；
+       3. #agreed 已勾 → 不许报；
+       4. 没有任何协议框的普通页面 → 不许报（这条由本仓库其余 fixture 顺带覆盖：
+          它们跑完整流水线时从没打出过 [协议] 那一行）。 -->
+<h2>提交区协议框 Mock</h2>
+
+<div id="div1" class="div_question" topic="1" type="4" req="1">
+  <div class="qtitle"><span class="idx">1.</span>您希望我们后续如何联系您？（多选）</div>
+  <div class="field">
+    <label class="opt"><input type="checkbox" name="q1" id="q1_1" value="1">电话</label>
+    <label class="opt"><input type="checkbox" name="q1" id="q1_2" value="2">邮件</label>
+    <label class="opt"><input type="checkbox" name="q1" id="q1_3" value="3">我同意接收后续邮件</label>
+  </div>
+</div>
+
+<p class="submit-tip">
+  <input type="checkbox" id="checkxiexi" name="checkxiexi" value="同意">
+  <label for="checkxiexi">我已阅读并同意《隐私协议》</label>
+</p>
+
+<p class="submit-tip">
+  <input type="checkbox" id="agreed" name="agreed" value="同意" checked>
+  <label for="agreed">我已同意接收活动通知（这一项已经勾上了）</label>
+</p>
+
+<div id="divSubmit"><input type="button" id="submit_button" value="提交"></div>
+
+</body>
+</html>

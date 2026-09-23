@@ -15,7 +15,7 @@ import math
 import random
 import threading
 import time
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, Callable, Optional, TypeVar, cast
 
 # numpy 可选：装了就用其高效的无放回加权抽样，没装走纯 Python A-Res 算法
 # numpy 是可选依赖。显式把 np 声明成 Any，避免 pyright 把它推成
@@ -215,7 +215,8 @@ def retry_with_backoff(
             assert last_exc is not None
             raise last_exc
 
-        return wrapper  # type: ignore[return-value]
+        # 签名靠 functools.wraps 在运行时保留，静态侧只能声明式地转回去
+        return cast(_Fn, wrapper)
 
     return decorator
 

@@ -647,9 +647,127 @@ def fill_sort_script(q: int, order: list) -> str:
     """
 
 
+def sort_state_script(q: int) -> str:
+    """点击式排序题的当前状态：``[{"value": "3", "rank": "1"}, ...]``，按 DOM 顺序。
+
+    DOM 顺序就是平台将要提交顺序（真卷实测：按 3→1→2 点完之后
+    ``FormData.get('qN')`` 恰为 "3,1,2"），所以"名次对不对"和"顺序对不对"
+    这两个断言都只读这一个数组。容器定位不到时返回 ``None``。
+    """
+    return f"""
+        var ul = null;
+        var hids = document.querySelectorAll(
+            'input[type="hidden"][name="q{q}"], input[type="hidden"][id^="q{q}_"]');
+        for (var i = 0; i < hids.length; i++) {{
+            var li = hids[i].parentNode;
+            while (li && li.tagName !== 'LI') li = li.parentNode;
+            if (li && li.parentNode && li.parentNode.tagName === 'UL') {{ ul = li.parentNode; break; }}
+        }}
+        if (!ul) return null;
+        var out = [];
+        for (var c = 0; c < ul.children.length; c++) {{
+            var el = ul.children[c];
+            if (el.tagName !== 'LI') continue;
+            var inp = el.querySelector('input[type="hidden"]');
+            var num = el.querySelector('.sortnum, .sortnum-sel');
+            out.push({{value: inp ? String(inp.value) : '',
+                      rank: num ? (num.textContent || '').trim() : ''}});
+        }}
+        return JSON.stringify(out);
+    """
+
+
+def click_sort_item_script(q: int, value: str) -> str:
+    """按**选项值**点中点击式排序题里的某一项（走完整鼠标事件链）。
+
+    刻意按 value 而不是按索引点：点中一项之后平台会把 li 重排（带动画），
+    索引在两次点击之间就会指到别的选项上 —— 这是真页面上最容易踩空的一脚。
+    """
+    val_json = json.dumps(str(value), ensure_ascii=False)
+    return f"""
+        var want = {val_json};
+        var lis = document.querySelectorAll(
+            'input[type="hidden"][name="q{q}"], input[type="hidden"][id^="q{q}_"]');
+        for (var i = 0; i < lis.length; i++) {{
+            var inp = lis[i];
+            if (String(inp.value) !== String(want)) continue;
+            var li = inp.parentNode;
+            while (li && li.tagName !== 'LI') li = li.parentNode;
+            if (!li) return false;
+            var rect = li.getBoundingClientRect();
+            var x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+            ['mousedown', 'mouseup'].forEach(function (type) {{
+                try {{
+                    li.dispatchEvent(new MouseEvent(type, {{
+                        bubbles: true, cancelable: true, view: window,
+                        clientX: x, clientY: y
+                    }}));
+                }} catch (_) {{}}
+            }});
+            // 最后那一下**只发一次** click：排序项是可切换的（再点一次就是取消），
+            // 派发一个合成 click 事件再补 li.click() 等于点了两下，状态原地抵消。
+            try {{ li.click(); }} catch (_) {{
+                try {{
+                    li.dispatchEvent(new MouseEvent('click', {{
+                        bubbles: true, cancelable: true, view: window,
+                        clientX: x, clientY: y
+                    }}));
+                }} catch (__) {{}}
+            }}
+            return true;
+        }}
+        return false;
+    """
+
+
+def fill_matrix_scale_script(q: int, row_selections: dict) -> str:
+    """矩阵量表的 JS：每行点中 ``row_selections[fid]`` 指定的那一格 ``a[dval]``。
+
+    行按 **``tr[tp="d"][fid]``** 定位 —— ``fid`` 就是这一行的提交槽名（平台自己标的），
+    于是"第几行"根本不用猜：同类项目那里是 `容器子元素数 - 3` 的魔数，
+    而行数一旦算错，多出来的行会被静默漏掉、少算的行点不到。
+
+    点完在同一个脚本里回读 ``input[name=fid]`` 的值作为验收 —— 真页面实测点击是
+    **同步**写槽的，所以不需要轮询；对不上就返回 False，让上层把这题记成失败，
+    而不是交一份"看起来点了"的量表。
+    """
+    sel_json = json.dumps({str(k): v for k, v in row_selections.items()}, ensure_ascii=False, default=str)
+    return f"""
+        var q = {q};
+        var sel = {sel_json};
+        function fire(el) {{
+            var r = el.getBoundingClientRect();
+            ['mousedown', 'mouseup'].forEach(function (t) {{
+                try {{
+                    el.dispatchEvent(new MouseEvent(t, {{
+                        bubbles: true, cancelable: true, view: window,
+                        clientX: r.left + r.width / 2, clientY: r.top + r.height / 2
+                    }}));
+                }} catch (_) {{}}
+            }});
+            // 最后那一下只能有一次 click（合成事件 + li.click() 那种双发
+            // 在可切换控件上等于点了两下，状态原地抵消 —— 排序题踩过）
+            try {{ el.click(); }} catch (_) {{ return false; }}
+            return true;
+        }}
+        var missing = 0, failed = 0;
+        Object.keys(sel).forEach(function (fid) {{
+            var row = document.querySelector('tr[fid="' + fid + '"]');
+            var slot = document.querySelector('input[name="' + fid + '"]');
+            if (!row || !slot) {{ missing += 1; return; }}
+            var want = String(sel[fid]);
+            var cell = row.querySelector('a[dval="' + want + '"]');
+            if (!cell) {{ failed += 1; return; }}
+            if (!fire(cell)) {{ failed += 1; return; }}
+            if (String(slot.value) !== want) failed += 1;
+        }});
+        return missing === 0 && failed === 0;
+    """
+
+
 # ============================================================================
 #  页面级探针：接管 window.alert
-# ============================================================================
+# ===========================================================================
 
 def install_alert_recorder_script() -> str:
     """把 ``window.alert`` 换成一个记录器：文案进数组，页面不再弹原生对话框。

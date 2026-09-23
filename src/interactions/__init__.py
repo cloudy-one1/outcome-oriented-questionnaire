@@ -19,7 +19,11 @@ from .scale import js_set_scale
 # 题型：下拉
 from .dropdown import js_select_dropdown
 # 题型：矩阵
-from .matrix import js_fill_matrix_multi, js_fill_matrix_single
+from .matrix import (
+    js_fill_matrix_multi,
+    js_fill_matrix_scale,
+    js_fill_matrix_single,
+)
 # 题型：排序（v3.0）
 from .sort import js_fill_sort
 # 提交模块：三态常量 + 查找提交按钮 + 探测效果
@@ -44,6 +48,7 @@ __all__ = [
     "js_set_scale",
     "js_select_dropdown",
     "js_fill_matrix_multi",
+    "js_fill_matrix_scale",
     "js_fill_sort",
     "js_fill_matrix_single",
     # 提交

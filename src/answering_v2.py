@@ -26,10 +26,12 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import random
 from typing import Any, Optional
 
-from . import anchoring
+from . import anchoring, distribution, plan
+from .persona import Persona, active_persona
 from .utils import (
     sanitize_weights,
     weighted_sample_no_replace,
@@ -38,102 +40,12 @@ from .utils import (
 
 
 # ============================================================================
-#  中文数据池（零依赖）：姓名、手机号前缀、邮箱域名、地址部件
+#  人口学填空：全部从 src.persona 的当前画像取（v3.2）
 # ============================================================================
-_SURNAMES = (
-    "王李张刘陈杨赵黄周吴徐孙胡朱高林何郭马罗梁宋郑谢韩唐冯于董萧程曹袁邓许傅沈曾彭吕"
-    "苏卢蒋蔡贾丁魏薛叶阎余潘杜戴夏钟汪田任姜范方石姚谭廖邹熊金陆郝孔白崔康毛邱秦"
-    "江史顾侯邵孟万段雷钱汤尹黎易常武乔贺赖龚文"
-)
-_GIVEN_NAMES_M = (
-    "伟 强 磊 军 洋 勇 艳 杰 涛 明 超 秀兰 霞 平 刚 桂英 建国 建华 志强 晓明 志伟 "
-    "浩宇 浩然 宇航 子轩 文博 梓涵 思远 俊杰 睿 皓 博文 子豪 天佑 宇航 润泽 承恩".split()
-)
-_GIVEN_NAMES_F = (
-    "芳 娜 敏 静 丽 强 磊 军 洋 艳 杰 娟 涛 明 超 秀兰 霞 平 桂英 玉兰 秀英 建华 "
-    "思琪 梓萱 雨桐 梦瑶 佳怡 雨萱 欣怡 梓涵 诗涵 语桐 若曦 紫涵 思远 静怡 晨曦 悦".split()
-)
-_MOBILE_PREFIXES = (
-    130, 131, 132, 133, 134, 135, 136, 137, 138, 139,
-    150, 151, 152, 153, 155, 156, 157, 158, 159,
-    176, 177, 178, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189,
-    198, 199,
-)
-_EMAIL_DOMAINS = (
-    "qq.com", "163.com", "126.com", "gmail.com", "outlook.com",
-    "sina.com", "foxmail.com", "hotmail.com", "icloud.com",
-)
-_EMAIL_USER_PREFIXES = (
-    "zhang wang li zhao liu chen yang huang zhou wu xu sun zhu mao tan "
-    "alex bob charlie david emma frank grace henry iris jack kate leo "
-    "marry nancy oliver peter quincy rose sam tom uma vivian wendy".split()
-    + ["love2008", "happy_dog", "sky_blue", "sunshine", "cool_boy", "nice_girl",
-       "dreamer", "winner", "genius", "superman", "angel007", "hero888"]
-)
+# 这里刻意不再放任何随机池。此前姓名 / 手机 / 邮箱 / 地址是四个各自随机的池子，
+# 于是同一份问卷可以同时出现「女名池的张伟 · 深圳地址 · 3 岁 · 乌鲁木齐公司」——
+# 每格单看合法，连起来是个不存在的人。
 
-# 地址部件：省份+城市、后缀
-_CITIES = (
-    "北京市朝阳区", "上海市浦东新区", "广州市天河区", "深圳市南山区",
-    "杭州市西湖区", "成都市武侯区", "武汉市洪山区", "西安市雁塔区",
-    "南京市鼓楼区", "重庆市渝中区", "苏州市工业园区", "天津市和平区",
-    "郑州市金水区", "青岛市市南区", "长沙市岳麓区", "厦门市思明区",
-    "济南市历下区", "合肥市蜀山区", "佛山市南海区", "东莞市长安镇",
-)
-_STREET_PREFIXES = "人民 中山 解放 建设 文化 科技 和平 朝阳 胜利 创新 长江 黄河 海滨 大学 体育".split()
-_STREET_TYPES = "路 街 大道 巷 胡同".split()
-
-
-# ============================================================================
-#  内部工具：中文数据生成
-# ============================================================================
-def _chinese_name() -> str:
-    """随机生成 2~4 字中文姓名。"""
-    s = random.choice(_SURNAMES)
-    # 20% 2字名 + 80% 1字名 = 2字或3字姓名
-    if random.random() < 0.25:
-        g = random.choice(_GIVEN_NAMES_M + _GIVEN_NAMES_F)
-    else:
-        # 单字名：只取第一个字（避免"建国"这种两字作为名）
-        pool = _GIVEN_NAMES_M + _GIVEN_NAMES_F
-        single_chars = [c for w in pool for c in w if "\u4e00" <= c <= "\u9fff"]
-        g = random.choice(single_chars)
-    return s + g
-
-
-def _chinese_phone() -> str:
-    """生成 11 位中国手机号（合规前缀 + 8 位随机）。"""
-    prefix = random.choice(_MOBILE_PREFIXES)
-    suffix = random.randint(0, 99_999_999)
-    return f"{prefix}{suffix:08d}"
-
-
-def _email() -> str:
-    """生成像真的邮箱地址。"""
-    user = random.choice(_EMAIL_USER_PREFIXES)
-    # 30% 概率加数字后缀，避免生成重复
-    if random.random() < 0.5:
-        user += str(random.randint(1, 9999))
-    domain = random.choice(_EMAIL_DOMAINS)
-    return f"{user}@{domain}"
-
-
-def _chinese_address() -> str:
-    """生成像真的中文地址：城市 + 路名 + 号。"""
-    city = random.choice(_CITIES)
-    street_prefix = random.choice(_STREET_PREFIXES)
-    street_type = random.choice(_STREET_TYPES)
-    number = random.randint(1, 999)
-    # 30% 概率加小区/大厦名
-    extra = ""
-    if random.random() < 0.4:
-        estates = [
-            f"{random.choice(['阳光', '金色', '翠湖', '御景', '龙湖', '保利', '万科', '万达'])}"
-            f"{random.choice(['花园', '小区', '家园', '公寓', '大厦', '广场'])}",
-        ]
-        building = random.randint(1, 30)
-        room = random.randint(101, 3209)
-        extra = f"{random.choice(estates)}{building}栋{room}室 "
-    return f"{city}{street_prefix}{street_type}{number}号 {extra}".strip()
 
 
 # 常用随机中文短句（自由填空）
@@ -164,6 +76,76 @@ def _random_sentence(min_len: int = 5) -> str:
     return s + "，" + random.choice(_SHORT_SENTENCES)
 
 
+def _parse_date_limit(raw: Any) -> _dt.datetime | None:
+    """把 laydate 的边界串（或我们刚生成的日期串）解析成 datetime；认不出返回 None。"""
+    text = str(raw or "").strip().replace("T", " ")
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d",
+                "%Y/%m/%d %H:%M", "%Y/%m/%d", "%Y-%m"):
+        try:
+            return _dt.datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _random_date_text(
+    kind: str = "date",
+    lo: Any = None,
+    hi: Any = None,
+) -> str:
+    """按 laydate 的粒度与区间生成一个日期串（v3.1 日期题）。
+
+    区间必须照守：探测把 ``datelimit`` 一起带回来，就是因为范围外的值会被平台自己的
+    校验清掉 —— 辛辛苦苦填一个，交上去那题还是空的。两端都没给时落在 **18~55 年前**：
+    真卷上这道题的题干是"请输入您的出生日期"，而 laydate 的默认边界宽到
+    1900~2099，随手随机到今天附近会答出一个婴儿的生日。
+    """
+    fmt_by_kind = {
+        "month": "%Y-%m",
+        "datetime": "%Y-%m-%d %H:%M",
+        "time": "%H:%M",
+    }
+    now = _dt.datetime.now()
+    if kind == "time":
+        return (now.replace(hour=random.randint(8, 21), minute=random.randrange(60))
+                ).strftime("%H:%M")
+
+    low = _parse_date_limit(lo) or (now - _dt.timedelta(days=365 * 55))
+    high = _parse_date_limit(hi) or (now - _dt.timedelta(days=365 * 18))
+    if high < low:
+        low, high = high, low
+    if high <= low:
+        picked = low
+    else:
+        span = int((high - low).total_seconds())
+        picked = low + _dt.timedelta(seconds=random.randint(0, max(span, 1)))
+    return picked.strftime(fmt_by_kind.get(kind, "%Y-%m-%d"))
+
+
+_DATE_FMT_BY_KIND = {"month": "%Y-%m", "datetime": "%Y-%m-%d %H:%M"}
+
+
+def _birth_or_window_date(question: dict, p: Persona) -> str:
+    """生日 / 日期类填空优先答画像的出生日期。
+
+    WHY：这一格与年龄、身份证中间那 8 位是**同一个人的同一件事**，各抽一次必然
+    对不上（v3.1 之前就是这样：年龄 16~70 随机、日期按 laydate 区间随机）。
+    只有当 ``datelimit`` 区间容不下这一天时才退回区间内随机 —— 越界会被平台自己的
+    校验清掉，那比不一致更糟（宁可少一致，不能交上去是空的）。
+    """
+    kind = str(question.get("date_kind") or "date")
+    if kind == "time":
+        return _random_date_text(kind)
+    fmt = _DATE_FMT_BY_KIND.get(kind, "%Y-%m-%d")
+    want = p.birth_date_text(fmt)
+    got = _parse_date_limit(want)
+    low = _parse_date_limit(question.get("date_min"))
+    high = _parse_date_limit(question.get("date_max"))
+    if got is not None and (low is None or got >= low) and (high is None or got <= high):
+        return want
+    return _random_date_text(kind, question.get("date_min"), question.get("date_max"))
+
+
 # 选项自带填空框（"其他____"）时填的短文本。
 # 不复用 _SHORT_SENTENCES：那是 15~20 字的整句，而这一格通常紧贴在选项文字后面，
 # 宽几十像素、还常带 maxlength。填整句既不像这项的答案（读起来像评论），
@@ -185,11 +167,37 @@ def generate_option_blank_text() -> str:
 # ============================================================================
 #  内部工具：通用加权/等权重抽样
 # ============================================================================
+def _drift_weights(
+    qnum: Optional[int],
+    weights: Optional[list[float]],
+    n: int,
+) -> Optional[list[float]]:
+    """投递分布纠正开着时，把目标权重按已落地的缺口小幅修正。
+
+    关着时原样返回，所以默认路径与 v3.1 逐位一致。配置权重长度与选项数不符时
+    退回等权 —— 错位修正比不修正更糟。
+
+    **信度计划优先于一切**：``plan`` 给这一题这一份定了选项，就直接 one-hot。
+    复用加权采样这条路而不是另开一条，是因为点击、DOM 回读、落盘、重试全都挂在
+    "生成一个答案字典"这个出口上 —— 多开一条路就多一处会忘记校验的地方。
+    """
+    if qnum is not None:
+        forced = plan.forced_choice(qnum)
+        if forced is not None and 0 <= forced < n:
+            return [1.0 if i == forced else 0.0 for i in range(n)]
+    if qnum is None or not distribution.control_enabled():
+        return weights
+    base = list(weights) if weights and len(weights) == n else [1.0] * n
+    return distribution.adjust(qnum, base)
+
+
 def _weighted_or_equal_choice(
     indices: list[int],
     weights: Optional[list[float]] = None,
+    qnum: Optional[int] = None,
 ) -> int:
     """单个选项：有权重按权重抽，否则均匀。"""
+    weights = _drift_weights(qnum, weights, len(indices))
     if weights_are_usable(weights, len(indices)):
         return random.choices(indices, weights=weights, k=1)[0]
     return random.choice(indices)
@@ -199,6 +207,7 @@ def _weighted_multi(
     indices: list[int],
     weights: Optional[list[float]],
     k: int,
+    qnum: Optional[int] = None,
 ) -> list[int]:
     """多选：无放回加权抽样。
 
@@ -206,12 +215,15 @@ def _weighted_multi(
     此前 answering.py 里有一份算法相同但**守卫不同**的副本，
     那份缺非法权重保护，全 0 权重直接 ZeroDivisionError。
     """
-    return weighted_sample_no_replace(list(indices), weights, k)
+    return weighted_sample_no_replace(
+        list(indices), _drift_weights(qnum, weights, len(indices)), k
+    )
 
 
 def _weighted_permutation(
     items: list[Any],
     weights: Optional[list[float]],
+    qnum: Optional[int] = None,
 ) -> list[Any]:
     """按权重无放回地逐个取出 → 得到一个**保持取出顺序**的排列（v3.0 排序题）。
 
@@ -220,6 +232,7 @@ def _weighted_permutation(
     权重全非法（长度不符 / NaN / 总和 0）时退化成均匀洗牌。
     """
     pool = list(items)
+    weights = _drift_weights(qnum, weights, len(pool))
     if weights is None or not weights_are_usable(weights, len(pool)):
         random.shuffle(pool)
         return pool
@@ -278,12 +291,18 @@ def generate_answer(question: dict) -> dict[str, Any]:
     :return: 统一 dict 结构（见模块文档）。
     """
     qtype = str(question.get("type", "single")).lower()
+    # 投递分布纠正按题号记账（见 src/distribution.py）；没有题号时传 None，
+    # 采样器会原样用目标权重 —— 宁可少纠正，不可对错账纠正。
+    try:
+        qnum: int | None = int(question.get("q", 0) or 0) or None
+    except (TypeError, ValueError):
+        qnum = None
 
     # --- 1. 选择题 v1 兼容 ---------------------------------------------
     if qtype in ("single", "radio"):
         choices = list(question["choices"])
         indices = list(range(len(choices)))
-        picked_idx = _weighted_or_equal_choice(indices, _cfg_weights(question))
+        picked_idx = _weighted_or_equal_choice(indices, _cfg_weights(question), qnum)
         return {"type": "single", "selected": [choices[picked_idx]]}
 
     if qtype in ("multi", "checkbox"):
@@ -305,14 +324,14 @@ def generate_answer(question: dict) -> dict[str, Any]:
                 if count_wts else random.choice(count_opts)
         else:
             k = random.randint(1, max(1, n))
-        picked_indices = _weighted_multi(indices, _cfg_weights(question), k)
+        picked_indices = _weighted_multi(indices, _cfg_weights(question), k, qnum)
         return {"type": "multi", "selected": [choices[i] for i in picked_indices]}
 
     # --- 2. 下拉（等价单选） -------------------------------------------
     if qtype == "dropdown":
         choices = list(question["choices"])
         indices = list(range(len(choices)))
-        picked_idx = _weighted_or_equal_choice(indices, _cfg_weights(question))
+        picked_idx = _weighted_or_equal_choice(indices, _cfg_weights(question), qnum)
         return {"type": "dropdown", "selected": [choices[picked_idx]]}
 
     # --- 3. 量表打分 ---------------------------------------------------
@@ -322,15 +341,13 @@ def generate_answer(question: dict) -> dict[str, Any]:
         indices = list(range(scale_min, scale_max + 1))
         # 权重：1→1分, 2→2分 ... 必须对齐 indices
         w = _cfg_weights(question)
-        if weights_are_usable(w, len(indices)):
-            value = random.choices(indices, weights=w, k=1)[0]
-        else:
+        if not weights_are_usable(w, len(indices)):
             # 默认轻微偏向中上（4/5 概率更高）——符合真实打分习惯
-            default_w = [1, 2, 4, 6, 5][: len(indices)]
-            if len(default_w) < len(indices):
+            w = [1, 2, 4, 6, 5][: len(indices)]
+            if len(w) < len(indices):
                 # 补齐
-                default_w = default_w + [max(default_w)] * (len(indices) - len(default_w))
-            value = random.choices(indices, weights=default_w[: len(indices)], k=1)[0]
+                w = list(w) + [max(w)] * (len(indices) - len(w))
+        value = _weighted_or_equal_choice(indices, list(w or []), qnum)
         return {"type": "scale", "value": int(value)}
 
     # --- 4. 填空 -------------------------------------------------------
@@ -346,21 +363,26 @@ def generate_answer(question: dict) -> dict[str, Any]:
             picked = random.choice(list(explicit_options))
             return {"type": "text", "text": str(picked), "field": field}
 
+        p = active_persona()
         if field == "name":
-            text = _chinese_name()
+            text = p.name
         elif field in ("phone", "mobile", "tel"):
-            text = _chinese_phone()
+            text = p.phone
         elif field == "email":
-            text = _email()
+            text = p.email
         elif field in ("address", "addr"):
-            text = _chinese_address()
+            text = p.address_text
+        elif field in ("region", "area", "local"):
+            text = p.region()
         elif field in ("age", "number"):
-            # 年龄数字范围：16~70
-            text = str(random.randint(int(question.get("min", 16)), int(question.get("max", 70))))
+            # 画像的年龄优先；只有它落在题目 min/max 之外才夹回去 —— 夹完仍是个
+            # 合法年龄，只是这一格与身份证 / 生日的自洽性弱一档。
+            lo, hi = int(question.get("min", 16)), int(question.get("max", 70))
+            text = str(min(max(p.age, min(lo, hi)), max(lo, hi)))
+        elif field == "date":
+            text = _birth_or_window_date(question, p)
         elif field in ("company", "org"):
-            suffixes = "科技有限公司 信息咨询有限公司 贸易有限公司 文化传播有限公司 网络服务公司".split()
-            prefixes = "中瑞 华盛 远景 星辰 蓝海 卓越 飞扬 鼎盛 合众 博远 天启 晨光".split()
-            text = random.choice(prefixes) + random.choice(suffixes)
+            text = p.company
         else:
             text = _random_sentence()
 
@@ -379,9 +401,24 @@ def generate_answer(question: dict) -> dict[str, Any]:
         result: dict[int, Any] = {}
         for r in rows:
             w = row_weights.get(r) if isinstance(row_weights, dict) else None
-            idx = _weighted_or_equal_choice(col_indices, list(w) if w else None)
+            idx = _weighted_or_equal_choice(col_indices, list(w) if w else None, qnum)
             result[r] = cols[idx]
         return {"type": "matrix_single", "rows": result}
+
+    # --- 5a2. 矩阵量表（v3.1）-------------------------------------------
+    # rows 是**提交槽名**（平台标在 tr[fid] 上，形如 q7_0），cols 是 dval 分值。
+    # 与矩阵单选共用"每行一个标量"的形状，但控件完全不同（一排可点的 <a>），
+    # 所以单独一型：混进 matrix_single 会让探测与作答各走两套选择器。
+    if qtype == "matrix_scale":
+        rows = list(question.get("rows", []))
+        cols = list(question.get("cols", []))
+        col_indices = list(range(len(cols)))
+        w = _cfg_weights(question)
+        result_scale: dict[Any, Any] = {}
+        for r in rows:
+            idx = _weighted_or_equal_choice(col_indices, w, qnum)
+            result_scale[r] = cols[idx]
+        return {"type": "matrix_scale", "rows": result_scale}
 
     # --- 5b. 矩阵多选（v3.0）--------------------------------------------
     if qtype == "matrix_multi":
@@ -406,7 +443,7 @@ def generate_answer(question: dict) -> dict[str, Any]:
                 if weights_are_usable(pick_wts, len(pick_opts))
                 else random.choice(pick_opts)
             )
-            picked = _weighted_multi(col_indices, list(w) if w else None, k)
+            picked = _weighted_multi(col_indices, list(w) if w else None, k, qnum)
             result_multi[r] = [cols[i] for i in picked]
         return {"type": "matrix_multi", "rows": result_multi}
 
@@ -424,7 +461,7 @@ def generate_answer(question: dict) -> dict[str, Any]:
             )
             order = head + rest
         else:
-            order = _weighted_permutation(items, _cfg_weights(question))
+            order = _weighted_permutation(items, _cfg_weights(question), qnum)
         return {"type": "sort", "order": order, "items": items}
 
     # --- 兜底：当作单选题处理（保守） ----------------------------------

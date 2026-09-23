@@ -43,15 +43,19 @@
     "rows": [
       {
         "module": "gui/controller.py",
-        "reason": "探测题目 / 二维码解码 / 配置导入都要真实 driver 或模态对话框"
+        "reason": "配置导出/导入与二维码选文件已可注入替身文件框（`tests/test_gui_user_data.py`），剩 37% 的坎是探测题目那条 worker —— 它要真实 driver（`on_detect_questions` 整段 300-403 行）"
       },
       {
         "module": "gui/app.py",
-        "reason": "`SurveyGUI.__init__` 一建就打开真实 `data/history.db` 并启动动画 `after` 循环，测试里无法安全实例化；`_run_loop` 与几个面板薄代理已有契约测试（`tests/test_gui_proxies.py`）"
+        "reason": "`WJX_USER_DATA_DIR` 把 `configs/` + `data/` 整棵挪走之后，整窗已能在测试里构造（`tests/test_gui_user_data.py`：构造、输入校验、续传决策、历史库接线）。剩 206 行是 canvas 重绘与 resize/关窗回调，要真实 paint 事件与 mainloop 才走得到"
       },
       {
         "module": "src/pipeline_stages/question_stage.py",
         "reason": "逐题 DOM 交互主干：等待、「哪道题调哪个填充器」的分发、带框选项只勾不填的降级都已有离线测试（`tests/test_question_stage_dispatch.py`），真实点击仍靠 E2E"
+      },
+      {
+        "module": "src/interactions/sort.py",
+        "reason": "点击式排序（`js_fill_sort(mode=\"click\")`，v3.1 真卷新形态）的清残留 / 逐项点击 / 超时三段分支只有真浏览器 E2E 走过（`tests/test_e2e_integration.py` 的 click-mode 两条），离线替身一次没执行过函数体；`_state` 的 JSON 解析降级同理"
       },
       {
         "module": "src/cli.py",

@@ -23,6 +23,7 @@ import sys
 import time
 from argparse import Namespace
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from .config import (
@@ -42,6 +43,10 @@ from .models import RunState, SubmitOutcome
 from .platforms import unsupported_url_notice
 
 from . import __version__
+from . import distribution  # v3.2 投递分布在线纠正（默认关，--drift-correct 开）
+from . import reverse_fill  # v3.2 真实答卷回放（--replay-file）
+from . import reliability  # v3.2 实测 Cronbach α 报告（--report-alpha）
+from . import plan as alpha_plan  # v3.2 信度控制（--alpha-target）
 
 
 def _positive_int(value: str) -> int:
@@ -63,6 +68,96 @@ def _browser_type(value: str) -> str:
             f"不支持的浏览器：{value!r}，可选值：{', '.join(BROWSER_OPTIONS)}"
         )
     return b
+
+
+# 预约开跑接受的形态：带日期的三种 + 只给时刻的两种（"T" 分隔符归一化后同一路径）。
+# 刻意不做"猜用户想说的是哪天"之外的宽容（相对量词、时区、闰秒一类），理由见 _start_at。
+_START_AT_FORMATS: tuple[tuple[str, bool], ...] = (
+    ("%Y-%m-%d %H:%M:%S", True),
+    ("%Y-%m-%d %H:%M", True),
+    ("%Y-%m-%d", True),
+    ("%H:%M:%S", False),
+    ("%H:%M", False),
+)
+
+
+def _start_at(value: str, *, now: Callable[[], datetime] = datetime.now) -> datetime:
+    """把 ``--start-at`` 读成一个时间点（argparse 自定义类型，不合法即 ArgumentTypeError）。
+
+    带日期的写法（``2030-01-01 08:00``）已经过去了就是写错了 → 直接拒绝：预约一个
+    过去的时间，症状是"批次立刻开跑"，而用户以为自己在等 —— 与本仓库"宁可少做，
+    不做静默不对"的取向冲突。只给时刻（``08:00``）说的是"今天这个点"，点已经过了
+    则是明天的同一时刻，这是这种写法的通常意思，所以往后滚一天而不是报错。
+
+    这里**只**保证"不早于 T"：不做时钟同步、不抢开跑瞬间、不预留准备时间。
+    """
+    text = (value or "").strip().replace("T", " ")
+    if not text:
+        raise argparse.ArgumentTypeError("--start-at 不能是空串")
+    for fmt, has_date in _START_AT_FORMATS:
+        try:
+            parsed = datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+        if not has_date:
+            # 只给时刻：strptime 会把日期填成 1900-01-01，不换成今天的话任何时刻都
+            # "已经过去"。语义是"今天这个点"，点过了就是明天（不猜"下一个工作日"之类）
+            today = now().replace(hour=0, minute=0, second=0, microsecond=0)
+            parsed = parsed.replace(year=today.year, month=today.month, day=today.day)
+            if parsed < now():
+                parsed = parsed + timedelta(days=1)
+        # 此刻已经过去（带日期的写法不会自己往后滚）→ 这不是"等 0 秒"，是写错了
+        if parsed < now():
+            raise argparse.ArgumentTypeError(
+                f"--start-at 指定的时间已经过去：{value!r}（现在 {now():%Y-%m-%d %H:%M:%S}）。"
+                "只写时刻（HH:MM）= 今天或明天这个点，带日期的写法不会自己往后滚。"
+            )
+        return parsed
+    raise argparse.ArgumentTypeError(
+        f"--start-at 看不懂的时间：{value!r}，"
+        "可用 'YYYY-MM-DD HH:MM[:SS]' / 'YYYY-MM-DDTHH:MM' / 'HH:MM[:SS]'"
+    )
+
+
+_START_AT_SLICE: float = 1.0     # 等待切片：Ctrl+C / 停止信号最迟 1s 后能被看到
+_START_AT_PROGRESS_EVERY: float = 60.0   # 进度行节奏：每秒一行会把日志埋掉
+
+
+def _sleep_until(
+    start_at: datetime,
+    *,
+    now: Callable[[], datetime] = datetime.now,
+    sleep: Callable[[float], None] = time.sleep,
+    log: Callable[[str], None] = print,
+) -> None:
+    """睡到 ``start_at``（只保证不早于它，到点后的第一件事才是开浏览器）。
+
+    分片睡（``_START_AT_SLICE``）而不是 ``sleep(整个剩余)``：预约动辄几小时，
+    一发的 ``time.sleep`` 期间 Ctrl+C 只能等这一觉睡完才生效 —— 而"到点之前先停掉"
+    正是等待期唯一会被做的事。
+
+    等待结束后才返回给调用方去建浏览器，所以 ``--max-total-time`` 天然从 T 起算
+    （那条上限的计时在 ``run_batch`` 里开始），不必为此改任何计数。
+    """
+    remaining = (start_at - now()).total_seconds()
+    if remaining <= 0:      # 校验到开跑之间隔了几毫秒，到点即走
+        return
+    log(f"[预约] 不早于 {start_at:%Y-%m-%d %H:%M:%S} 开跑（还要等 {remaining:.0f}s；"
+        "这期间不会启动浏览器，也不会访问问卷地址）")
+    waited = 0.0
+    next_progress = _START_AT_PROGRESS_EVERY
+    while True:
+        remaining = (start_at - now()).total_seconds()
+        if remaining <= 0:
+            break
+        slice_ = min(_START_AT_SLICE, remaining)
+        sleep(slice_)
+        waited += slice_
+        if waited >= next_progress:
+            log(f"[预约] 还有 {remaining:.0f}s 开跑（已等 {waited:.0f}s）")
+            next_progress += _START_AT_PROGRESS_EVERY
+    log(f"[预约] 到点（{start_at:%H:%M:%S}），开始提交")
+
 
 
 def parse_args(argv: list[str] | None = None) -> Namespace:
@@ -118,7 +213,8 @@ def parse_args(argv: list[str] | None = None) -> Namespace:
         type=_positive_int,
         default=None,
         metavar="SECONDS",
-        help="v3.0 整批墙钟上限（秒）：到点按优雅停止收工，下次 --resume 可继续",
+        help="v3.0 整批墙钟上限（秒）：到点按优雅停止收工，下次 --resume 可继续。"
+             " 与 --start-at 同给时从预约时刻起算（不含等待）",
     )
     parser.add_argument(
         "-n", "--count",
@@ -180,6 +276,44 @@ def parse_args(argv: list[str] | None = None) -> Namespace:
              " 避免明文保存姓名/手机/邮箱等敏感内容；DOM 仍会填入实际文本（流程需要）。",
     )
     parser.add_argument(
+        "--drift-correct",
+        dest="drift_correct",
+        action="store_true",
+        default=False,
+        help="[v3.2] 按**已提交成功**的实际比例小幅纠正加权采样：目标 3:1 而落地被"
+             " 失败 / UNKNOWN 拉歪时往配置上拉回来。默认关 —— 它改变答题结果，不是"
+             " 防线；因子夹在 ±1/3、前 8 份完全不纠正。",
+    )
+    parser.add_argument(
+        "--report-alpha",
+        dest="report_alpha",
+        action="store_true",
+        default=False,
+        help="[v3.2] 批次结束后按维度打印**实测** Cronbach α（读历史库，不改任何"
+             " 作答行为）。维度取权重配置里的 dimension；未声明时按全部量表/单选题"
+             " 兜底分组，并在输出里明说那是兜底组、不能当某个构念的信度引用。",
+    )
+    parser.add_argument(
+        "--alpha-target",
+        dest="alpha_target",
+        metavar="0.60-0.95",
+        type=float,
+        default=None,
+        help="[v3.2] 按 Cronbach α 控制整批答卷的量表结构：先按权重把每道题的选项"
+             " 配额精确摊到总份数上，再用潜变量 + 秩映射兑现它。必须在权重配置里"
+             " 用 dimension 显式声明哪些题属于同一构念（未声明就不建计划并说明原因）。"
+             " 目标值硬夹在 0.60~0.95；边际配额优先，α 不达标只告警不返工。",
+    )
+    parser.add_argument(
+        "--replay-file",
+        dest="replay_file",
+        metavar="PATH",
+        default=None,
+        help="[v3.2] 用一份真实答卷表（CSV，或装了 openpyxl 时的 .xlsx）逐份回放："
+             " 表里有的题按表答，认不到列 / 解析不出的格子照旧随机。"
+             " 第 N 份用第 N 行，只有提交成功才推进队列。",
+    )
+    parser.add_argument(
         "--target-success",
         dest="target_success",
         action="store_true",
@@ -214,6 +348,27 @@ def parse_args(argv: list[str] | None = None) -> Namespace:
         default=None,
         metavar="PATH",
         help="可选：启用 logging 并把运行日志写入指定文件。",
+    )
+    # ---------- v3.1 新增参数 ----------
+    parser.add_argument(
+        "--rescue-gaps",
+        dest="rescue_gaps",
+        action="store_true",
+        default=False,
+        help="[补漏轮] 提交前完整度自检拦下必答缺口题时，不直接判失败：把那道题滚进"
+             " 视野、等在场的人工在浏览器窗口里补答（最长 300s），补齐了才点提交。"
+             " 默认关（判失败、不点提交）。无头模式下不等待，与默认一致。",
+    )
+    parser.add_argument(
+        "--start-at",
+        dest="start_at",
+        type=_start_at,
+        default=None,
+        metavar="'YYYY-MM-DD HH:MM[:SS]' | 'HH:MM'",
+        help="[预约开跑] 不早于指定时刻开跑（等待期间不启动浏览器、不访问问卷地址）。"
+             " 只写 HH:MM 表示今天这个点，已经过了就顺延到明天；带日期而又已经过去的一律"
+             " 拒绝（退出码 2）。只承诺 '不早于 T' —— 不做时钟同步，也不为抢开跑瞬间提前"
+             " 加载页面。--max-total-time 从 T 起算。",
     )
     return parser.parse_args(argv)
 
@@ -348,6 +503,7 @@ def run_batch(
     headless: bool = False,
     user_data_dir: str | None = None,
     max_total_seconds: float | None = None,
+    rescue_gaps: bool = False,
 ) -> tuple[int, int]:
     """批量执行指定份数的问卷提交 —— **CLI 与 GUI 共用的唯一批次引擎**。
 
@@ -381,6 +537,11 @@ def run_batch(
                           同一目录不能被两个实例同时占用，所以队列是顺序跑的。
         max_total_seconds : 整批墙钟上限。到点按"优雅停止"处理：mark_interrupted
                           后结束，因此下次 --resume 能接着跑（区别于崩溃的 failed）。
+
+    v3.1 参数（同样只在 CLI 传）：
+        rescue_gaps     : 补漏轮。完整度自检拦下"平台标了必答、我们整题没探测到"的
+                          题时，先等在场的人工在浏览器窗口里补答，补齐了才点提交。
+                          默认 False —— 那时行为与 v3.0 逐位一致（判失败、不点提交）。
 
     V2 参数：
         history_db : SubmissionHistory 实例或 None；非 None 时会
@@ -461,6 +622,10 @@ def run_batch(
     # 用掉 done+fail 次尝试。此前只减 done，续传后总尝试数会凭空多出 fail 次
     # （计划 20 份、已完成 12、失败 3 → 旧算法再给 8 次 = 合计 23 次）。
     consumed_attempts = int(resume_done) + int(resume_fail)
+    # 每份问卷各自清零分布统计：开着纠正时不清，上一份问卷的落地比例会来管这一份
+    distribution.start_run()
+    reverse_fill.reset_for_survey()   # 同理：列绑定缓存按题号存，换问卷必须清
+    alpha_plan.reset_survey()         # 同理：计划矩阵是按当前问卷的题号算出来的
     attempts_cap: int
     if target_success:
         base_cap = int(max_attempts) if max_attempts else (int(total_submissions) * 2)
@@ -579,6 +744,7 @@ def run_batch(
                     submission_index=displayed_idx,
                     no_record_text=no_record_text,
                     stop_check=stop_check,
+                    rescue_gaps=rescue_gaps,
                 )
 
             except SubmissionAborted as _ab:
@@ -739,6 +905,36 @@ def main(argv: list[str] | None = None) -> None:
         print("[error] 必须通过 -u/--url 或 --url-file 指定问卷 URL")
         sys.exit(2)
 
+    # v3.2 投递分布在线纠正：显式开关，默认关（见 src/distribution.py 的 WHY）
+    if getattr(args, "drift_correct", False):
+        distribution.enable(True)
+        print("[drift] 在线纠正已开启：只统计提交成功的份，"
+              "因子夹 ±1/3、前 8 份完全不纠正")
+
+    # v3.2 信度控制：目标 α 越界要在动手前说清楚，别等建计划时抛 ValueError
+    if getattr(args, "alpha_target", None) is not None:
+        target = float(args.alpha_target)
+        if not 0.60 <= target <= 0.95:
+            print(f"[error] --alpha-target 只接受 0.60~0.95，收到 {target:.2f}"
+                  " —— 低于 0.60 没有控制价值，高于 0.95 的题目之间基本就是重复")
+            sys.exit(2)
+        alpha_plan.configure(target, int(args.count))
+        print(f"[信度] 目标 α = {target:.2f}，本次 {args.count} 份"
+              "；维度归属取权重配置里的 dimension")
+
+    # v3.2 真实答卷回放：装载失败必须现在就说，等跑完几份才发现"表根本没读进来"
+    # 等于白提交了几份收不回来的数据。
+    if getattr(args, "replay_file", None):
+        try:
+            notes = reverse_fill.begin_replay(args.replay_file, args.count)
+        except Exception as e:
+            print(f"[error] 答卷表读不进来（{args.replay_file}）: "
+                  f"{type(e).__name__}: {e}")
+            sys.exit(2)
+        for _note_line in notes:
+            print(_note_line)
+        print(f"[replay] 已装载 {reverse_fill.remaining_rows()} 行答卷数据")
+
     SURVEY_URL = (args.url or "").strip()
     TOTAL_SUBMISSIONS = args.count
     BROWSER = args.browser
@@ -891,6 +1087,8 @@ def main(argv: list[str] | None = None) -> None:
         print("隐私保护 : 填空题答案不写入 SQLite（--no-record-text）")
     if resume_run_id is not None:
         print(f"断点续传 : Run #{resume_run_id}（已完成 {resume_done} 份）")
+    if args.rescue_gaps:
+        print("补漏轮   : 完整度自检拦下的必答缺口先等人工补答（--rescue-gaps）")
     print("=" * 60)
 
     # ---------- v3.0：--url-file 顺序队列 ----------
@@ -928,6 +1126,25 @@ def main(argv: list[str] | None = None) -> None:
     if len(targets) > 1 and args.resume:
         print("[error] --resume 只对一份问卷有意义，不能与 --url-file 队列同用")
         sys.exit(2)
+    if len(targets) > 1 and getattr(args, "replay_file", None):
+        # 回放表是按"第 N 份 ↔ 第 N 行"对齐的，而每份问卷的 submission_index 都从 1
+        # 重新开始 —— 多份问卷同用一张表会让它们各自都从第一行开始答，
+        # 症状是"数据看起来重了一遍"，比报错难发现得多。
+        print("[error] --replay-file 只对一份问卷有意义，不能与 --url-file 队列同用")
+        sys.exit(2)
+
+    # ---------- v3.1：--start-at 预约开跑 ----------
+    # 位置在所有校验之后、启动浏览器之前，两件事都由此成立：
+    #   * 坏配置 / 坏队列在**启动那一刻**就红，而不是让人等几小时后才发现白等；
+    #   * 第一次 driver.get 一定发生在 T 之后（run_batch 里才建浏览器），
+    #     而 --max-total-time 的计时也在 run_batch 里开始 → 它天然从 T 起算。
+    if args.start_at is not None:
+        try:
+            _sleep_until(args.start_at)
+        except KeyboardInterrupt:
+            # 还没提交过任何一份，也没有浏览器要收尾：非零码退出，别让 cron 以为跑成了
+            print("\n[预约] 等待开跑期间被中断 → 本次一份都没提交")
+            sys.exit(1)
 
     total_success = 0
     total_fail = 0
@@ -950,11 +1167,24 @@ def main(argv: list[str] | None = None) -> None:
             headless=bool(args.headless),
             user_data_dir=args.profile_dir,
             max_total_seconds=args.max_total_time,
+            rescue_gaps=args.rescue_gaps,
         )
         total_success += success
         total_fail += fail
     print(f"运行结束 — 成功 {total_success}, 失败 {total_fail}"
           + (f"（共 {len(targets)} 份问卷）" if len(targets) > 1 else ""))
+    if getattr(args, "report_alpha", False):
+        _report_reliability(history_db, dict(WEIGHT_CONFIG))
+
+    if distribution.control_enabled():
+        # 报的是"统计口径下每题最高份额"，用来判断纠正到底有没有把分布拉回来；
+        # 没开纠正时这里什么都不印 —— 空报告印出来只会多一行噪声。
+        rep = distribution.drift_report()
+        if rep:
+            worst = max(rep.items(), key=lambda kv: kv[1]["max_share"])
+            print(f"[drift] 参与统计 {len(rep)} 题；"
+                  f"份额最高 Q{worst[0]} = {worst[1]['max_share']:.0%}"
+                  f"（已投递 {int(worst[1]['delivered'])} 份）")
 
     # ---------- V2：--save-config 保存当前配置模板 ----------
     if args.save_config:
@@ -1007,6 +1237,36 @@ def main(argv: list[str] | None = None) -> None:
 
     # 失败时以非零码退出，方便脚本判断成功/失败
     sys.exit(0 if fail == 0 else 1)
+
+
+def _report_reliability(history_db: Any, weight_config: dict) -> None:
+    """批次结束后报**实测** α（v3.2 B3-P0：只测不改，先看现状值不值得做控制）。
+
+    读的是历史库而不是计划表 —— 设计稿 §3 的核心判断：计划上的 α 不需要测，
+    落地的才需要。
+    """
+    if history_db is None:
+        print("[信度] 没开历史库（-H / --history），无数据可测 → 跳过")
+        return
+    runs = history_db.query_runs(limit=1)
+    if not runs:
+        print("[信度] 历史库里没有批次记录 → 跳过")
+        return
+    run_id = int(runs[0]["id"])
+    dims = reliability.dimensions_from_config(weight_config)
+    reverse = reliability.reverse_from_config(weight_config)
+    how = "维度取自权重配置里声明的 dimension"
+    if not dims:
+        dims = reliability.implicit_dimension(history_db, run_id)
+        how = "配置没声明 dimension → 按全部量表/单选题兜底分组（不是某个构念的信度）"
+    if not dims:
+        print(f"[信度] Run #{run_id} 没有可参与 α 的题（需要量表/单选/下拉/矩阵单选）")
+        return
+    print(f"[信度] Run #{run_id} 实测 Cronbach α —— {how}")
+    for line in reliability.format_reports(
+        reliability.measure_dimensions(history_db, run_id, dims, reverse)
+    ):
+        print(line)
 
 
 if __name__ == "__main__":
