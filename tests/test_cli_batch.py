@@ -358,6 +358,29 @@ class TestRunBatchStopWithinRound(unittest.TestCase):
 
         self.assertIs(captured["rescue_gaps"], False)
 
+    def test_manual_submit_is_forwarded_into_the_round(self) -> None:
+        """接线契约（v3.3 人工提交）：开关必须落到那一轮，且默认传 False。
+
+        与补漏轮同一类 bug 的横向防线：批次层"看着生效"而漏传给那一轮，症状是
+        用户以为自己核对过了 —— 实际上工具已经替他把问卷交出去了。
+        """
+        captured: dict = {}
+
+        def _spy(driver, url, lock, **kw):
+            captured.update(kw)
+            return "failed"
+
+        with mock.patch("src.browser.create_driver", side_effect=_fake_driver_factory),              mock.patch("src.utils.human_pause", return_value=0.0),              mock.patch("src.pipeline.run_one_submission", side_effect=_spy):
+            cli.run_batch(SURVEY_URL, 1, manual_submit=True)
+
+        self.assertIs(captured["manual_submit"], True)
+
+        captured.clear()
+        with mock.patch("src.browser.create_driver", side_effect=_fake_driver_factory),              mock.patch("src.utils.human_pause", return_value=0.0),              mock.patch("src.pipeline.run_one_submission", side_effect=_spy):
+            cli.run_batch(SURVEY_URL, 1)
+
+        self.assertIs(captured["manual_submit"], False)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -64,6 +64,8 @@ from .pipeline_stages import (
     GAP_HOLD_TIMEOUT,
     hold_for_manual_fill,
     scroll_question_into_view,
+    # v3.3 人工提交（--manual-submit）：停在提交按钮前，把"交上去"那一下交给人
+    wait_for_manual_submit,
 )
 # 题目探测（断点续填/题目结构识别）来自 detection 模块，不属于 pipeline 职责
 from .detection import (
@@ -358,6 +360,7 @@ def _do_one_submission_core(
     no_record_text: bool = False,
     stop_check: Callable[[], bool] | None = None,
     rescue_gaps: bool = False,
+    manual_submit: bool = False,
 ) -> SubmitOutcome:
     """单次提交的真正实现（无外层重试，由调用者包 retry）。
 
@@ -373,6 +376,11 @@ def _do_one_submission_core(
     :param rescue_gaps: v3.1 补漏轮开关。默认 False —— 完整度自检判出的缺口直接
         维持"判失败、不点提交"。打开后先把缺口交给在场的人工补答，补上了才点提交
         （无头模式下不等待，行为与默认一致）。
+    :param manual_submit: v3.3 人工提交开关。默认 False —— 照常由本工具点提交。
+        打开后答完、跑完三道提交前判据就停住，把**那一下点击**交给在场的人
+        （半份问卷交上去就是平台上一条收不回来的真实回收记录）。
+        成功与否仍走同一套三态判定；等到超时没人点是"这一份没交出去"，计失败。
+        与 ``--headless`` 互斥，互斥在 argparse 就拒掉，这里没有无头分支。
     """
 
     # Step 0 换一个人。放在这里（而不是 CLI/GUI 的批次循环里）是为了同时满足两件事：
@@ -521,7 +529,10 @@ def _do_one_submission_core(
 
     # Step 8 点击提交 + 提交后快进
     _abort_if_stopped(stop_check, "点击提交前收到停止请求")
-    submit_result = find_and_click_submit(driver)
+    # v3.3 --manual-submit：只把"点这一下"交给人，提交后的三态判定、诊断与快进
+    # 全部共用同一条路径 —— 人提交的那一份必须和自动提交的那一份可比。
+    submit_result = (wait_for_manual_submit(driver, lock, stop_check=stop_check)
+                     if manual_submit else find_and_click_submit(driver))
     if submit_result == SUBMIT_FAILED:
         _report_submit_diagnostics(driver)
         driver.switch_to.default_content()
@@ -593,6 +604,7 @@ def run_one_submission(
     no_record_text: bool = False,
     stop_check: Callable[[], bool] | None = None,
     rescue_gaps: bool = False,
+    manual_submit: bool = False,
 ) -> SubmitOutcome:
     """外层 retry + 清理 + 重抛异常（供 GUI / CLI 批处理循环调用）。
 
@@ -602,6 +614,7 @@ def run_one_submission(
     - ``stop_check`` 返回 True 时抛 ``SubmissionAborted``（BaseException 派生，
       既不被本函数的 ``except Exception`` 清理分支吞掉，也不在重试范围内）
     - ``rescue_gaps``：v3.1 补漏轮，见 :func:`_do_one_submission_core`
+    - ``manual_submit``：v3.3 人工提交，见 :func:`_do_one_submission_core`
     """
     try:
         outcome = _do_one_submission_core(
@@ -614,6 +627,7 @@ def run_one_submission(
             no_record_text=no_record_text,
             stop_check=stop_check,
             rescue_gaps=rescue_gaps,
+            manual_submit=manual_submit,
         )
     except Exception as e:
         # Ctrl+C/SystemExit 直接上抛（不做任何清理尝试以免吞）

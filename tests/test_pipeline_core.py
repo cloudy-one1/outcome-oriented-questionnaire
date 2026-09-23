@@ -491,7 +491,7 @@ def test_run_one_submission_never_retries_a_successful_core() -> None:
     core.assert_called_once_with(
         driver, SURVEY_URL, lock,
         history_db=None, run_id=None, submission_index=None, no_record_text=False,
-        stop_check=None, rescue_gaps=False,
+        stop_check=None, rescue_gaps=False, manual_submit=False,
     )
 
 
@@ -1137,3 +1137,47 @@ def test_recheck_receipt_channel_survives_a_failed_answered_scan() -> None:
         detect_platform_questions=[],
     ):
         assert pipeline._recheck_gap(FakeDriver(), {1, 2}, {2}) == [2]
+
+
+# ---------------------------------------------------------------------------
+#  Step 8 的另一半：--manual-submit（v3.3）—— 只把"点这一下"交给人
+#
+#  分叉点必须只有一处：走人工路径时 ``find_and_click_submit`` 一次都不许被调用
+#  （那是"替人交卷"，正是这个开关要消灭的动作），而提交后的三态判定、必填诊断、
+#  上下文复原必须**完全共用** —— 否则人提交的那一份与自动提交的那一份在历史里不可比。
+# ---------------------------------------------------------------------------
+def test_manual_submit_never_clicks_the_submit_button() -> None:
+    wait = mock.Mock(name="wait_for_manual_submit", return_value=SUBMIT_SUCCESS)
+    with stages(wait_for_manual_submit=wait) as st:
+        assert _core(FakeDriver(), ManualHoldLock(),
+                     manual_submit=True) == SUBMIT_SUCCESS
+
+    st.find_and_click_submit.assert_not_called()
+    wait.assert_called_once()
+
+
+def test_manual_submit_timeout_is_reported_as_failure_without_a_click() -> None:
+    """等到超时 = 这一份没交出去 → 判失败，而且不去"补一次自动提交"。"""
+    wait = mock.Mock(name="wait_for_manual_submit", return_value=SUBMIT_FAILED)
+    with stages(wait_for_manual_submit=wait) as st:
+        assert _core(FakeDriver(), ManualHoldLock(),
+                     manual_submit=True) == SUBMIT_FAILED
+    st.find_and_click_submit.assert_not_called()
+
+
+def test_manual_submit_off_does_not_touch_the_wait_path() -> None:
+    """默认关：连问都不问（一次 execute_script 都不该多），行为与此前逐位一致。"""
+    wait = mock.Mock(name="wait_for_manual_submit",
+                     side_effect=AssertionError("没开开关不该等人工"))
+    with stages(wait_for_manual_submit=wait) as st:
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+    st.find_and_click_submit.assert_called_once()
+
+
+def test_manual_submit_forwards_the_stop_predicate() -> None:
+    """停止谓词必须传进等待循环 —— 否则"停止"要等满 180s 才生效。"""
+    wait = mock.Mock(name="wait_for_manual_submit", return_value=SUBMIT_SUCCESS)
+    chk = lambda: False  # noqa: E731
+    with stages(wait_for_manual_submit=wait):
+        _core(FakeDriver(), ManualHoldLock(), stop_check=chk, manual_submit=True)
+    assert wait.call_args.kwargs["stop_check"] is chk

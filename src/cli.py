@@ -360,6 +360,16 @@ def parse_args(argv: list[str] | None = None) -> Namespace:
              " 默认关（判失败、不点提交）。无头模式下不等待，与默认一致。",
     )
     parser.add_argument(
+        "--manual-submit",
+        dest="manual_submit",
+        action="store_true",
+        default=False,
+        help="[人工提交] 答完之后不自己点提交：把提交按钮滚进视野并停住，"
+             " 由在场的**人**核对（要改的直接改）后自己点。成功与否仍走同一套三态判定；"
+             " 等到超时没人点算这一份失败（它没有交出去，平台上不留记录）。"
+             " 与 --headless 互斥（无头窗口里没有可点的人）。",
+    )
+    parser.add_argument(
         "--start-at",
         dest="start_at",
         type=_start_at,
@@ -504,6 +514,7 @@ def run_batch(
     user_data_dir: str | None = None,
     max_total_seconds: float | None = None,
     rescue_gaps: bool = False,
+    manual_submit: bool = False,
 ) -> tuple[int, int]:
     """批量执行指定份数的问卷提交 —— **CLI 与 GUI 共用的唯一批次引擎**。
 
@@ -542,6 +553,14 @@ def run_batch(
         rescue_gaps     : 补漏轮。完整度自检拦下"平台标了必答、我们整题没探测到"的
                           题时，先等在场的人工在浏览器窗口里补答，补齐了才点提交。
                           默认 False —— 那时行为与 v3.0 逐位一致（判失败、不点提交）。
+
+    v3.3 参数（同样只在 CLI 传）：
+        manual_submit   : 人工提交。答完、跑完三道提交前判据之后不自己点提交，而是
+                          把提交按钮滚进视野停住，由在场的人核对（要改的直接改）后
+                          **自己点**。成功与否仍走同一套三态判定（人提交的份与自动
+                          提交的份必须可比）；等到超时没人点 = 这一份没交出去 → 计失败。
+                          与 headless 互斥，互斥在 main() 动手前就退掉。
+                          默认 False —— 那时行为与此前逐位一致。
 
     V2 参数：
         history_db : SubmissionHistory 实例或 None；非 None 时会
@@ -745,6 +764,7 @@ def run_batch(
                     no_record_text=no_record_text,
                     stop_check=stop_check,
                     rescue_gaps=rescue_gaps,
+                    manual_submit=manual_submit,
                 )
 
             except SubmissionAborted as _ab:
@@ -903,6 +923,12 @@ def main(argv: list[str] | None = None) -> None:
     # v3.0：--url-file 也算给了 URL
     if not (args.url and str(args.url).strip()) and not args.url_file:
         print("[error] 必须通过 -u/--url 或 --url-file 指定问卷 URL")
+        sys.exit(2)
+
+    # v3.3 人工提交要的是"坐在窗口前的人"，无头下根本没有这个人 —— 与 --headless
+    # 同时给不是取其一，是配置错了，所以在动手前就退掉（与 --config 校验同一口径）。
+    if getattr(args, "manual_submit", False) and bool(getattr(args, "headless", False)):
+        print("[error] --manual-submit 与 --headless 互斥：无头模式下没有能点提交的人")
         sys.exit(2)
 
     # v3.2 投递分布在线纠正：显式开关，默认关（见 src/distribution.py 的 WHY）
@@ -1089,6 +1115,8 @@ def main(argv: list[str] | None = None) -> None:
         print(f"断点续传 : Run #{resume_run_id}（已完成 {resume_done} 份）")
     if args.rescue_gaps:
         print("补漏轮   : 完整度自检拦下的必答缺口先等人工补答（--rescue-gaps）")
+    if args.manual_submit:
+        print("人工提交 : 每一份都停在提交按钮前，由你核对后自己点（--manual-submit）")
     print("=" * 60)
 
     # ---------- v3.0：--url-file 顺序队列 ----------
@@ -1168,6 +1196,7 @@ def main(argv: list[str] | None = None) -> None:
             user_data_dir=args.profile_dir,
             max_total_seconds=args.max_total_time,
             rescue_gaps=args.rescue_gaps,
+            manual_submit=args.manual_submit,
         )
         total_success += success
         total_fail += fail
