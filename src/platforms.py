@@ -136,6 +136,17 @@ WJX = SurveyPlatform(
 
 PLATFORMS: tuple[SurveyPlatform, ...] = (WJX,)
 
+# 题号 → 题目容器的候选 id 选择器（``{num}`` 是题号占位），按优先级试到第一个命中。
+# 补漏轮要把人工该补的那道题滚进视野，而问卷星在这件事上没有统一约定：``divquestionN`` /
+# ``div_question_N`` / ``divN`` 三种形态在本仓库的探测代码里都出现过（见
+# ``detection.py`` 取题号与题干时的那串候选）。只认一种的话，另外两种模板上人工
+# 还是得自己在页面里找那道题 —— 那正好是这一步要省掉的麻烦。
+WJX_QUESTION_ANCHOR_SELECTORS: tuple[str, ...] = (
+    "#divquestion{num}",
+    "#div_question_{num}",
+    "#div{num}",
+)
+
 
 def platform_for_url(url: str) -> SurveyPlatform | None:
     """按 URL 认平台；认不出来返回 ``None``（调用方决定是否提示）。"""
@@ -192,6 +203,33 @@ def _query_ident(query: str) -> str:
     return ""
 
 
+# 移动端投放形态（jQuery-Mobile 那一套模板）的控件标记。它们**只用来做诊断**：
+# 这类页面本工具答不了（探测入口是 ``#fieldset1`` / ``input[name=qN]`` 的 PC 约定），
+# 而症状与"我们 DOM 适配没做好"一模一样，所以要说清楚是哪一种。
+#
+# 刻意**不含** ``.field``：问卷星电脑端模板的题目容器就写着 ``class="field"``
+# （真卷实测 ``<div id="divN" class="field" topic="N">``），拿它当触发条件会到处
+# 误报，而假警的代价是这句提示从此没人看。``ui-*`` 才是 jQM 独有的形状。
+WJX_MOBILE_LAYOUT_SELECTORS: tuple[str, ...] = (
+    ".ui-input-text", ".ui-radio", ".ui-checkbox",
+)
+
+
+# 提交区的隐私协议同意框。移动端投放模板在提交按钮旁边挂一个 ``#checkxiexi``，
+# 没勾时点提交会被平台原样弹回来；它**不在** ``#fieldset1`` 的题目容器里，
+# 所以逐题探测从头到尾看不见它 —— 症状是"题题都填了、提交却没反应"。
+#
+# 这里只登记"怎么认它"，不登记"怎么点它"：代被调查者签署隐私协议与替他填一道题
+# 不是同一件事，本仓库连页面的 ``confirm()`` 都刻意不替它回答
+# （见 ``interactions/_scripts.py`` 的 ``install_alert_recorder`` 那段说明）。
+WJX_CONSENT_IDS: tuple[str, ...] = ("checkxiexi",)
+
+# 兜底关键词：没有固定 id 的模板只能靠相邻文案认。命中关键词**且**这个框不在任何
+# 题目容器里才算协议框 —— 少掉后半个条件，"我同意接收后续邮件"这种正经多选题的
+# 一个选项就会被当成协议框报出来。
+WJX_CONSENT_KEYWORDS: tuple[str, ...] = ("同意", "协议", "隐私")
+
+
 def unsupported_url_notice(url: str) -> str | None:
     """非受支持平台的一行提示；认得出平台时返回 ``None``。
 
@@ -213,6 +251,10 @@ __all__ = [
     "QuestionTypeCode",
     "SurveyPlatform",
     "WJX",
+    "WJX_CONSENT_IDS",
+    "WJX_CONSENT_KEYWORDS",
+    "WJX_MOBILE_LAYOUT_SELECTORS",
+    "WJX_QUESTION_ANCHOR_SELECTORS",
     "WJX_TYPE_CODES",
     "canonical_survey_key",
     "platform_for_url",

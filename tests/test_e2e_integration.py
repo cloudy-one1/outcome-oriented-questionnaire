@@ -52,6 +52,7 @@ MP_FIXTURE_HTML = PROJ / "tests" / "fixtures" / "mock_wjx_multipage.html"
 GAP_FIXTURE_HTML = PROJ / "tests" / "fixtures" / "mock_wjx_required_gap.html"
 REAL_WIDGETS_HTML = PROJ / "tests" / "fixtures" / "mock_wjx_real_widgets.html"
 REGION_FIXTURE_HTML = PROJ / "tests" / "fixtures" / "mock_wjx_region.html"
+CONSENT_FIXTURE_HTML = PROJ / "tests" / "fixtures" / "mock_wjx_consent_box.html"
 
 sys.path.insert(0, str(PROJ))
 
@@ -463,6 +464,57 @@ def test_required_but_undetected_question_becomes_a_pre_submit_gap(driver):
     gap = unanswered_required(items, {int(q["q"]) for q in ours})
     assert gap == [2], f"缺口应该正好是那道必答题: {gap}"
     assert "Q2" in describe_gap(gap)
+
+
+def test_consent_box_is_reported_once_and_question_options_are_not(driver):
+    """真 DOM 上锁协议框诊断的三条判据：认出框、只数一处、不把题目选项当协议框。
+
+    为什么只能放在 E2E：这三条全靠元素之间的真实关系 —— ``label[for]`` 的关联、
+    ``closest('div[topic]')`` 的祖先链、``checked`` 的当前值。离线 FakeDriver 只喂得出
+    一个返回值，喂不出这棵树；而"是不是把多选题的一个选项报成了协议框"这类错，
+    恰恰只有在真 DOM 里才暴露得出来（本条第一次跑就抓到了 id 命中与文案命中重复计数）。
+    """
+    from src import detection
+    from src.detection import consent_notice
+
+    detection.reset_consent_notice()
+    try:
+        driver.get("file:///" + CONSENT_FIXTURE_HTML.as_posix())
+        line = consent_notice(driver)
+        assert line is not None and line.startswith("[协议]"), (
+            f"未勾选的 #checkxiexi 必须被说出来，实际: {line!r}"
+        )
+        # 计数只该有 1：它的相邻文案同样含「同意」「协议」，两条判据不去重就会数成两处
+        assert "1 处" in line, f"提示里的处数不对（重复计数？）: {line}"
+        assert "#checkxiexi" in line, f"点名的该是那个平台固定 id 的框: {line}"
+        # Q1 的选项「我同意接收后续邮件」在题目容器里，一次都不该被提起
+        assert line.count("邮件") == 0, f"题目选项被当成协议框了: {line}"
+    finally:
+        detection.reset_consent_notice()
+
+
+def test_checked_consent_box_is_not_reported(driver):
+    """已经勾上了就不许出声：这行话要说的是"提交会被拦"，而勾上之后不会。
+
+    与上一条共用 fixture 里那个 **未勾** 的 ``#checkxiexi`` 与已勾的 ``#agreed``：
+    本页初始状态报 1 处，勾掉它之后整页再无缺口 —— 报的必须是"没有"。
+    """
+    from src import detection
+    from src.detection import consent_notice
+
+    detection.reset_consent_notice()
+    try:
+        driver.get("file:///" + CONSENT_FIXTURE_HTML.as_posix())
+        assert consent_notice(driver) is not None, "初始页面本该报出 #checkxiexi"
+
+        driver.execute_script(
+            "document.getElementById('checkxiexi').checked = true"
+        )
+        detection.reset_consent_notice()
+        again = consent_notice(driver)
+        assert again is None, f"框已勾上就不该再报: {again}"
+    finally:
+        detection.reset_consent_notice()
 
 
 def test_full_pipeline_fill_and_history(driver, history_db):

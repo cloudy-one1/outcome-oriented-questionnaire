@@ -324,6 +324,40 @@ class TestRunBatchStopWithinRound(unittest.TestCase):
 
         self.assertIs(captured["stop_check"], chk)
 
+    def test_rescue_gaps_is_forwarded_into_the_round(self) -> None:
+        """接线契约（v3.1 补漏轮）：--rescue-gaps 必须真的落到那一轮的参数上。
+
+        开关只在批次这一层"看着生效"是没用的：漏传一次的症状是照旧判失败，
+        而用户以为自己已经给了人工补答的机会。
+        """
+        captured: dict = {}
+
+        def _spy(driver, url, lock, **kw):
+            captured.update(kw)
+            return "failed"
+
+        with mock.patch("src.browser.create_driver", side_effect=_fake_driver_factory), \
+             mock.patch("src.utils.human_pause", return_value=0.0), \
+             mock.patch("src.pipeline.run_one_submission", side_effect=_spy):
+            cli.run_batch(SURVEY_URL, 1, rescue_gaps=True)
+
+        self.assertIs(captured["rescue_gaps"], True)
+
+    def test_rescue_gaps_off_is_still_passed_explicitly(self) -> None:
+        """默认关时传下去的也是 False —— 别让"没传"和"传了 False"两种写法共存。"""
+        captured: dict = {}
+
+        def _spy(driver, url, lock, **kw):
+            captured.update(kw)
+            return "failed"
+
+        with mock.patch("src.browser.create_driver", side_effect=_fake_driver_factory), \
+             mock.patch("src.utils.human_pause", return_value=0.0), \
+             mock.patch("src.pipeline.run_one_submission", side_effect=_spy):
+            cli.run_batch(SURVEY_URL, 1)
+
+        self.assertIs(captured["rescue_gaps"], False)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

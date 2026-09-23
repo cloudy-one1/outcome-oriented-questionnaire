@@ -252,6 +252,49 @@ def test_step5_empty_question_structure_resets_context() -> None:
 
 
 # ---------------------------------------------------------------------------
+#  Step 5 的另一半：一道题都没有时先问一句"是不是整页形态不对"（v3.1）
+#
+#  只提示、不拦停 —— 判定必须仍是 SUBMIT_FAILED（不能因为"知道是移动端形态"就
+#  放行，也不能因此改成第三种结果）。探针本身的形状判据在 tests/test_mobile_layout.py。
+# ---------------------------------------------------------------------------
+def test_layout_notice_is_printed_when_nothing_was_detected(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    notice = mock.Mock(name="mobile_layout_notice", return_value="[布局] 移动端投放形态")
+    with stages(detect_questions=[], mobile_layout_notice=notice):
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_FAILED
+
+    assert "[布局]" in capsys.readouterr().out
+    notice.assert_called_once()
+
+
+def test_layout_notice_is_quiet_when_questions_were_detected() -> None:
+    """探测到题了就别去问形态：那是纯噪声，外加一次没必要的 JS 往返。"""
+    notice = mock.Mock(name="mobile_layout_notice",
+                       side_effect=AssertionError("有题就不该问形态"))
+    with stages(mobile_layout_notice=notice):
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+
+
+def test_no_signal_page_still_fails_without_any_notice(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """接线用**真**探针跑一遍空页面：读不出整数（FakeDriver 恒真）就必须一字不说。
+
+    刻意不 patch 掉它 —— "import 了却没调用"与"没信号还瞎报"都是这条接线会坏的形状。
+    """
+    from src import detection
+
+    detection.reset_mobile_layout_notice()
+    try:
+        with stages(detect_questions=[]):
+            assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_FAILED
+        assert "[布局]" not in capsys.readouterr().out
+    finally:
+        detection.reset_mobile_layout_notice()
+
+
+# ---------------------------------------------------------------------------
 #  Step 5.5：断点续填 —— 已填题不重答，扫描抖动不影响本轮
 # ---------------------------------------------------------------------------
 def test_resume_skips_already_answered_questions(capsys: pytest.CaptureFixture[str]) -> None:
@@ -448,7 +491,7 @@ def test_run_one_submission_never_retries_a_successful_core() -> None:
     core.assert_called_once_with(
         driver, SURVEY_URL, lock,
         history_db=None, run_id=None, submission_index=None, no_record_text=False,
-        stop_check=None,
+        stop_check=None, rescue_gaps=False,
     )
 
 
@@ -783,3 +826,193 @@ def test_gap_scan_reads_whole_survey_while_drift_scan_reads_the_page() -> None:
                 detect_platform_questions=mock.Mock(side_effect=_probe)):
         assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
     assert seen[0] is True and seen[-1] is False, f"两次扫描的分页口径不对: {seen}"
+
+
+# ---------------------------------------------------------------------------
+#  Step 7.5 的另一半：补漏轮（v3.1 ``--rescue-gaps``）
+#
+#  开关的语义是"拦下之后先把人工接进来"，所以这里锁的全是**边界**：
+#    1. 默认关 —— 不打扰人工、不等待、判定与 v3.0 逐位一致（等一次就是白等）；
+#    2. 只有复检真的空了才点提交，人工没补齐（含超时）时维持原判失败；
+#    3. 停止优先于提交；
+#    4. 无头模式下根本没有可补答的人，不等待。
+#  复检本身（为什么要把已答扫描并进来当证据）见 ``test_recheck_accepts_manual_answer_evidence``。
+# ---------------------------------------------------------------------------
+def _rescue_run(
+    hold: mock.Mock,
+    *,
+    core_kw: dict[str, Any] | None = None,
+    driver: FakeDriver | None = None,
+) -> tuple[Any, Any, FakeDriver, mock.Mock]:
+    """跑一份"Q2 是必答题、而我们只探测到 Q1"的提交。
+
+    :return: ``(结果或异常, 阶段替身, 驱动, 滚动替身)``
+    """
+    scroll = mock.Mock(name="scroll_question_into_view")
+    d = driver or FakeDriver()
+    with stages(
+        detect_questions=_questions(1),
+        detect_platform_questions=_REQUIRED_TWO,
+        hold_for_manual_fill=hold,
+        scroll_question_into_view=scroll,
+    ) as st:
+        try:
+            result: Any = _core(d, ManualHoldLock(), **(core_kw or {}))
+        except BaseException as e:      # noqa: BLE001 - 用例自己判定抛出的那一类
+            result = e
+    return result, st, d, scroll
+
+
+def _waiting(hold_result: list[int]) -> mock.Mock:
+    return mock.Mock(name="hold_for_manual_fill", return_value=hold_result)
+
+
+_NEVER_WAIT = mock.Mock(name="hold_for_manual_fill",
+                        side_effect=AssertionError("这条路不该等人工"))
+
+
+def test_rescue_gaps_off_by_default_never_holds_for_a_human() -> None:
+    """默认关：判失败、不点提交、一次都不等人工 —— 这是"行为不变"的接线证明。"""
+    result, st, _driver, scroll = _rescue_run(_NEVER_WAIT)
+
+    assert result == SUBMIT_FAILED
+    scroll.assert_not_called()
+    st.find_and_click_submit.assert_not_called()
+
+
+def test_rescue_gaps_submits_only_after_the_recheck_comes_back_empty() -> None:
+    """人工补齐（复检返回空缺口）→ 这一份照常提交，且提交前把缺口题滚进过视野。"""
+    hold = _waiting([])
+    result, st, _driver, scroll = _rescue_run(hold, core_kw={"rescue_gaps": True})
+
+    assert result == SUBMIT_SUCCESS
+    st.find_and_click_submit.assert_called_once()
+    # 滚的是**第一道**缺口题（Q1 探测到了，缺的是 Q2）
+    assert scroll.call_args.args[1] == 2
+    assert hold.call_args.kwargs["lock"] is not None
+    assert callable(hold.call_args.args[0]), "复检是以回调形式交给等待循环的"
+
+
+def test_rescue_gaps_keeps_failed_verdict_when_the_human_fills_nothing() -> None:
+    """人工没补齐（这里模拟等待到超时）→ 维持今天的判失败，不发明第三种结果。"""
+    result, st, driver, _scroll = _rescue_run(
+        _waiting([2]), core_kw={"rescue_gaps": True},
+    )
+
+    assert result == SUBMIT_FAILED
+    st.find_and_click_submit.assert_not_called()
+    assert driver.switch_to.calls == 1
+
+
+def test_rescue_gaps_reports_the_ask_and_keeps_the_gap_line(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """原有的 describe_gap 那行不许被替换掉：补漏轮是接在它后面的，不是取代它。"""
+    _result, _st, _d, _s = _rescue_run(_waiting([2]), core_kw={"rescue_gaps": True})
+    out = capsys.readouterr().out
+
+    assert "[完整度]" in out and "不点提交" in out
+    assert "[补漏]" in out and "Q2" in out
+
+
+def test_rescue_hold_is_interrupted_by_stop_and_never_submits() -> None:
+    """停止优先于提交：等待中被要求停止 → SubmissionAborted 上抛，一次都不点提交。"""
+    hold = mock.Mock(name="hold_for_manual_fill",
+                     side_effect=SubmissionAborted("补漏等待期间收到停止请求"))
+    result, st, _driver, _scroll = _rescue_run(hold, core_kw={"rescue_gaps": True})
+
+    assert isinstance(result, SubmissionAborted)
+    st.find_and_click_submit.assert_not_called()
+
+
+def test_headless_run_skips_the_rescue_hold(capsys: pytest.CaptureFixture[str]) -> None:
+    """无头里等人工 = 等一个不存在的人：直接维持判失败，并说清楚为什么。"""
+    d = FakeDriver()
+    d.wjx_headless = True      # driver_is_headless 读的就是 driver_factory 打的那个标记
+    result, _st, _driver, _scroll = _rescue_run(
+        _NEVER_WAIT, core_kw={"rescue_gaps": True}, driver=d,
+    )
+
+    assert result == SUBMIT_FAILED
+    assert "无头" in capsys.readouterr().out
+
+
+def test_recheck_accepts_manual_answer_evidence_we_never_detected() -> None:
+    """复检的立命之处：缺口题按定义不在探测里，所以"页面上读得到值"必须算证据。
+
+    只重跑 ``detect_questions`` 的话这条永远不会变空，等人工就等成了形式。
+    """
+    driver = FakeDriver()
+    with stages(
+        detect_questions=_questions(1),
+        detect_answered_questions={2},
+        detect_platform_questions=_REQUIRED_TWO,
+    ):
+        assert pipeline._recheck_gap(driver, {1}) == []
+
+    with stages(
+        detect_questions=_questions(1),
+        detect_answered_questions=set(),
+        detect_platform_questions=_REQUIRED_TWO,
+    ):
+        assert pipeline._recheck_gap(driver, {1}) == [2], "没人补过就不许放行"
+
+
+@pytest.mark.parametrize("probe_error", [
+    StaleElementReferenceException("human is clicking"),
+    ValueError("bad js payload"),
+], ids=["transient", "logic"])
+def test_recheck_degrades_to_no_new_evidence(probe_error: BaseException) -> None:
+    """复检自己出问题只是"没有新证据"：缺口原样交回，绝不在这里改判或抛出。"""
+    driver = FakeDriver()
+    with stages(
+        detect_questions=_questions(1),
+        detect_answered_questions=probe_error,
+        detect_platform_questions=_REQUIRED_TWO,
+    ):
+        assert pipeline._recheck_gap(driver, {1}) == [2]
+
+
+# ---------------------------------------------------------------------------
+#  Step 7.6：提交区协议框（v3.1）—— 只提示、不拦停
+#
+#  探针自己的形状判据在 tests/test_consent_notice.py；这里锁的是接线的三件事：
+#    1. 说完那句话**仍然照常点提交** —— 兜底判据是文案关键词，认错框的代价不能是
+#       白拦一单本来能交成的问卷；
+#    2. 完整度自检已经把提交拦下时，不必再去问提交区（那一次 JS 往返没有读者）；
+#    3. 用**真**探针跑一遍也要一字不说："import 了没调用"与"没信号还瞎报"都在这条眼下。
+# ---------------------------------------------------------------------------
+def test_consent_notice_is_printed_but_submit_still_happens(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    notice = mock.Mock(name="consent_notice", return_value="[协议] 提交区有 1 处没勾的协议框")
+    with stages(consent_notice=notice) as st:
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+
+    assert "[协议]" in capsys.readouterr().out
+    notice.assert_called_once()
+    st.find_and_click_submit.assert_called_once()
+
+
+def test_consent_box_is_not_asked_when_the_submit_is_already_blocked() -> None:
+    """必答题缺口拦下时直接 return，不该再去扫一遍提交区。"""
+    notice = mock.Mock(name="consent_notice",
+                       side_effect=AssertionError("都不点提交了，问提交区做什么"))
+    with stages(detect_questions=_questions(1),
+                detect_platform_questions=_REQUIRED_TWO,
+                consent_notice=notice):
+        assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_FAILED
+
+
+def test_real_consent_probe_stays_silent_in_the_wiring(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from src import detection
+
+    detection.reset_consent_notice()
+    try:
+        with stages():
+            assert _core(FakeDriver(), ManualHoldLock()) == SUBMIT_SUCCESS
+        assert "[协议]" not in capsys.readouterr().out
+    finally:
+        detection.reset_consent_notice()

@@ -159,6 +159,12 @@ def test_main_forwards_privacy_and_mode_flags(db_path: str) -> None:
     assert kwargs["history_db"] is not None
 
 
+def test_main_rescue_gaps_defaults_off_and_forwarded(db_path: str) -> None:
+    """v3.1 补漏轮：不写就是 False（默认路径 = v3.0 行为），写了必须传到 run_batch。"""
+    assert _run_main(["-u", URL])["rescue_gaps"] is False
+    assert _run_main(["-u", URL, "--rescue-gaps"])["rescue_gaps"] is True
+
+
 def test_main_exit_code_nonzero_when_failures(db_path: str) -> None:
     """CLI 常被 cron 调用，失败必须反映到退出码。"""
     with mock.patch.object(cli, "run_batch") as rb:

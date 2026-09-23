@@ -28,13 +28,15 @@
 - **加权随机作答** — 每道题可配置选项权重：单选加权采样，多选无放回加权抽样，多选还可控制「选中几个」的分布；矩阵多选可控制每行勾几个，排序题可钉住前几名
 - **题干锚定的权重配置** — 预设除了题号还带题干 + 结构签名，问卷中间插一题不再整体错位；锚点认不到题时**该题走等权并提示**，而不是拿别人的分布静默填（v3.0）
 - **结构对拍（探测自我体检）** — 把探测结果与问卷星写在题目容器上的 `topic` / `type` 逐题比一次，判错题型、整题漏探测在**作答之前**就说明白。只提示、不拦停、不改任何作答行为；平台没标这些属性的模板完全静默（`src/crosscheck.py`）
-- **提交前完整度自检** — 平台标了必答、而我们**整题都没探测到**的那些题，注定被平台按必填拦下：那就别点提交，直接判本轮失败并说出是哪几题。判据只收这一种零歧义事实，拿不到平台结构或没标 `req` 一律照常提交（`src/completeness.py`）
+- **整页形态诊断（探测不到题目时先分清原因）** — 移动端投放（jQuery-Mobile 那一套 `.ui-radio` / `.ui-input-text`）的问卷交进来，本工具一道题都认不出，而「探测不到题目」那句话把责任指向了我们的适配质量和你自己的网络。现在这种页面会明说：这是移动端形态，本工具**未适配**它，换 PC 版链接（`/jq/` 那种或桌面端分享地址）再来一次。只在**一道题都没探测到**且 jQM 控件成规模命中时出声，跑得正常的 PC 页面永远看不到这行（`detection.mobile_layout_notice`）
+- **提交前完整度自检** — 平台标了必答、而我们**整题都没探测到**的那些题，注定被平台按必填拦下：那就别点提交，直接判本轮失败并说出是哪几题。判据只收这一种零歧义事实，拿不到平台结构或没标 `req` 一律照常提交（`src/completeness.py`）。可选的**补漏轮**（`--rescue-gaps`，默认关）把拦下来的人工接进来：滚进视野、等他在窗口里补答，补齐了才点提交 —— 答的是人，不是模型
+- **提交区协议框诊断（只提示、绝不代勾）** — 移动端投放模板在提交按钮旁挂一个隐私协议同意框（`#checkxiexi`），不勾平台就把提交弹回来；它**不在题目容器里**，逐题探测、结构对拍、完整度自检三道判据全都看不见它，于是症状变成"题题都填了、点提交没反应"而没人说出原因。现在提交前扫一次并说出来。**不代勾** —— 替被调查者签隐私协议与替他答一道题不是同一件事，与"只接管 `alert`、不替页面回答 `confirm`"是同一条线；也**不拦停** —— 兜底那条判据是相邻文案含关键词，认错框的代价不该是一单被白拦。`#checkxiexi` 这个 id 来自同类脚本对移动端模板的用法，本仓库还没在真卷上见过这个框（`detection.consent_notice`）
 - **智能验证码检测** — DOM / URL 文本 / Shadow DOM 三信号并行检测；检出后弹窗提醒人工处理，人工介入锁保证等待期间不被误判为超时；无头模式下直接判本轮失败（没有可介入的人）
 - **随时可停** — 停止/关闭窗口在**逐题边界、每题思考停顿、验证码人工等待**上都以 ≈0.2s 粒度生效，被打断的那一份不提交、不计失败（v3.0）
 - **断点续填与续传** — 重试时自动跳过单次提交内已答的题；跨进程可从上次中断的批次继续（CLI `--resume` / GUI 恢复对话框），权重配置随批次快照持久化。批次匹配认的是**同一份问卷**而不是 URL 字符串：`/jq/`、`/m/`、`/vm/`、`/vj/` 几种投放形态与微信带进来的渠道参数都归一到同一个键上（v3.0）
 - **运行历史与统计** — SQLite 记录每次批次的元信息与逐题答案明细，GUI 可视化查询、CSV 导出、过期清理
 - **可靠的提交语义** — 提交结果三态（成功 / 失败 / 未知），答案明细幂等写入，指数退避重试，异常分层（瞬态 DOM 异常可重试、程序错误直接暴露）；页面的 `alert` 被接管成记录器，**必填校验那句话会变成日志里的失败原因**，而不是把整轮噎成 `UnexpectedAlertPresentException`（v3.0）
-- **CLI / GUI 双入口 + 可部署** — CLI 适合脚本与定时批量运行，GUI（Tkinter）适合可视化配置与实时监控；`--url-file` 顺序队列 + `--max-total-time` 时限 + `--profile-dir` 复用浏览器 profile，`pip install -e .` 后可用 `wjx-fill` / `wjx-gui`（v3.0）
+- **CLI / GUI 双入口 + 可部署** — CLI 适合脚本与定时批量运行，GUI（Tkinter）适合可视化配置与实时监控；`--url-file` 顺序队列 + `--max-total-time` 时限 + `--profile-dir` 复用浏览器 profile，`pip install -e .` 后可用 `wjx-fill` / `wjx-gui`（v3.0）；`--start-at` 预约开跑（等待期间不启动浏览器，时限从到点算起）+ `--rescue-gaps` 补漏轮（v3.1）
 
 ---
 
@@ -106,6 +108,15 @@ python run_cli.py --url-file ./urls.txt --config ./configs/my_survey.json \
 
 # v3.0 复用浏览器 profile（登录态/磁盘痕迹）；无头只用于调试
 python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 3 --profile-dir ./profiles/p1
+
+# v3.1 预约开跑：不早于明早 08:00（今天的点已过则顺延到明天）。等待期间浏览器根本不
+# 启动，所以 --max-total-time 7200 是从 08:00 起算的两小时，不是从你敲下命令算起
+python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" --start-at "08:00" \
+                  --max-total-time 7200
+
+# v3.1 补漏轮：必答缺口题（我们探测不到、但人在窗口里看得懂的那些）先交给人补答，
+# 复检读得到答案才点提交；不写这个开关就是「判失败、不点提交」
+python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" --rescue-gaps
 ```
 
 > `--headless` 下智能验证**一出现就判本轮失败** —— 无头窗口里没有可伸手拉滑块的人。
@@ -139,7 +150,9 @@ python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 3 --profile-dir ./pro
 | `--url-file PATH` | 关 | **v3.0** 顺序队列：每行一条 `URL[,份数]`（`#` 开头为注释）。与 `-u` 同给时 `-u` 先跑；共用同一份 `--config` 与 `--history`；与 `--resume` 互斥（退出码 2） |
 | `--headless` | 关 | **v3.0** 无头模式。**只建议调试**：问卷星对无头敏感，且智能验证一出现就判本轮失败（无头里没有可介入的人） |
 | `--profile-dir PATH` | 无 | **v3.0** 复用浏览器 profile 目录（登录态与磁盘痕迹）。同一目录不能同时被两个实例占用，所以队列是顺序跑的 |
-| `--max-total-time SECONDS` | 无 | **v3.0** 整批墙钟上限。到点按**优雅停止**收工（`interrupted`），下次 `--resume` 可继续 —— 与崩溃的 `failed` 不同 |
+| `--max-total-time SECONDS` | 无 | **v3.0** 整批墙钟上限。到点按**优雅停止**收工（`interrupted`），下次 `--resume` 可继续 —— 与崩溃的 `failed` 不同。与 `--start-at` 同给时**从预约时刻起算**，不含等待 |
+| `--start-at '...'` | 无 | **v3.1** 预约开跑：不早于指定时刻开始（`'YYYY-MM-DD HH:MM[:SS]'` / `'HH:MM'`，后者过点即顺延到明天；带日期又已经过去 → 退出码 2）。等待期间不启动浏览器、不访问问卷地址，所以**没有"提前打开页面等着"那回事**。只承诺「不早于 T」—— 不做时钟同步，也不为抢整点提前加载 |
+| `--rescue-gaps` | 关 | **v3.1** 补漏轮：完整度自检拦下必答缺口题时不再直接判失败，而是把那道题滚进视野、等在场的人工补答（最长 300s），**复检空了才点提交**。默认关 = 行为与此前逐位一致；`--headless` 下不等待（窗口里没有可补答的人） |
 | `--replay-file PATH` | 无 | **v3.2** 真实答卷回放：第 N 份用第 N 行，**只有提交成功才推进队列**。CSV 零依赖，`.xlsx` 需另装 `openpyxl`。与 `--url-file` 互斥（退出码 2，因为每份问卷的行号都从 1 重新开始）；多选 / 排序 / 矩阵多选不支持 |
 | `--drift-correct` | 关 | **v3.2** 按**已提交成功**的实际份额小幅纠正加权采样（因子夹 ±1/3、前 8 份不纠正），修正结果**不回写**配置。默认关：它改变答题结果，不是防线 |
 | `--report-alpha` | 关 | **v3.2** 批次结束后从历史库按维度打印**实测** Cronbach α（只读不改作答行为；需配合 `--history`） |
@@ -226,6 +239,11 @@ python run_gui.py
   └── 有下一页 → 翻页后继续【逐页】；翻页失败 → 整份判失败，**不提交**
         ↓
 【提交前】完整度自检：平台标了必答、而整份流程没探测到它的题 → 判失败，**不点提交**
+        ↓        （--rescue-gaps：先把这几题滚进视野、等在场的人工补答，
+        ↓          复检读得到答案才往下点提交；等不到 / 无头 → 仍是那句失败）
+        ↓
+【提交前】协议框诊断：提交区那个不在题目容器里的隐私协议框，没勾就说明一句
+        ↓        （只提示；不代勾、不拦停）
         ↓
 （最后一页才）模拟点击提交 → 三态判定（OK / FAIL / UNKNOWN）
         ↓        非 OK 时把页面弹出的必填提示一并打进日志
@@ -393,14 +411,14 @@ pip install -r requirements-dev.txt
 # 全量测试（含依赖真实浏览器驱动的 E2E）
 python -m pytest tests/ -v
 
-# 离线套件（无浏览器环境 / CI，990 项；只装 requirements*.txt 的口径下会有若干 skip）
+# 离线套件（无浏览器环境 / CI，1075 项；只装 requirements*.txt 的口径下会有若干 skip）
 python -m pytest tests/ -m "not integration" -q
 
-# 仅浏览器 E2E（需本机 Edge / Chrome + WebDriver，21 项）
+# 仅浏览器 E2E（需本机 Edge / Chrome + WebDriver，23 项）
 python -m pytest tests/ -m integration -q
 ```
 
-当前测试全部通过：**1011 项**（离线 990 + E2E 21）。
+当前测试全部通过：**1098 项**（离线 1075 + E2E 23）。
 
 > **类型门禁不随环境变**：`src/` + `gui/` + 入口在两种环境下都是 **0 error
 > 0 warning**。三处可选依赖（`opencv-python`、`undetected_chromedriver`、`openpyxl`）
@@ -413,7 +431,7 @@ python -m pytest tests/ -m integration -q
 >
 > | 门禁 | 装齐可选依赖（开发机） | 未装（CI / 干净 venv） |
 > |---|---|---|
-> | 离线套件 | 990 passed | 987 passed + 3 skipped（二维码解析 2 项、`.xlsx` 真读 1 项） |
+> | 离线套件 | 1075 passed | 1072 passed + 3 skipped（二维码解析 2 项、`.xlsx` 真读 1 项；全新检出时 `coverage.json` 还不存在 —— 文档口径比对那一项也 skip，它是同一次运行**末尾**才产出的） |
 > | 覆盖率 | 总口径比 CI 高约 0.2pp（`src/` +0.1、`gui/` +0.6）—— 三个可选项各自改变一侧的分支走向 | 见下方「已知缺口（诚实记录）」的生成块，那是门禁认的唯一口径 |
 >
 > 覆盖率数字现在只有一个来源：`scripts/readme_coverage.py` 从 `coverage.json` 生成，
@@ -469,12 +487,17 @@ python -m pytest tests/ -m integration -q
 提交 → 弹原生 `alert` 并且不给成功文案** —— 上面那两条 v3.0 能力（补文本、
 接管弹窗）因此有了真浏览器证据，而不是只有一堆替身对象。
 `tests/fixtures/mock_wjx_multipage.html` 是两页版：第 2 页初始 `display:none`，
-靠"下一页"按钮切换。
+靠"下一页"按钮切换。`tests/fixtures/mock_wjx_consent_box.html` 专门给提交区协议框
+诊断用：一个未勾的 `#checkxiexi`（相邻文案同样含「同意」「协议」）、一个已勾的同意框、
+以及多选题里一个文案就是「我同意接收后续邮件」的**选项**。这一条不是走过场 ——
+协议框判据全靠元素之间的真实关系（`label[for]` 关联、`closest('div[topic]')` 祖先链），
+离线替身喂不出这棵树；id 那条与文案那条**重复计数**的缺陷就是在这层第一次跑出来时发现的。
 
 E2E 因此覆盖到 `run_one_submission` 的完整链路、提交只点一次的保证、量表边界识别、
 **题干探测**、矩阵多选真的勾上、排序题同时改 DOM 与写隐藏域、分页问卷
 "两页都答完且只在最后一页提交"、带框选项写上文本（含 `maxlength` 截断）、
-以及"页面弹 alert 时 WebDriver 不被噎住且文案能被读回 Python 侧"。
+以及"页面弹 alert 时 WebDriver 不被噎住且文案能被读回 Python 侧"、
+"协议框只报提交区那一个且只算一处"。
 v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock 对它们一律绿。
 
 ### 已知缺口（诚实记录）
@@ -484,8 +507,8 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 
 | 范围 | 离线覆盖率 |
 |---|---|
-| 全部 | **85.7%** |
-| `src/` | 89.1%（4334 条语句剩 473 行） |
+| 全部 | **86.1%** |
+| `src/` | 89.5%（4513 条语句剩 474 行） |
 | `gui/` | 78.1%（1917 条语句剩 419 行） |
 
 #### 已补齐的缺口（v2.7 那五条）
@@ -494,7 +517,7 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 |---|---|---|---|
 | `src/logging_setup.py` | 0% | **100.0%**（剩 0 行） | `tests/test_logging_setup.py` |
 | `src/browser/driver_factory.py` | 9% | **98.4%**（剩 3 行） | `tests/test_driver_factory_offline.py` |
-| `src/pipeline.py` | 26% | **96.2%**（剩 7 行，v3.0 加了分页与弹窗诊断分支） | `tests/test_pipeline_core.py`、`tests/test_pipeline_waits.py` |
+| `src/pipeline.py` | 26% | **96.7%**（剩 7 行，v3.0 加了分页与弹窗诊断分支） | `tests/test_pipeline_core.py`、`tests/test_pipeline_waits.py` |
 | `src/verification.py` | 34% | **97.0%**（剩 3 行，非 Windows 降级桩本机不可达） | `tests/test_verification_flow.py` |
 | `gui/`（9 个文件合计） | 15% | **78.1%**（`log_view`、`theme` 已 100%） | `tests/test_gui_panels.py`、`tests/test_gui_proxies.py`、`tests/test_gui_run_loop.py` |
 
@@ -506,7 +529,7 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 | `gui/app.py` | 71.1% | `WJX_USER_DATA_DIR` 把 `configs/` + `data/` 整棵挪走之后，整窗已能在测试里构造（`tests/test_gui_user_data.py`：构造、输入校验、续传决策、历史库接线）。剩 206 行是 canvas 重绘与 resize/关窗回调，要真实 paint 事件与 mainloop 才走得到 |
 | `src/pipeline_stages/question_stage.py` | 63.3% | 逐题 DOM 交互主干：等待、「哪道题调哪个填充器」的分发、带框选项只勾不填的降级都已有离线测试（`tests/test_question_stage_dispatch.py`），真实点击仍靠 E2E |
 | `src/interactions/sort.py` | 22.2% | 点击式排序（`js_fill_sort(mode="click")`，v3.1 真卷新形态）的清残留 / 逐项点击 / 超时三段分支只有真浏览器 E2E 走过（`tests/test_e2e_integration.py` 的 click-mode 两条），离线替身一次没执行过函数体；`_state` 的 JSON 解析降级同理 |
-| `src/cli.py` | 71.3% | `run_batch` 主干已测，剩余是 `--save-config` / 统计打印一类输出分支 |
+| `src/cli.py` | 74.0% | `run_batch` 主干已测，剩余是 `--save-config` / 统计打印一类输出分支 |
 | `src/browser/__init__.py` | 52.2% | `create_driver` 的 edge/chrome 分发与 `cleanup_browser_state` 整段 Cookie/Storage 清理没有离线替身（缺的正是那 11 行）—— `driver_factory` 有替身 driver，这层薄门面反而没人走一遍 |
 | `src/interactions/choices.py` | 58.8% | 三个 `@js_execute_retry` 包装函数的函数体一次都没在离线测试里执行（缺 21/31/42-46 行）—— 分发测到「该调哪个填充器」就停了，填充器自身的 `execute_script` 只有 E2E 覆盖 |
 
@@ -518,10 +541,11 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 
 > **覆盖率不等于验证过。** 上面这些百分比是拿替身对象跑出来的 —— 它证明
 > 「指纹参数拼装、异常回收、锁必然释放」这些**逻辑**成立；但真实浏览器能否启动、
-> 注入的 JS 在真 DOM 里是否成立，仍然只有那个非阻塞的 E2E job 说了算。
+> 注入的 JS 在真 DOM 里是否成立，仍然只有那个 E2E job 说了算（v3.1 起它是**阻塞**的，
+> 而"驱动起不来 → 全 skip → 看着也是绿"这条路另有 `scripts/e2e_gate.py` 数 junit 堵住）。
 
 推送会触发 GitHub Actions（`.github/workflows/ci.yml`）：ruff + pyright +
-带覆盖率地板的离线测试，外加一个非阻塞的真实浏览器 E2E job。
+带覆盖率地板的离线测试，外加一个真实浏览器 E2E job（v3.1 起阻塞，不再是 `continue-on-error`）。
 命名约定：布尔变量使用 `is_` / `has_` / `should_` / `use_` 前缀；
 题型字符串优先经 `models.normalize_question_type` 归一化。
 
@@ -551,7 +575,9 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 | 代理 / IP 池 / 伪造 `X-Forwarded-For` | 与下面的免责声明正面冲突；且问卷星的计数走服务端真实 IP + cookie + 智能验证，XFF 只在特定反代配置下被采信 —— 效果不可靠，代价却是对方的风控 |
 | 并发 worker（同时开 N 个浏览器） | 本工具的立身点是「正态分布的人类行为 + 可靠的提交语义」。N 个实例同时提交会直接稀释前者，并让「人工介入验证码」这个单实例前提失效 |
 | 自动识别验证码 | 只检测、只请人帮忙。绕过验证码不是本项目要解决的问题 |
-| GUI 的无头 / 队列 / 时限开关 | GUI 是"看着窗口跑"的入口；无头对它没有意义，队列与时限要的是无人值守，那是 CLI 的场景 |
+| 大模型代答 / "人设化"答案 | 两个同类项目都做了这件事（`woshicainiao6/autoQuestionnaire` 的填空题、`kelryry/wjx-auto-sniper` 干脆把它写进标题），我们仍然不做：它把「答案是谁写的」这个问题整体移出了工具 —— 内置文本池生成的是一眼假的占位文本，至少不伪装成被调查者的真实意见，而语义连贯的陈述会让工具从「验证自动化流程」滑向「造问卷数据」。代价还不止语义：多一类网络往返与计费、多一份密钥运维（同类脚本是让用户把 `API_KEY` 明文写进脚本、还把 key 挂在 URL 上），以及**题干原文直接拼进 prompt 的注入面** —— 卷面上写一句"忽略上面的要求"，模型照做、脚本照填照提交 |
+| 移动端投放形态的作答 | 判据与注入要换一整套（jQuery-Mobile 的 `.field` / `.ui-radio` / `.ui-input-text` 语义），而 **PC 版链接是现成的替代品** —— 给作答路径加第二套选择器，等于把"本工具只跑 PC 形态"这条写在 README 里的边界悄悄挪掉。现在只诊断并说清「换链接」（`detection.mobile_layout_notice`），一行代码都不往注入侧加 |
+| GUI 的无头 / 队列 / 时限 / 预约开关 | GUI 是"看着窗口跑"的入口；无头对它没有意义，队列、时限与 `--start-at` 要的是无人值守，那是 CLI 的场景 |
 
 第二个平台（腾讯问卷 / 金数据 / Google Forms）也**没有**支持：`src/platforms.py` 只是把
 问卷星专属的选择器收成了一张表，题型识别与作答注入的 JS 仍是问卷星的 DOM 约定。

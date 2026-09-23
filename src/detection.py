@@ -32,7 +32,13 @@ import json
 from typing import Any
 
 from .interactions._scripts import option_blank_helper_script
-from .platforms import SurveyPlatform
+from .exceptions import TRANSIENT_DOM_EXCEPTIONS, raise_non_recoverable
+from .platforms import (
+    SurveyPlatform,
+    WJX_CONSENT_IDS,
+    WJX_CONSENT_KEYWORDS,
+    WJX_MOBILE_LAYOUT_SELECTORS,
+)
 
 
 # 两处 execute_script 脚本体共用的 JS 函数声明（见 option_blank_helper_script）：
@@ -905,3 +911,182 @@ return (function() {
         return set(int(x) for x in json.loads(raw))
     except (json.JSONDecodeError, TypeError, ValueError):
         return set()
+
+
+# ============================================================================
+#  整页形态诊断：一道题都没探测到时，先分清"这页没题"与"题在另一套 DOM 约定里"
+# ============================================================================
+
+# jQM 控件标记的计数。候选选择器按参数传进来（与 detect_platform_questions 同一写法），
+# 免得 DOM 事实散在 JS 字符串字面量里，改一处漏一处。
+_MOBILE_LAYOUT_JS = """
+var sels = arguments[0], n = 0;
+for (var i = 0; i < sels.length; i++) {
+    try { n += document.querySelectorAll(sels[i]).length; } catch (_) {}
+}
+return n;
+"""
+
+# 至少要看到这么多处才出声。一两个 ``ui-*`` 在别的模板里也可能只是装饰，而真是移动端
+# 投放的页面是几十处这个量级 —— 这条判据要的是"不误报"，不是"不漏报"。
+_MOBILE_LAYOUT_MIN: int = 3
+
+_mobile_layout_notice_sent = False
+
+
+def mobile_layout_notice(driver: Any) -> str | None:
+    """整页是移动端投放形态时的一行说明；不像 / 读不到 / 本进程已经说过 → ``None``。
+
+    形状与 ``platforms.unsupported_url_notice`` 同一家族：**只提示、不拦停**。
+    本工具的题目探测与作答注入按电脑端 DOM 约定写（``#fieldset1`` / ``input[name=qN]``），
+    移动端投放（jQuery-Mobile 形态的模板）会一路走到"探测不到题目 → 整批失败"，而那句话
+    把责任指向我们自己的适配质量和用户的网络 —— 两种原因的处置方式完全不同：一种要等
+    改版，一种只要换一个链接。所以说出来。
+
+    刻意**不**顺手去答它，也不给作答路径加第二套选择器：那等于把"本工具只跑 PC 形态"
+    这条边界悄悄挪掉，而它现在是写在 README 里的。
+    """
+    global _mobile_layout_notice_sent
+    if _mobile_layout_notice_sent:
+        return None
+    try:
+        hits: Any = driver.execute_script(
+            _MOBILE_LAYOUT_JS, list(WJX_MOBILE_LAYOUT_SELECTORS)
+        )
+    except TRANSIENT_DOM_EXCEPTIONS:
+        return None
+    except Exception as _e:
+        raise_non_recoverable(_e)
+        # 这只是"多说一句话"：它自己出问题绝不改变本轮判定
+        return None
+    try:
+        # Selenium 把 JS 的 null / '' 翻成 None / ''，把 bool 翻成 0/1 —— 读不出整数
+        # 就是"没有这个信号"，不猜
+        count = int(hits)
+    except (TypeError, ValueError):
+        return None
+    if count < _MOBILE_LAYOUT_MIN:
+        return None
+    _mobile_layout_notice_sent = True
+    return (
+        f"[布局] 一道题都没探测到，但不是页面没加载、也不是网络问题：这一页是**移动端投放形态**"
+        f"（jQuery-Mobile 那一套 —— .ui-radio / .ui-checkbox / .ui-input-text 命中 {count} 处），"
+        "本工具只适配了电脑端 DOM，没有适配它 —— "
+        "换 PC 版链接（/jq/ 那种，或分享里的「电脑端地址」）再跑一次就有了"
+    )
+
+
+def reset_mobile_layout_notice() -> None:
+    """清空"已提示过"标记（仅测试用，与 ``crosscheck.reset_reported_drift`` 同角色）。"""
+    global _mobile_layout_notice_sent
+    _mobile_layout_notice_sent = False
+
+
+# ============================================================================
+#  提交前协议诊断：那个框不在题目容器里，逐题探测看不见它
+# ============================================================================
+
+# 只找**没勾的**：勾上了就没必要说话。命中条件两条路 —— 平台那个固定 id，
+# 或者"不在题目容器里 + 相邻文案含关键词"的兜底。后一条必须带容器条件，
+# 否则"我同意接收后续邮件"这种正经多选题的选项也会被报成协议框。
+#
+# 两条路之间还要按元素去重（JS 里的 ``already()``）：`#checkxiexi` 的相邻文案本来就
+# 写着同意与协议，不去重就会被各数一次，于是提示说"2 处"而页面上只有一处。
+# 这条是 E2E 真跑出来的，不是设想出来的（fixture 见 tests/fixtures/mock_wjx_consent_box.html）。
+_CONSENT_JS = """
+var ids = arguments[0], words = arguments[1];
+function labelOf(el) {
+    if (el.id) {
+        var lb = document.querySelector('label[for="' + el.id + '"]');
+        if (lb) return lb.textContent || '';
+    }
+    if (el.closest) {
+        var p = el.closest('label');
+        if (p) return p.textContent || '';
+    }
+    var sib = el.nextElementSibling;
+    if (sib && sib.tagName === 'LABEL') return sib.textContent || '';
+    return '';
+}
+function inQuestion(el) {
+    if (!el.closest) return false;
+    return !!(el.closest('#fieldset1') || el.closest('div[topic]'));
+}
+var hits = [], picked = [], i, k;
+function already(el) {
+    for (var j = 0; j < picked.length; j++) { if (picked[j] === el) return true; }
+    return false;
+}
+for (i = 0; i < ids.length; i++) {
+    var byId = document.getElementById(ids[i]);
+    if (byId && byId.type === 'checkbox' && !byId.checked) {
+        picked.push(byId);
+        hits.push('#' + ids[i]);
+    }
+}
+var boxes = document.querySelectorAll('input[type="checkbox"]');
+for (i = 0; i < boxes.length; i++) {
+    var el = boxes[i];
+    if (el.checked || already(el) || inQuestion(el)) continue;
+    var text = (labelOf(el) || '') + ' ' + (el.value || '');
+    for (k = 0; k < words.length; k++) {
+        if (text.indexOf(words[k]) >= 0) { hits.push('文案含「' + words[k] + '」'); break; }
+    }
+}
+if (!hits.length) return null;
+return JSON.stringify({n: hits.length, where: hits[0]});
+"""
+
+_consent_notice_sent = False
+
+
+def consent_notice(driver: Any) -> str | None:
+    """提交区有未勾选的隐私协议框时的一行说明；没有 / 读不到 / 说过一次 → ``None``。
+
+    形状与 ``mobile_layout_notice`` 同一家族：**只提示、不拦停**。这类框挂在提交区、
+    不在 ``#fieldset1`` 的题目容器里，所以逐题探测、完整度自检、结构对拍三道都看不见它
+    —— 症状是"题题都填了、点提交没反应"，而原因不在我们任何一道判据的射程里。
+
+    刻意**不**顺手去勾它。代被调查者签署隐私协议与替他答一道题不是同一件事：后者是我们
+    本来就在做的模拟作答，前者是一个只有真人能行使的同意动作。同类工具把这一步叫
+    "协议秒签"，我们不跟着走 —— 与"只接管 ``alert``、不替页面回答 ``confirm``"是同一条线
+    （见 ``interactions/_scripts.py``）。
+
+    也不拦停：兜底那条判据是文案关键词，认错的代价是一单本来能交成的问卷被判失败，
+    比多说一句废话重得多（``completeness`` 那句"宁可少拦，不能拦错"在这里同样成立）。
+    """
+    global _consent_notice_sent
+    if _consent_notice_sent:
+        return None
+    try:
+        raw: Any = driver.execute_script(
+            _CONSENT_JS, list(WJX_CONSENT_IDS), list(WJX_CONSENT_KEYWORDS)
+        )
+    except TRANSIENT_DOM_EXCEPTIONS:
+        return None
+    except Exception as _e:
+        raise_non_recoverable(_e)
+        # 这只是一句提醒：它自己出问题绝不改变本轮判定
+        return None
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = json.loads(raw)
+        count = int(parsed["n"])
+        where = str(parsed["where"])
+    except (TypeError, ValueError, KeyError):
+        return None
+    if count <= 0:
+        return None
+    _consent_notice_sent = True
+    return (
+        f"[协议] 提交区有 {count} 处**没勾**的隐私协议同意框（{where}）—— "
+        "本工具不代勾：签协议是只有真人能做的动作。这一版仍会照常点提交，"
+        "平台大概率把它弹回来（不是网络问题，也不是探测漏题 —— 上面几道自检都说没有）"
+    )
+
+
+def reset_consent_notice() -> None:
+    """清空"已提示过"标记（仅测试用，与 ``reset_mobile_layout_notice`` 同角色）。"""
+    global _consent_notice_sent
+    _consent_notice_sent = False

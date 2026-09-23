@@ -8,8 +8,10 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
+from datetime import datetime, timedelta
 from typing import Any
 
 import pytest
@@ -18,6 +20,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src import cli, verification  # noqa: E402
 from src.browser import driver_factory  # noqa: E402
+
+URL = "https://www.wjx.cn/vm/xxxx.aspx"
 
 
 # ===========================================================================
@@ -47,6 +51,19 @@ def test_new_flags_parse_values() -> None:
 def test_max_total_time_rejects_non_positive() -> None:
     with pytest.raises(SystemExit):
         cli.parse_args(["-u", "https://x", "--max-total-time", "0"])
+
+
+# ===========================================================================
+#  v3.1 --rescue-gaps
+# ===========================================================================
+def test_rescue_gaps_defaults_off() -> None:
+    """默认关：不写这个开关时，完整度自检判出的缺口维持"判失败、不点提交"。"""
+    assert cli.parse_args(["-u", "https://www.wjx.cn/vm/x.aspx"]).rescue_gaps is False
+
+
+def test_rescue_gaps_parses_on() -> None:
+    args = cli.parse_args(["-u", "https://www.wjx.cn/vm/x.aspx", "--rescue-gaps"])
+    assert args.rescue_gaps is True
 
 
 # ===========================================================================
@@ -177,6 +194,178 @@ def test_binary_location_follows_the_env_var(monkeypatch) -> None:
     o2 = Opts()
     driver_factory._apply_binary_location(o2)
     assert o2.binary_location is None, "没设环境变量时绝不能瞎指路径"
+
+
+# ===========================================================================
+#  v3.1 --start-at：预约开跑
+# ===========================================================================
+NOW = datetime(2030, 5, 10, 12, 0, 0)
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("2030-06-01 08:00", datetime(2030, 6, 1, 8, 0, 0)),
+    ("2030-06-01 08:00:30", datetime(2030, 6, 1, 8, 0, 30)),
+    ("2030-06-01T08:00", datetime(2030, 6, 1, 8, 0, 0)),
+    ("2030-06-01", datetime(2030, 6, 1, 0, 0, 0)),
+    # 只给时刻：还没过就是今天
+    ("18:30", datetime(2030, 5, 10, 18, 30, 0)),
+    ("18:30:45", datetime(2030, 5, 10, 18, 30, 45)),
+])
+def test_start_at_accepts_the_documented_shapes(text: str, expected: datetime) -> None:
+    assert cli._start_at(text, now=lambda: NOW) == expected
+
+
+def test_bare_time_already_past_rolls_to_tomorrow() -> None:
+    """``08:00`` 说的是"这个点"，今天过了就是明天 —— 而不是报错或立刻开跑。"""
+    assert cli._start_at("08:00", now=lambda: NOW) == datetime(2030, 5, 11, 8, 0, 0)
+
+
+@pytest.mark.parametrize("text", [
+    "2030-05-10 11:00",          # 带日期、已经过去
+    "2020-01-01 08:00",          # 远古
+])
+def test_past_deadline_with_a_date_is_refused(text: str) -> None:
+    """预约一个过去的时间，症状是"立刻开跑"而用户以为在等 —— 方向危险，硬拒。"""
+    with pytest.raises(argparse.ArgumentTypeError, match="已经过去"):
+        cli._start_at(text, now=lambda: NOW)
+
+
+@pytest.mark.parametrize("text", ["明天早上", "08:00:00:00", "2030-13-01 08:00", "   "])
+def test_unparsable_start_at_is_refused(text: str) -> None:
+    with pytest.raises(argparse.ArgumentTypeError):
+        cli._start_at(text, now=lambda: NOW)
+
+
+def test_start_at_is_an_argparse_type_so_bad_input_exits_2() -> None:
+    """坏值必须是退出码 2（与 --config 校验不通过同一类"参数就没收"的口径）。"""
+    with pytest.raises(SystemExit) as e:
+        cli.parse_args(["-u", "https://x", "--start-at", "昨天"])
+    assert e.value.code == 2
+    ok = cli.parse_args(["-u", "https://x", "--start-at", "2030-06-01 08:00"])
+    assert ok.start_at == datetime(2030, 6, 1, 8, 0)
+    assert cli.parse_args(["-u", "https://x"]).start_at is None
+
+
+# ---- _sleep_until：分片、进度、以及"到点之前什么都不做" ----
+class FakeClock:
+    """假时钟：sleep 会把 now 往前推，于是等待循环可以在几毫秒内跑完整个预约。"""
+
+    def __init__(self, start: datetime) -> None:
+        self.now = start
+        self.slept: list[float] = []
+        self.logs: list[str] = []
+
+    def sleep(self, seconds: float) -> None:
+        assert seconds <= cli._START_AT_SLICE + 1e-9, "等待必须切片，否则 Ctrl+C 打不断"
+        self.slept.append(seconds)
+        self.now += timedelta(seconds=seconds)
+
+    def lines(self, msg: str) -> None:
+        self.logs.append(msg)
+
+
+def test_sleep_until_slices_and_stops_exactly_at_the_deadline() -> None:
+    clock = FakeClock(NOW)
+    target = NOW + timedelta(seconds=5)
+
+    cli._sleep_until(target, now=lambda: clock.now, sleep=clock.sleep, log=clock.lines)
+
+    assert sum(clock.slept) == pytest.approx(5.0)
+    assert len(clock.slept) == 5
+    assert clock.now >= target
+    assert "不早于" in clock.logs[0] and "不会启动浏览器" in clock.logs[0]
+    assert "到点" in clock.logs[-1]
+
+
+def test_sleep_until_does_nothing_when_the_deadline_already_passed() -> None:
+    """校验与开跑之间隔了几毫秒也不该报错或瞎等一轮。"""
+    clock = FakeClock(NOW)
+    cli._sleep_until(NOW - timedelta(seconds=1), now=lambda: clock.now,
+                     sleep=clock.sleep, log=clock.lines)
+    assert clock.slept == [] and clock.logs == []
+
+
+def test_progress_line_cadence_is_not_every_slice() -> None:
+    clock = FakeClock(NOW)
+    cli._sleep_until(NOW + timedelta(seconds=150), now=lambda: clock.now,
+                     sleep=clock.sleep, log=clock.lines)
+    assert len(clock.slept) == 150
+    progress = [m for m in clock.logs if "还有" in m]
+    assert len(progress) == 2, f"150s 里该打两条进度：{clock.logs}"
+
+
+def test_a_stop_signal_during_the_wait_is_not_eaten() -> None:
+    """切片的全部意义：等待期间 Ctrl+C 立刻能生效，而不是等完这几小时。"""
+    def _sigint(_s: float) -> None:
+        raise KeyboardInterrupt
+
+    clock = FakeClock(NOW)
+    with pytest.raises(KeyboardInterrupt):
+        cli._sleep_until(NOW + timedelta(hours=3), now=lambda: clock.now,
+                         sleep=_sigint, log=lambda _m: None)
+
+
+# ---- main() 的接线：等待必须在任何提交动作之前 ----
+def _ordered_main(monkeypatch, argv: list[str], *, refuse_waiting: bool = False) -> list[str]:
+    events: list[str] = []
+
+    def _wait(target: datetime, **_kw: Any) -> None:
+        if refuse_waiting:
+            raise AssertionError("没给 --start-at 就不该进等待")
+        events.append(f"wait:{target:%H:%M}")
+
+    def _batch(*_a: Any, **_k: Any) -> tuple[int, int]:
+        events.append("batch")
+        return 1, 0
+
+    monkeypatch.setattr(cli, "_sleep_until", _wait)
+    monkeypatch.setattr(cli, "run_batch", _batch)
+    with pytest.raises(SystemExit) as e:
+        cli.main(argv)
+    assert e.value.code == 0, f"main 应以退出码 0 收场，实际 {e.value.code}"
+    return events
+
+
+def test_main_waits_before_it_starts_the_batch(monkeypatch) -> None:
+    """--max-total-time 从 T 起算的**实现方式**就是这句：等待在 run_batch 之前。
+
+    浏览器与第一次 driver.get 都在 run_batch 里，所以这条顺序同时保证"不到点不碰页面"。
+    """
+    events = _ordered_main(monkeypatch, ["-u", URL, "--start-at", "2030-06-01 08:00"])
+    assert events == ["wait:08:00", "batch"]
+
+
+def test_main_waits_once_for_a_whole_queue(monkeypatch, tmp_path) -> None:
+    """队列只预约一次开跑，不是每份问卷都等到同一个点（那是自欺欺人的时钟）。"""
+    qfile = _write_queue(tmp_path, [
+        "https://www.wjx.cn/vm/a.aspx", "https://www.wjx.cn/vm/b.aspx",
+    ])
+    events = _ordered_main(monkeypatch, ["--url-file", qfile, "--start-at", "08:00"])
+    assert events == ["wait:08:00", "batch", "batch"]
+
+
+def test_main_without_start_at_does_not_wait(monkeypatch) -> None:
+    """默认路径不碰这个开关 —— 与 v3.0 行为逐位一致。"""
+    assert _ordered_main(monkeypatch, ["-u", URL], refuse_waiting=True) == ["batch"]
+
+
+def test_ctrl_c_during_the_wait_runs_no_batch(monkeypatch) -> None:
+    """等待中被中断 = 一份都没提交：不启动浏览器、不进批次、非零退出码。"""
+    def _sigint(*_a: Any, **_k: Any) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "_sleep_until", _sigint)
+    monkeypatch.setattr(cli, "run_batch", lambda *a, **k: pytest.fail("不该开跑"))
+    with pytest.raises(SystemExit) as e:
+        cli.main(["-u", URL, "--start-at", "2030-06-01 08:00"])
+    assert e.value.code != 0
+
+
+def test_past_start_at_is_refused_before_anything_runs(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "run_batch", lambda *a, **k: pytest.fail("不该开跑"))
+    with pytest.raises(SystemExit) as e:
+        cli.main(["-u", URL, "--start-at", "2000-01-01 08:00"])
+    assert e.value.code == 2
 
 
 # ===========================================================================
