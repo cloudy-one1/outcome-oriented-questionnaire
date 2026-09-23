@@ -114,8 +114,10 @@ def hold_for_manual_fill(
                 print(f"    [补漏] 人工已补齐（等了 {waited:.0f}s）→ 继续提交")
                 return []
             if waited >= timeout:
+                # 只报"等到了什么"，不报判定：调用方手里有两类题（整题没探测到的
+                # 会拦停，作答回执说没落上的不拦），判定归它说完才对
                 print(f"    [补漏] 等满 {timeout:.0f}s，{_fmt_gap(gap)} 仍然读不到答案"
-                      " → 维持判失败，不点提交")
+                      "，结束等待")
                 return gap
             if waited >= next_progress:
                 print(f"    [补漏] 仍在等人工补答 {_fmt_gap(gap)}"

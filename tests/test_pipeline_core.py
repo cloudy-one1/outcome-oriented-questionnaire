@@ -893,7 +893,9 @@ def test_rescue_gaps_submits_only_after_the_recheck_comes_back_empty() -> None:
     assert callable(hold.call_args.args[0]), "复检是以回调形式交给等待循环的"
 
 
-def test_rescue_gaps_keeps_failed_verdict_when_the_human_fills_nothing() -> None:
+def test_rescue_gaps_keeps_failed_verdict_when_the_human_fills_nothing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """人工没补齐（这里模拟等待到超时）→ 维持今天的判失败，不发明第三种结果。"""
     result, st, driver, _scroll = _rescue_run(
         _waiting([2]), core_kw={"rescue_gaps": True},
@@ -902,6 +904,8 @@ def test_rescue_gaps_keeps_failed_verdict_when_the_human_fills_nothing() -> None
     assert result == SUBMIT_FAILED
     st.find_and_click_submit.assert_not_called()
     assert driver.switch_to.calls == 1
+    # 这句话由拿到拦停判据的这一层说（等待那两句只报读数，不报判定）
+    assert "维持判失败" in capsys.readouterr().out
 
 
 def test_rescue_gaps_reports_the_ask_and_keeps_the_gap_line(
@@ -1100,6 +1104,26 @@ def test_rescue_gaps_waits_for_receipt_failures_too(
     assert st.find_and_click_submit.call_count == 1
     out = capsys.readouterr().out
     assert "[补漏]" in out and "照提交" in out, out
+
+
+def test_rescue_gaps_headless_with_only_receipt_failures_still_submits(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """无头 + 只有回执失败：没等到人，但它没有拦停资格 → 照提交，也不许说"维持判失败"。
+
+    等人工的那两句（无头不等待 / 等满 300s）一度自己宣布判定，可它们手里只有一份
+    混着两类的题号清单 —— 于是同一次运行里前一行说维持失败、后一行说照提交。
+    """
+    d = FakeDriver()
+    d.wjx_headless = True
+    answer = mock.Mock(name="_answer_one_question", return_value=False)
+    with stages(detect_questions=_questions(1), _answer_one_question=answer) as st:
+        assert _core(d, ManualHoldLock(), rescue_gaps=True) == SUBMIT_SUCCESS
+
+    out = capsys.readouterr().out
+    assert "维持判失败" not in out, out
+    assert "照提交" in out
+    st.find_and_click_submit.assert_called_once()
 
 
 def test_rescue_gaps_submits_quietly_once_the_human_discharges_them(

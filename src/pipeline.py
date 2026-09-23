@@ -335,7 +335,7 @@ def _rescue_gap(
     """
     nums = "、".join(f"Q{n}" for n in gap)
     if driver_is_headless(driver):
-        print(f"  [补漏] 无头模式下没有能补答的人 → 不等待，维持判失败（{nums}）")
+        print(f"  [补漏] 无头模式下没有能补答的人 → 不等待（{nums}）")
         return gap
     print(f"  [补漏] 请在浏览器窗口里手动补答 {nums}，"
           f"最长等 {GAP_HOLD_TIMEOUT:.0f}s（停止/Ctrl+C 可中断，期间不会点提交）")
@@ -517,6 +517,10 @@ def _do_one_submission_core(
                   + " 等了还是读不到值 —— 它不在拦停判据里（回执不等于没答上）→ 照提交，"
                   "平台要拦自然会把提交拦下，那时失败原因写在 [必填校验] 那几行里")
         if _blocking:
+            # 判定由拿到判据的这一层说，不由等待的那两句顺嘴说 —— 那两句分不清
+            # "整题没探测到"与"回执说没落上"，一起讲就成了自相矛盾
+            print("  [补漏] " + "、".join(f"Q{n}" for n in _blocking)
+                  + " 是整题没探测到的那类，没人补 → 维持判失败，不点提交")
             driver.switch_to.default_content()
             return SUBMIT_FAILED
 
