@@ -17,9 +17,11 @@ from __future__ import annotations
 import logging
 
 import tkinter as tk
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
+from . import motion
+from .motion import DUR_BASE, Collapse
 from .theme import (
     COLORS,
     FONT_PRESETS,
@@ -63,11 +65,14 @@ def make_card(
     icon: str = "◆",
     accent: tuple[str, ...] = GRAD_PRIMARY,
     fonts: _FONTS_KIND | None = None,
+    collapsible: bool = False,
+    ticker: Any | None = None,
 ) -> tk.Frame:
     """创建带细边框和标题条的卡片容器（白底高对比），返回内部 body Frame。
 
     返回值是 inner_body（供调用方 .pack / .grid 放置内容）。outer Frame
     上附加 `_card_canvas` 与 `_card_body` 属性以便后续事件使用。
+    ``collapsible=True`` 时标题条可点击折叠，高度补间走 ``ticker``（没给就瞬开瞬合）。
     """
     fonts_dict = _resolve_fonts(fonts)
     font_icon = fonts_dict["ICON"]
@@ -125,7 +130,99 @@ def make_card(
     inner_body.pack(fill=tk.BOTH, expand=True, padx=16, pady=(6, 14))
     outer._card_canvas = card_c
     outer._card_body = body
+    if collapsible:
+        attach_collapse(card_c, header, inner_body, body, fonts_dict, ticker)
     return inner_body
+
+
+def fit_card(content: tk.Frame, expand: bool = False) -> None:
+    """把卡片高度收成"内容的自然高度"，默认不再与同页其它卡平分页面。
+
+    卡片实际是一块固定 ``-height`` 的 Canvas，内容超出就被裁掉而不是把框撑大。
+    内容全部挂好之后调一次，才能既不漏行、又把腾出来的页面交给隔壁会 expand 的卡。
+    """
+    outer = content.master.master.master
+    body = outer._card_body
+    canvas = outer._card_canvas
+    body.update_idletasks()
+    canvas.configure(height=body.winfo_reqheight() + 2)
+    outer.pack(fill=tk.X if not expand else tk.BOTH, expand=expand)
+
+
+def attach_collapse(
+    card_canvas: tk.Canvas,
+    header: tk.Frame,
+    content: tk.Frame,
+    body: tk.Frame,
+    fonts_dict: _FONTS_KIND,
+    ticker: Any | None = None,
+) -> None:
+    """给卡片标题条加"点一下卷起来"，并用 ``Collapse`` 补间高度。
+
+    高度是画在 ``card_canvas`` 的 ``-height`` 上的：卡片实际是一块固定高度的
+    Canvas 窗口，内容挂在里面并不会自己把框撑大，所以折叠只能显式改这个值。
+    展开时给的是"内容自然高度"，顺带把内容超出固定值时被裁掉的情况也修掉了。
+
+    折叠**状态**由这里权威持有，补间只是让它看起来是卷起来的：补间被打断
+    （异常被 ticker 摘掉、或动效开关关着）时界面仍停在正确的开/合态。
+    """
+    chevron = tk.Label(
+        header, text="▾",
+        font=fonts_dict["NORMAL"], fg=COLORS["text_muted"],
+        bg=COLORS["surface"], cursor="hand2",
+    )
+    chevron.pack(side=tk.RIGHT, padx=(6, 0))
+    outer = card_canvas.master
+    state = {"collapsed": False}
+    pad = {"fill": tk.BOTH, "expand": True, "padx": 16, "pady": (6, 14)}
+
+    def collapsed_h() -> int:
+        return header.winfo_reqheight() + 14
+
+    def expanded_h() -> int:
+        return body.winfo_reqheight() + 2
+
+    def tween_to(target: int, settle: Callable[[], None] | None = None) -> None:
+        start = card_canvas.winfo_reqheight()
+        if (ticker is None or not motion.enabled()
+                or start <= 1 or start == target):
+            card_canvas.configure(height=int(target))
+            if settle is not None:
+                settle()
+            return
+        prim = Collapse(start, target, dur=DUR_BASE)
+
+        def apply_h(h: int, prim=prim) -> None:
+            card_canvas.configure(height=int(h))
+            if prim.done:
+                card_canvas.configure(height=int(target))
+                if settle is not None:
+                    settle()
+
+        ticker.register(("card", id(card_canvas)), prim, apply_h)
+
+    def toggle(_event=None) -> None:
+        state["collapsed"] = not state["collapsed"]
+        if state["collapsed"]:
+            content.pack_forget()
+            chevron.config(text="▸")
+            # 只把画布缩到标题条还不够：同页两张卡都是 expand=True 在平分，
+            # 不让出 expand 的话卷起来只剩一个空框。
+            outer.pack(fill=tk.X, expand=False)
+            tween_to(collapsed_h())
+        else:
+            content.pack(**pad)
+            chevron.config(text="▾")
+            outer.pack(fill=tk.X, expand=False)
+            # pack 之后 reqheight 要等一次 idle 才会重算，立刻量会拿到折叠态的 50
+            body.update_idletasks()
+            tween_to(expanded_h(),
+                     settle=lambda: outer.pack(fill=tk.BOTH, expand=True))
+
+    for widget in (header, chevron):
+        widget.bind("<Button-1>", toggle)
+    card_canvas._card_toggle = toggle
+    content._card_toggle = toggle  # 调用方通常只拿到返回的 content frame
 
 
 # 向后兼容：SurveyGUI 原有下划线方法名

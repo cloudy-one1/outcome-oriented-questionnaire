@@ -47,6 +47,7 @@ from gui import theme  # noqa: E402
 from gui import widgets  # noqa: E402
 from gui.history_panel import HistoryPanel  # noqa: E402
 from gui.log_view import _LOG_TAG_PALETTE, LogView  # noqa: E402
+from gui.motion import stagger_delays  # noqa: E402
 from gui.weight_panel import WeightPanel  # noqa: E402
 from src.history import SubmissionHistory  # noqa: E402
 from src import dialogs as dialogs_mod  # noqa: E402
@@ -504,15 +505,24 @@ def test_populate_prefills_from_weight_config_global(frame) -> None:
 
 
 def test_populate_badge_after_callback_draws_without_error(frame) -> None:
-    """胶囊标签由 root.after(10, _draw_badge) 触发 —— 兑现它才算走到绘制分支。"""
+    """胶囊标签由错峰 after 触发 —— 兑现它们才算走到绘制分支。"""
     rec = RecordingRoot()
     panel = _weight_panel(frame, questions=_copy_questions(), root=rec)
-    assert rec.delays() == [10] * len(_QS)
+    assert rec.delays() == [int(d) for d in stagger_delays(len(_QS))]
     rec.drain()
     canvases = [w for w in _descendants(panel.table_frame)
                 if isinstance(w, tk.Canvas)]
     assert len(canvases) == len(_QS)
     assert all(len(c.find_all()) >= 4 for c in canvases)
+
+
+def test_populate_stops_staggering_past_the_cap(frame) -> None:
+    """超过 24 行同帧画完：长跑 9999 份时表格不能一行行等入场动画。"""
+    rec = RecordingRoot()
+    many = [{"q": i, "type": "single", "choices": ["a", "b"]}
+            for i in range(1, 27)]
+    _weight_panel(frame, questions=many, root=rec)
+    assert rec.delays() == [0] * 26
 
 
 # ---------------------------------------------------------------------------

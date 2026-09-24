@@ -137,22 +137,26 @@ class HistoryPanel:
         body.grid_rowconfigure(3, weight=1)
         body.grid_columnconfigure(0, weight=1)
 
-        # ---- 顶部工具栏 ----
+        # ---- 顶部工具栏：统计文案与按钮分两行，左栏宽度放不下三者挤在一行 ----
         tb = tk.Frame(body, bg=COLORS["surface"])
         tb.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        tb.grid_columnconfigure(0, weight=1)
 
         self.summary_var = tk.StringVar(value="—")
         tk.Label(tb, textvariable=self.summary_var,
                  font=self._fonts["SMALL"], fg=COLORS["primary_2"],
-                 bg=COLORS["surface"]).pack(side=tk.LEFT, padx=(10, 10))
+                 bg=COLORS["surface"]).grid(row=0, column=0, sticky="w",
+                                            padx=(10, 10))
 
         if not self._has_history:
             tk.Label(tb, text="⚠ src.history 未加载，历史记录不可用",
                      font=self._fonts["SMALL"], fg=COLORS["warning"],
-                     bg=COLORS["surface"]).pack(side=tk.RIGHT, padx=10)
+                     bg=COLORS["surface"]).grid(row=0, column=1, sticky="e",
+                                                padx=10)
 
         btns = tk.Frame(tb, bg=COLORS["surface"])
-        btns.pack(side=tk.RIGHT, padx=(0, 6))
+        btns.grid(row=1, column=0, columnspan=2, sticky="e",
+                  padx=(0, 6), pady=(4, 0))
         btn_refresh = self._make_btn(
             btns, "🔄 刷新", accent="ghost",
             command=self.refresh,

@@ -23,6 +23,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Any, Callable
 
+from .motion import stagger_delays
 from .theme import COLORS, FONT_PRESETS, GRAD_SUCCESS, _lerp_color
 from .widgets import _make_card as _default_make_card
 # V2.4：题型别名单一真相（models.normalize_question_type 统一归一化）
@@ -223,6 +224,7 @@ class WeightPanel:
                      bg=COLORS["table_head"], fg="#004099",
                      anchor=tk.CENTER).pack(expand=True)
 
+        pending_badges: list[Callable[[], None]] = []
         for i, q in enumerate(questions):
             row = i + 1
             qi = q["q"]
@@ -334,7 +336,7 @@ class WeightPanel:
                                font=("Microsoft YaHei UI", 8, "bold"), fill=fgcol)
 
             badge_canvas.bind("<Configure>", _draw_badge)
-            self.root.after(10, _draw_badge)
+            pending_badges.append(_draw_badge)
 
             if qtype in ("text", "input", "textarea", "fillblank"):
                 fld = q.get("field")
@@ -409,6 +411,11 @@ class WeightPanel:
                 for child in c.winfo_children():
                     child.bind("<Enter>", _enter)
                     child.bind("<Leave>", _leave)
+
+        # 类型胶囊错峰入场：18ms 一行；超过 24 行同帧画完 —— 长跑 9999 份时
+        # 不能一行行等动画（设计稿 §4 判断 2）。
+        for delay_ms, draw in zip(stagger_delays(len(pending_badges)), pending_badges):
+            self.root.after(int(delay_ms), draw)
 
     # ==================================================================
     #  导出为 config（原 _build_weight_config）

@@ -1,17 +1,21 @@
-"""问卷自动填写工具 — GUI 主类（赛博朋克·极光主题版）。
+"""问卷自动填写工具 — GUI 主类（高对比度·黑白极简主题）。
 
-视觉特性：
-  - 深色极光渐变背景 + 动态星空粒子
-  - 毛玻璃 (Glassmorphism) 卡片 + 霓虹发光边框
-  - 呼吸灯状态指示 + 按钮悬停辉光动画
-  - 赛博朋克终端风日志（行号 + 扫描线）
-  - 渐变进度条 + 发光统计 Badge
-  - 权重表格行悬停高亮 + 胶囊类型标签
+视觉与动效：
+  - 白底浅灰分层 + 蓝色点缀，文字对比度按 WCAG AA 取值（见 gui/theme.py）
+  - 黑色终端风日志：行号、提示符、扫描线
+  - 渐变进度条 + 统计 Badge + 胶囊题型标签
+  - 动效一律事件驱动，由 gui/ticker.py 的单一心跳推进，空闲时不留定时器；
+    具体原语与时序在 gui/motion.py，设计稿见 docs/design/DESIGN_motion_primitives.md
+    （`WJX_MOTION=0` 可整体关掉动效，界面直接落终值）
+
+本类只负责编排骨架与状态；主题常量在 gui/theme.py，通用工厂在 gui/widgets.py，
+日志终端 / 历史 / 权重三块表面各自成面板，命令处理在 gui/controller.py。
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import os
 import queue
 import sys
@@ -43,12 +47,26 @@ from gui.widgets import (  # noqa: E402  7B: 通用 UI 工厂方法已剥离
     _make_spin_button as _widgets_make_spin_button,
     _make_stat_badge as _widgets_make_stat_badge,
     _make_toggle as _widgets_make_toggle,
+    fit_card as _widgets_fit_card,
     paint_card_border as _widgets_paint_card_border,
 )
 from gui.history_panel import HistoryPanel  # noqa: E402  7C: 历史记录面板剥离
 from gui.weight_panel import WeightPanel  # noqa: E402  7D: 权重表面板剥离
 from gui.log_view import LogView  # noqa: E402  7E: 日志终端面板剥离
 from gui.controller import GuiController  # noqa: E402  7F: 命令处理器剥离
+from gui import motion  # noqa: E402  动效层：纯时钟原语，见 docs/design/DESIGN_motion_primitives.md
+from gui.motion import (  # noqa: E402
+    CURSOR_PERIOD_MS,
+    SCAN_FRAME_MS,
+    SCAN_FRAMES,
+    Blink,
+    EasedProgress,
+    NumberTween,
+    Pulse,
+    Run,
+    ScrambleText,
+)
+from gui.ticker import MotionTicker  # noqa: E402  唯一的动效心跳，空闲即停摆
 from src import __version__ as APP_VERSION  # noqa: E402
 from src import config as _cfg_module  # noqa: E402
 from src.config import (  # noqa: E402
@@ -195,13 +213,16 @@ class SurveyGUI:
         # 导致 run_one_submission 走默认 False，把姓名/手机/邮箱明文写进 SQLite。
         self.no_record_text_var = tk.BooleanVar(value=True)
 
-        # 动画状态
-        self._breath_phase: float = 0.0
+        # 动效状态：这三个字段 log_view 与 Canvas 重绘直接读取，相位由 ticker 推进
+        self._breath_phase: float = math.pi / 2   # 静止时停在最亮那一态
         self._scan_phase: float = 0.0
         self._cursor_blink: bool = True
-
-        # 星空粒子
-        self._stars: list[tuple[int, int, float, str]] = []
+        # 状态字的"上一次目标"：连点两次时从目标继续溶解，不从半路的乱码继续
+        self._status_target: str = "就绪"
+        self._window_active: bool = True
+        self._ticker: MotionTicker | None = None
+        # 日志行数镜像；_build_log_area_card 会覆盖成真实值，这里先立一个安全起点
+        self.log_lineno_count: int = 0
 
         # （7C/7D/7E）子面板引用，由 build_* 方法实例化
         self._history_panel: HistoryPanel | None = None
@@ -225,6 +246,12 @@ class SurveyGUI:
         self._default_weight_config_path = default_weight_config_path()
         self._history_db_path = default_history_db_path()
 
+        # 动效心跳必须在 _build_ui 之前存在 —— 可折叠卡片在构建时就要拿到它。
+        # schedule 就是 root.after，所以这条循环天然只在主线程被驱动。
+        self._ticker = MotionTicker(
+            schedule=self.root.after,
+            log_fn=lambda msg: self._log(msg, "WARN"),
+        )
         self._setup_theme()
         self._build_ui()
         self._controller = GuiController(
@@ -282,45 +309,91 @@ class SurveyGUI:
         self._style = style
 
     # ==================================================================
-    #  动画系统
+    #  动效系统（事件驱动，设计稿 docs/design/DESIGN_motion_primitives.md §5）
     # ==================================================================
 
     def _start_animations(self) -> None:
-        """启动所有循环动画：呼吸灯、扫描线、光标闪烁。"""
-        self._tick_breath()
-        self._tick_scanline()
-        self._tick_cursor()
+        """接上窗口焦点事件，让光标只在窗口活跃且日志非空时才闪。
 
-    def _tick_breath(self) -> None:
-        """呼吸灯动画周期：~2.4s。"""
-        self._breath_phase = (self._breath_phase + 0.06) % (2 * 3.14159)
-        try:
-            self._update_status_glow()
-        except Exception:
-            pass
-        self.root.after(80, self._tick_breath)
+        改造前这里点着三个常驻循环（呼吸灯 80ms / 扫描线 40ms / 光标 530ms），
+        窗口只要开着就一直重绘；现在一律由 ticker 按需登记，空闲时不留定时器。
+        """
+        self.root.bind("<FocusIn>", self._on_window_focus, add="+")
+        self.root.bind("<FocusOut>", self._on_window_blur, add="+")
+        self._update_status_glow()
 
-    def _tick_scanline(self) -> None:
-        """日志区域扫描线动画。"""
-        self._scan_phase = (self._scan_phase + 0.012) % 1.0
-        if self._log_view is not None:
-            self._log_view.scan_phase = self._scan_phase
-        try:
-            self._redraw_scanline()
-        except Exception:
-            pass
-        self.root.after(40, self._tick_scanline)
+    def _on_window_focus(self, _event=None) -> None:
+        self._window_active = True
+        self._sync_cursor_blink()
 
-    def _tick_cursor(self) -> None:
-        """终端光标闪烁。"""
-        self._cursor_blink = not self._cursor_blink
+    def _on_window_blur(self, _event=None) -> None:
+        self._window_active = False
+        if self._ticker is not None:
+            self._ticker.cancel("cursor")
+
+    def _ambient_ticker(self) -> MotionTicker | None:
+        """装饰性动效（呼吸/扫描线/光标）专用的取用口。
+
+        返回 None 有两种情况：ticker 还没建（构造早期、离线替身），或
+        ``WJX_MOTION=0`` 整体关掉。两者都意味着"这一处什么都不该动"。
+        状态字与进度不走这里 —— 它们由 ``ticker.register`` 内部的关开关分支
+        直接落终值，所以界面仍然会更新到正确的文字。
+        """
+        if self._ticker is None or not motion.enabled():
+            return None
+        return self._ticker
+
+    def _sync_cursor_blink(self) -> None:
+        ticker = self._ambient_ticker()
+        if ticker is None:
+            return
+        if self._window_active and self.log_lineno_count > 0:
+            if not ticker.has("cursor"):
+                ticker.register("cursor", Blink(), self._apply_cursor,
+                                every_ms=CURSOR_PERIOD_MS // 2)
+        else:
+            ticker.cancel("cursor")
+
+    def _apply_cursor(self, on: bool) -> None:
+        self._cursor_blink = bool(on)
         if self._log_view is not None:
             self._log_view.cursor_blink = self._cursor_blink
-        try:
-            self._refresh_cursor_tag()
-        except Exception:
-            pass
-        self.root.after(530, self._tick_cursor)
+        self._refresh_cursor_tag()
+
+    def _kick_scanline(self) -> None:
+        """每条新日志线让扫描线走完 6 帧（240ms）后自己停。"""
+        ticker = self._ambient_ticker()
+        if ticker is None:
+            return
+        ticker.register(
+            "scan",
+            Run(duration_ms=SCAN_FRAME_MS * SCAN_FRAMES, span=0.072,
+                start=self._scan_phase),
+            self._apply_scan,
+            every_ms=SCAN_FRAME_MS,
+        )
+
+    def _apply_scan(self, phase: float) -> None:
+        self._scan_phase = phase
+        if self._log_view is not None:
+            self._log_view.scan_phase = phase
+        self._redraw_scanline()
+
+    def _sync_breath(self, status_text: str) -> None:
+        """只有"正在发生什么"的时候才呼吸；回到就绪就停在最亮那一态。"""
+        ticker = self._ambient_ticker()
+        if ticker is None:
+            return
+        if status_text == "就绪":
+            ticker.cancel("breath")
+            self._breath_phase = math.pi / 2
+            self._update_status_glow()
+        elif not ticker.has("breath"):
+            ticker.register("breath", Pulse(), self._apply_breath, every_ms=80)
+
+    def _apply_breath(self, phase: float) -> None:
+        self._breath_phase = phase
+        self._update_status_glow()
 
     # ==================================================================
     #  UI 构建
@@ -509,8 +582,26 @@ class SurveyGUI:
                       fill="white", anchor="w")
 
     def _set_status(self, text: str, color: str) -> None:
-        self._status_text = text
+        """状态字切换：旧文案溶解成新文案，非就绪期间挂着呼吸灯。
+
+        溶解中途的乱码绝不能留在屏幕上 —— 终值必须正好是 ``text``，所以这里按
+        "目标"记账（``_status_target``），断言也按目标字下（设计稿 §7C）。
+        """
+        old = self._status_target
+        self._status_target = text
         self._status_color = color
+        ticker = self._ticker
+        if ticker is None or old == text:
+            self._status_text = text
+            self._update_status_glow()
+        else:
+            ticker.register("status",
+                            ScrambleText(old, text, dur=motion.DUR_SLOW),
+                            self._paint_status)
+        self._sync_breath(text)
+
+    def _paint_status(self, text: str) -> None:
+        self._status_text = text
         self._update_status_glow()
 
     # ==================================================================
@@ -530,7 +621,12 @@ class SurveyGUI:
                      [("Notebook.client", {"sticky": "nswe"})])
         style.configure("Aurora.TNotebook",
                         background=COLORS["bg"], borderwidth=0)
-        style.element_create("aurora_tab", "from", "clam")
+        try:
+            style.element_create("aurora_tab", "from", "clam")
+        except tk.TclError:
+            # 元素名是全局的：同进程构造第二个 SurveyGUI（测试里挂 Toplevel 就会）
+            # 会撞 "Duplicate element aurora_tab"。已存在就是已就绪，直接复用。
+            pass
         style.layout("Aurora.TNotebook.Tab", [
             ("aurora_tab.tab",
              {"side": "top", "sticky": "nswe", "children": [
@@ -548,9 +644,10 @@ class SurveyGUI:
             padding=(22, 9),
             borderwidth=0,
         )
+        # 选中态只改字色：布局里克隆自 clam 的 aurora_tab 在 vista 主题下不跟随 background
+        # map 上色（实测底色一直是 #F9F9F9），白字配白底会让当前页签整条标签看不见。
         style.map("Aurora.TNotebook.Tab",
-                  background=[("selected", COLORS["primary"])],
-                  foreground=[("selected", "white")],
+                  foreground=[("selected", COLORS["primary"])],
                   )
 
         notebook = ttk.Notebook(container, style="Aurora.TNotebook")
@@ -584,25 +681,36 @@ class SurveyGUI:
     # ==================================================================
 
     def _make_card(self, parent: tk.Misc, title: str, icon: str = "◆",
-                   accent: tuple[str, ...] = GRAD_PRIMARY) -> tk.Frame:
-        """创建卡片容器 → 代理到 widgets.make_card。"""
-        return _widgets_make_card(parent, title=title, icon=icon, accent=accent)
+                   accent: tuple[str, ...] = GRAD_PRIMARY,
+                   collapsible: bool = False) -> tk.Frame:
+        """创建卡片容器 → 代理到 widgets.make_card（可折叠时挂上动效心跳）。"""
+        return _widgets_make_card(parent, title=title, icon=icon, accent=accent,
+                                  collapsible=collapsible, ticker=self._ticker)
 
     def _on_card_resize(self, canvas: tk.Canvas, accent: tuple[str, ...]) -> None:
         """重绘卡片边框 → 代理到 widgets.paint_card_border。"""
         _widgets_paint_card_border(canvas, accent)
+
+    def _fit_card(self, content: tk.Frame, expand: bool = False) -> None:
+        """把卡片收成内容的自然高度 → 代理到 widgets.fit_card。"""
+        _widgets_fit_card(content, expand=expand)
 
     # ==================================================================
     #  设置卡片
     # ==================================================================
 
     def _build_settings_card(self, parent: tk.Frame) -> None:
-        body = self._make_card(parent, "基本设置", icon="⚙", accent=GRAD_PRIMARY)
+        # 可折叠：左栏纵向很紧，权重表一长就得能把这张卡卷起来腾地方
+        body = self._make_card(parent, "基本设置", icon="⚙", accent=GRAD_PRIMARY,
+                               collapsible=True)
         body.pack(fill=tk.X, expand=False)
         self._build_url_row(body)
         self._build_count_row(body)
         self._build_browser_row(body)
         self._build_config_io_row(body)
+        # 内容全挂好之后按自然高度收一张卡：卡片本体是固定 -height 的 Canvas，
+        # 不收成内容高的话最后一行会被裁掉，而权重表也拿不到剩下的页面。
+        self._fit_card(body)
 
     def _build_url_row(self, parent: tk.Frame) -> None:
         row = tk.Frame(parent, bg=COLORS["surface"])
@@ -732,22 +840,34 @@ class SurveyGUI:
         browser_combo.set(self.browser_var.get().capitalize())
         browser_combo.pack(padx=6, pady=4)
 
+        # 两条复选框文案都很长，与下拉框并排会被卡片右边缘切掉，故各占一行、
+        # 用同宽空标签缩进到控件列（与各行 width=13 的标签列对齐）
+        uc_row = tk.Frame(parent, bg=COLORS["surface"])
+        uc_row.pack(fill=tk.X, pady=(0, 2))
+        tk.Label(uc_row, text="", width=13,
+                 font=self.FONT_NORMAL, bg=COLORS["surface"]).pack(side=tk.LEFT)
+
         # UC 复选框（发光 Badge 风格）
         self.use_uc_chk = self._make_toggle(
-            row,
+            uc_row,
             text="UC 模式  (更强反爬，需 undetected-chromedriver)",
             var=self.use_uc_var,
             enabled=self.browser_var.get() == "chrome",
         )
         self.use_uc_chk.pack(side=tk.LEFT)
 
+        privacy_row = tk.Frame(parent, bg=COLORS["surface"])
+        privacy_row.pack(fill=tk.X, pady=(0, 2))
+        tk.Label(privacy_row, text="", width=13,
+                 font=self.FONT_NORMAL, bg=COLORS["surface"]).pack(side=tk.LEFT)
+
         # 隐私开关（与 CLI --no-record-text 同义）
         self.no_record_text_chk = self._make_toggle(
-            row,
+            privacy_row,
             text="🔒 不记录填空文本（保护隐私，历史库 text_answer 写 NULL）",
             var=self.no_record_text_var,
         )
-        self.no_record_text_chk.pack(side=tk.LEFT, padx=(14, 0))
+        self.no_record_text_chk.pack(side=tk.LEFT)
 
     def _build_config_io_row(self, parent: tk.Frame) -> None:
         """配置导入 / 导出 / 另存默认。V2 新增。"""
@@ -1033,7 +1153,8 @@ class SurveyGUI:
                                          highlightthickness=0, bd=0)
         self.progress_canvas.pack(fill=tk.X, pady=(6, 0))
         self.progress_canvas.bind("<Configure>", self._on_progress_resize)
-        self._progress_value = 0.0  # 0~1
+        self._progress_value = 0.0  # 0~1，进度条当前显示值（由 ticker 补间推进）
+        self._pct_value = 0.0       # 0~1，右上角百分比当前显示值
 
         # ---------- 右：统计 Badge ----------
         stats = tk.Frame(body, bg=COLORS["surface"])
@@ -1106,10 +1227,15 @@ class SurveyGUI:
         self.root.after(80, self._start_log_poller)
 
     def _drain_log_queue(self) -> None:
+        before = self.log_lineno_count
         if self._log_view is not None:
             self._log_view.drain_queue()
             # 兼容：同步 _lineno_count 回到 app，以便旧代码读取 log_lineno_count
             self.log_lineno_count = self._log_view._lineno_count
+        if self.log_lineno_count > before:
+            # 扫描线与光标闪烁都由"真的有新行"触发，不再自己常驻推进
+            self._kick_scanline()
+            self._sync_cursor_blink()
 
     def _append_log(self, message: str, tag: str) -> None:
         # ensure 是幂等的：已建好就原样返回，所以不必先读那个 Optional 属性
@@ -1346,11 +1472,10 @@ class SurveyGUI:
         self.qr_btn.configure(state=tk.DISABLED)
         self._set_status("运行中...", COLORS["primary"])
 
-        self._progress_value = (
+        self._tween_progress_bar(
             (self.success_count + self.fail_count) / self.total_rounds
             if self.total_rounds else 0.0
         )
-        self._redraw_progress()
         self._update_progress()
 
         self._log("═" * 40, "HEADER")
@@ -1472,12 +1597,52 @@ class SurveyGUI:
             pass
 
     def _update_progress(self) -> None:
-        self.success_var.set(str(self.success_count))
-        self.fail_var.set(str(self.fail_count))
-        self.progress_text_var.set(f"{self.current_round} / {self.total_rounds}")
-        pct = (self.current_round / self.total_rounds * 100) if self.total_rounds else 0.0
-        self.progress_pct_var.set(f"{pct:>5.1f}%")
-        self._progress_value = (self.current_round / self.total_rounds) if self.total_rounds else 0.0
+        """四个读数各挂一条补间：成败计数滚动、百分比与进度条追赶。
+
+        每条都从**当前显示值**起补到目标，所以一轮里成败同时变化、或连点两下停止，
+        都不会把数字甩回 0（设计稿 §7A 的单调性与改目标两条）。
+        """
+        total = self.total_rounds
+        ratio = (self.current_round / total) if total else 0.0
+        self.progress_text_var.set(f"{self.current_round} / {total}")
+        self._tween_counter("ok", self.success_var, self.success_count)
+        self._tween_counter("fail", self.fail_var, self.fail_count)
+        self._tween_pct(ratio)
+        self._tween_progress_bar(ratio)
+
+    def _tween_counter(self, key: str, var: tk.StringVar, target: int) -> None:
+        ticker = self._ticker
+        if ticker is None:
+            var.set(str(target))
+            return
+        frm = int(var.get() or 0)
+        ticker.register(key, NumberTween(frm, target),
+                        lambda v, var=var: var.set(str(v)))
+
+    def _tween_pct(self, target: float) -> None:
+        ticker = self._ticker
+        if ticker is None:
+            self._paint_pct(target)
+            return
+        prim = EasedProgress(self._pct_value, ease=motion.ease_out_cubic)
+        prim.set_target(target)
+        ticker.register("pct", prim, self._paint_pct)
+
+    def _paint_pct(self, v: float) -> None:
+        self._pct_value = v
+        self.progress_pct_var.set(f"{v * 100:>5.1f}%")
+
+    def _tween_progress_bar(self, target: float) -> None:
+        ticker = self._ticker
+        if ticker is None:
+            self._paint_bar(target)
+            return
+        prim = EasedProgress(self._progress_value)
+        prim.set_target(target)
+        ticker.register("bar", prim, self._paint_bar)
+
+    def _paint_bar(self, v: float) -> None:
+        self._progress_value = v
         self._redraw_progress()
 
     # ==================================================================
@@ -1514,6 +1679,10 @@ class SurveyGUI:
                 panel.close_db()
         except Exception:
             logger.debug("关闭历史库失败（忽略）", exc_info=True)
+
+        if self._ticker is not None:
+            # 停摆：不能留一个会在控件销毁之后还去重绘的动效回调
+            self._ticker.shutdown()
 
         self.root.destroy()
 
