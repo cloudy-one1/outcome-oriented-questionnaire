@@ -448,8 +448,14 @@ def test_pressing_stop_brakes_the_batch_at_a_round_boundary(page, console) -> No
     assert page.find_element(By.ID, "btn-stop").is_enabled() is False
     assert _text(page, "status-text") == "就绪"
     _open_history(page)
+    # 只查"这一批"的特征，不数总条数 —— 数条数等于依赖同模块前面几个用例攒下的
+    # 批次，单独跑这一条就红（本文件开头那句"用例之间不许有先后依赖"说的就是它）。
+    # `interrupted` 全模块只有这一条用例会造出来。
     WebDriverWait(page, 30).until(
-        lambda d: len(d.find_elements(By.CSS_SELECTOR, "#runs-body .run-row")) >= 3)
-    newest = page.find_elements(By.CSS_SELECTOR, "#runs-body .run-row")[0]
-    assert "interrupted" in _of(page, newest), \
+        lambda d: [r for r in d.find_elements(
+            By.CSS_SELECTOR, "#runs-body .run-row")
+            if "interrupted" in _of(d, r)])
+    assert len([r for r in page.find_elements(
+        By.CSS_SELECTOR, "#runs-body .run-row")
+        if "interrupted" in _of(page, r)]) == 1, \
         "按停止收尾的批次标成了 finished 就永远续传不了"

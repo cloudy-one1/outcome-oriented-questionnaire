@@ -204,8 +204,9 @@ POST /api/shutdown           停止 + 收尾 + 退出（等价于 Tk 关窗）
    §9 那句「点开始/停止」由其中两条分头覆盖 —— 停止要在轮边界上才算数），`tests/test_host_parity.py`
    4 项进离线阻塞门禁（同一套表单值 → 两个宿主交给 `run_batch` 的 `RunState` 逐字段）。
    CI 等价环境的 `--write` 是这一条之前先还的账（动效提交欠下的）。
-   抓到三条，两条是真缺陷（快照漏号把新事件挤掉、历史栏在批次结束后不作废），
-   见 CHANGELOG「E2E 进套件 + 两宿主对拍 —— 步骤 8」一节。
+   抓到三条真缺陷 + 两条替身不够真（快照漏号把新事件挤掉、历史栏在批次结束后不作废、
+   `running` 变回 false 没有推送通道 —— 最后这条是推上 runner 才红的，靠新装的
+   "失败写成注解"那一步抓到名字），见 CHANGELOG「E2E 进套件 + 两宿主对拍 —— 步骤 8」一节。
 
 **止损点**：第 3 步结束时如果 webui 还没跑通一次真实长跑，就停在那里。Tk 全程完好，
 所以任何一步停下都是可用状态 —— 这是推迟第 7 步换来的东西。
@@ -230,7 +231,8 @@ CSS/JS 更强，届时是死代码，该删就删）、`gui/qr_utils.py`（§3 �
 以及 `gui/controller.py` 里 webui 尚未覆盖到的残余分支。
 
 2026-09-25（第 8 步之后）对这三条的实测状态：**② 到位**（真浏览器 3 份长跑 + 8 项
-webui integration 在 `.venv-ci313` 连跑四遍全绿）；**① 只到一小块** —— §4 那 16 行里目前有跨宿主对拍的是
+webui integration 在 `.venv-ci313` 连跑四遍全绿，且在 GitHub 的 windows runner 上也绿 ——
+那条只在 runner 上红的竞态已查明并修掉）；**① 只到一小块** —— §4 那 16 行里目前有跨宿主对拍的是
 「表单五字段 → `RunState`」「权重表 → `weight_config_snapshot`」「交给 `run_batch` 的
 位置参数与关键字」这三条（`tests/test_host_parity.py` 4 项 +
 `tests/test_weight_parser_parity.py`），其余各行仍是"两个宿主各自有测试"而没有同一条

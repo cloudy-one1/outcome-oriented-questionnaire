@@ -316,6 +316,33 @@ def test_progress_percent_is_zero_when_nothing_is_planned(session):
     assert rec.last("progress")["percent"] == pytest.approx(50.0)
 
 
+def test_the_run_lifecycle_broadcasts_running_as_state(session):
+    """按钮禁用态读的是 ``running``，而 ``set_status`` 只发 ``status`` 事件。
+
+    少了这三处广播，"跑完了"就**没有推送通道**：界面只能等下一次 HTTP 往返、
+    SSE 重连或队列溢出的 ``gap`` 才把「开始运行」重新点亮。CI 上就是这么红的 ——
+    批次收尾时在途的 ``POST /api/stop`` 响应还带着 ``running=true``，比本机慢一点
+    就正好盖在收尾之后（``test_pressing_stop_brakes_the_batch_at_a_round_boundary``）。
+    """
+    sess, rec = session
+    sess.start_run(3)
+    assert rec.last("state")["running"] is True
+    sess.request_stop()
+    assert rec.last("state")["status"] == "正在停止..."
+    sess.finish_run()
+    done = rec.last("state")
+    assert (done["running"], done["status"]) == (False, "就绪")
+    assert done["rev"] == sess.snapshot()["rev"]     # 播出去的就是现在这份
+
+
+def test_request_stop_while_idle_broadcasts_nothing(session):
+    """没在跑的时候按停止不该把整份快照推一遍（前端会白刷一次按钮禁用态）。"""
+    sess, rec = session
+    before = len([k for k, _ in rec.events if k == "state"])
+    sess.request_stop()
+    assert len([k for k, _ in rec.events if k == "state"]) == before
+
+
 def test_request_stop_only_while_running(session):
     sess, _ = session
     sess.request_stop()

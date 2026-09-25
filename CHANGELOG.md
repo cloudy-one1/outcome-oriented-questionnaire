@@ -28,9 +28,34 @@
 - 契约测试 `tests/test_ci_annotate_e2e_script.py` 7 项：两种红分得开、命令语法不被
   用例名里的 `::` 腰斩、真换行与 `#` 走 `%0A` / `%23`、skip 计数在、缺文件与坏 XML
   各自报错但仍退 0、超配额截断要明说截了几条。
-- **仍未查明**：`e2e` 那条红的原因。这一步只是把下一次红的取证搬到不用人肉的地方。
-- 数字：离线 1653 → **1660 项**（CI 干净口径 1656 passed + 4 skipped）、integration
-  仍 **33 项**；ruff / pyright 全 0。
+- **这条注解当天就把红抓到了**：推上去的下一个 run 里 `failure=1`，名字与断言原文
+  直接可读 —— `tests/test_webui_e2e.py::test_pressing_stop_brakes_the_batch_at_a_round_boundary`
+  的 `assert page.find_element(By.ID, "btn-run").is_enabled() is True` 拿到 `False`，
+  其余 32 项全过、`skipped=0`。省掉的是"再来一轮 + 等人搬日志"。
+
+### 修复（那条红的真身：`running` 变回 false 没有推送通道）
+
+- 真缺陷，与前两条同族（长跑期间状态条写"就绪"、历史栏批次结束后不作废）：
+  `RunSession.finish_run()` 把 `running` 置回 `False` 之后只走 `set_status` →
+  发的是 `status` 事件，而按钮禁用态由 `state.running` 驱动 —— **`status` 事件不带
+  `state` 载荷**。于是"跑完了"这件事只能靠下一次 HTTP 往返、SSE 重连的 `hello`，
+  或队列溢出触发的 `gap` 才落到界面上。
+- 为什么只有 runner 上红：批次收尾时那条在途的 `POST /api/stop` 响应带着
+  `running=true`，本机快，它在收尾之前就送到了；runner 慢一点，它就正好盖在收尾之后。
+  这不是 flake，是**一个必然发生、只是被速度遮住的竞态**。
+- 修在 `webui/session.py`：`start_run` / `request_stop` / `finish_run` 三处在
+  `set_status` 之后各补一次 `emit_state()` —— 运行态的每一次变化都该有推送通道，
+  不该只由点击它的那个浏览器自己的响应告知（第二个标签页永远收不到）。
+- **本地按 CI 口径复现了这条红**：给 `post_stop` 的响应人为加 2 秒延迟 → 修之前
+  `assert False is True`（与注解里那条一字不差），修之后同延迟下全绿。
+  反向也验：只摘掉 `finish_run` 的广播、保留延迟，立刻红回来。
+- **顺带修掉本次取证暴露的另一条自身缺陷**：那条用例末尾写的是"历史栏至少 3 批"，
+  等于依赖同模块前面几个用例攒下的批次 —— 单独跑就红，而本文件开头明明写着
+  "用例之间不许有先后依赖"。改成只查这一批的特征（`interrupted` 全模块只有它造得出）。
+- 回归测试 2 项（`tests/test_webui_service.py`）：三处生命周期必须广播 `running`
+  且广播出去的 `rev` 等于当前值；空跑时按停止不许白推一次。
+- 数字：离线 1660 → **1662 项**（CI 干净口径 1658 passed + 4 skipped）、integration
+  仍 **33 项**；TOTAL 91.1% 未动，`--check` 绿；ruff / pyright 全 0。
 
 ## [3.4.0] - 2026-09-25
 
@@ -419,10 +444,10 @@ ruff / pyright 全 0。
   integration 连跑三遍全绿。
 - **一条没复现到的红**：第一次在 `.venv-ci313` 跑整套 integration 时报 `1 failed`
   （命令行里紧挨着它跑过 `npx pyright`，CPU 正被占满），此后 9 次重跑 —— 整套 3 遍、
-  新文件 4 遍、原有 `test_e2e_integration.py` 单独 2 遍 —— 全绿，`--tb` 没再抓到名字。
-  按现状登记，不靠"再跑一遍看看"糊过去：下次真红先留 `--tb=long` 与 junit 再判。
-  **原因没有查实** —— 那 25 项里最短的墙钟判据是 1.5 秒（`wait_for_manual_submit`），
-  单次 CPU 抢占未必够看，所以也可能是我这侧的环境噪声。
+  新文件 4 遍、原有 `test_e2e_integration.py` 单独 2 遍 —— 全绿，`--tb` 也没再抓到名字。
+  **机制八成是同一个**：那条竞态后来查明了（`finish_run` 没有推送通道，见「修复」一节），
+  而当时那次红也落在"跑完一批之后按钮该回来"这一类断言上 —— 但**没拿到名字就没法断言**，
+  当时那批用例里连停止那条都还没写。写在这里是为了记住结论：该去装取证，而不是再跑几遍。
 
 ## [3.3.0] - 2026-09-23
 

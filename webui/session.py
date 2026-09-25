@@ -299,17 +299,29 @@ class RunSession:
             self.running = True
             self.total_rounds = total_rounds
         self.set_status("运行中...")
+        self.emit_state()          # 同 finish_run：禁用态也要有推送通道，不只靠点击的响应
 
     def request_stop(self) -> None:
         with self._lock:
             if not self.running:
                 return
         self.set_status("正在停止...")
+        self.emit_state()
 
     def finish_run(self) -> None:
+        """批次收尾。
+
+        ``emit_state()`` 不是多余的：按钮的禁用态由 ``running`` 驱动，而
+        ``set_status`` 只发 ``status`` 事件（前端拿它刷一行文字）。少这一播，
+        "跑完了"这件事就**没有推送通道** —— 界面只能等下一次 HTTP 往返、
+        SSE 重连或队列溢出触发的 ``gap`` 才把「开始运行」重新点亮。实测正是这样：
+        runner 上比本机慢，批次结束时在途的 ``POST /api/stop`` 响应还带着
+        ``running=true``，把刚由别的通道推进过的 ``rev`` 盖掉，按钮于是永远按不动。
+        """
         with self._lock:
             self.running = False
         self.set_status("就绪")
+        self.emit_state()
 
     def update_progress(
         self, *, success: int, fail: int, current_round: int, total_rounds: int
