@@ -132,6 +132,8 @@ class RunSession:
         self._lock = threading.RLock()
         self.log_lines: deque[dict[str, Any]] = deque(maxlen=log_capacity)
         self._log_seq = 0
+        # 见 emit_state()：号随状态变化递增
+        self._rev = 0
 
         # ---- 表单 ----
         self.url: str = ""
@@ -157,7 +159,7 @@ class RunSession:
         # ---- 确认反向通道（设计稿 §10 步骤 6）----
         # 推的是"整份快照"而不是单独一个 confirm 事件：对话框的内容因此只有
         # snapshot() 一处真相，断线重连 / 刷新页面 / 超时自动关闭都收敛到同一个状态。
-        self.confirms = ConfirmChannel(lambda: self.emit("state", self.snapshot()))
+        self.confirms = ConfirmChannel(self.emit_state)
 
     # ------------------------------------------------------------ 事件出口
 
@@ -167,6 +169,30 @@ class RunSession:
             self._emit = emitter
 
     def emit(self, kind: str, payload: Any = None) -> None:
+        # 版本号在**状态变化**时递增，不是在读快照时递增。
+        # 反过来（在 snapshot() 里 ++）会让一份"早就算好、刚刚才送到浏览器"的
+        # HTTP 响应带着更高的号，把已经前进过的 SSE 结果盖回去 —— 实测到的样子是
+        # 批次跑完、日志写着 ✓3，界面上的成功数却回到 0、进度回到 33.3%。
+        with self._lock:
+            self._rev += 1
+        self._broadcast(kind, payload)
+
+    def emit_state(self) -> dict[str, Any]:
+        """广播整份状态，并让**号和内容在同一次加锁里定下来**。
+
+        写成 ``emit("state", snapshot())`` 会漏号：实参先求值，拿到的 rev 是取号
+        **之前**的计数，而广播之后计数已经 +1 —— 于是"变更前读的那份 HTTP 响应"
+        和"变更后广播的那份载荷"带着同一个号。浏览器先收到前者、再收到同号的后者，
+        按 ``rev <=`` 丢弃，界面就少一次更新。实测症状：点「探测题目」之后权重表
+        不出现，日志却写着探测成功，要等下一次交互才补齐。
+        """
+        with self._lock:
+            self._rev += 1
+            payload = self.snapshot()
+        self._broadcast("state", payload)
+        return payload
+
+    def _broadcast(self, kind: str, payload: Any) -> None:
         try:
             self._emit(kind, payload)
         except Exception:  # 出口坏了不该把调用方一起拖死；api 层自己会记日志
@@ -190,7 +216,7 @@ class RunSession:
                 self.no_record_text = bool(value)
             else:
                 raise ValidationError(f"未知字段：{name}")
-        self.emit("state", self.snapshot())
+        self.emit_state()
 
     @staticmethod
     def _validated_url(value: Any) -> str:
@@ -257,12 +283,12 @@ class RunSession:
         """替代 Tk 的"按钮 configure(disabled)"。"""
         with self._lock:
             self.busy.add(name)
-        self.emit("state", self.snapshot())
+        self.emit_state()
 
     def end_command(self, name: str) -> None:
         with self._lock:
             self.busy.discard(name)
-        self.emit("state", self.snapshot())
+        self.emit_state()
 
     def is_busy(self, name: str) -> bool:
         with self._lock:
@@ -353,14 +379,27 @@ class RunSession:
         ]
 
     def set_weight_texts(self, texts: dict[int, str]) -> None:
+        """写回权重表的第 4 列。改完必须广播：它是快照的一部分。
+
+        静默写会让 ``rev`` 和内容脱钩 —— 前端按号丢弃一份"同号但更新"的响应，
+        于是自己敲进去的权重在某些时序下根本不落地。
+        """
         with self._lock:
             self.weight_texts.update({int(k): str(v) for k, v in texts.items()})
+        self.emit_state()
 
     # ------------------------------------------------------------ 快照
 
     def snapshot(self) -> dict[str, Any]:
+        """整份可渲染状态。``rev`` 是这批数据的版本号，由 ``emit_state()`` 定号。
+
+        前端只接受 rev 更大的快照 —— ``POST /api/run`` 的响应体就是一份快照，
+        而它完全可能在 worker 推进之后才送到浏览器。没有这道闸，界面会**倒回去**，
+        且如果之后没有新事件，就永久停在旧值上。
+        """
         with self._lock:
             return {
+                "rev": self._rev,
                 "form": self.form_values(),
                 "status": self.status,
                 "status_tone": STATUS_COLORS.get(self.status, "neutral"),

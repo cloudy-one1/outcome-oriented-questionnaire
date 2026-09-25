@@ -138,8 +138,13 @@
   // ------------------------------------------------------------ 渲染
 
   function render(next) {
+    if (!next) { return; }
+    // 只接受比已渲染更新的快照：HTTP 响应可能带着比 SSE 更旧的界面回来。
+    // 成立的前提是"号和内容在同一次加锁里定下来"（session.emit_state），
+    // 否则一份同号但更新的响应会被这一行吞掉。
+    if (state && next.rev && state.rev && next.rev <= state.rev) { return; }
+    var wasRunning = state ? !!state.running : false;
     state = next;
-    if (!state) { return; }
     fillForm(state.form);
     paintStatus(state.status, state.status_tone);
     paintAvailability(state.availability, state.busy, state.running);
@@ -149,6 +154,14 @@
       ? state.questions + " 题" : "未探测";
     if (state.table) { renderTable(state.table); }
     paintConfirm(state.confirms);
+    if (wasRunning && !state.running) { retireRuns(); }
+  }
+
+  function retireRuns() {
+    // 批次结束是历史栏唯一的作废时机。停在历史栏上的人（刷新按钮就在那一栏）
+    // 不该看到上一批的数字 —— 桌面版是在 on_run_finished 里顺手刷的，这里等价。
+    runsLoaded = false;
+    if (!els["view-history"].hidden) { loadRuns(); }
   }
 
   function fillForm(form) {
@@ -216,9 +229,19 @@
   function rollNumber(el, target) {
     var from = parseInt(el.textContent, 10);
     if (isNaN(from)) { from = 0; }
+    // 每次调用都作废上一个动画。两条 rAF 交错写同一个元素时，先起的那条会把
+    // 后一个值**倒回去** —— headless 实测到"✓ 成功"在 2 → 1 → 2 之间跳，
+    // 而这是整块界面上最该可信的数字。
+    var token = {};
+    el.__roll = token;
     if (reduced() || from === target) { el.textContent = String(target); return; }
     var start = performance.now();
+    function finish() {
+      if (el.__roll !== token) { return; }
+      el.textContent = String(target);
+    }
     function tick(now) {
+      if (el.__roll !== token) { return; }      // 已被更新的一次调用取代
       var t = Math.min(1, (now - start) / DUR_BASE);
       var eased = 1 - Math.pow(1 - t, 3);
       el.textContent = String(Math.round(from + (target - from) * eased));
@@ -226,6 +249,10 @@
       else { el.textContent = String(target); }
     }
     requestAnimationFrame(tick);
+    // 兜底：rAF 在不合成画面的场合（headless、后台标签页）会不再回调，
+    // 上面那条链就永远停在中间值。动画是装饰，**数字是对的**才是契约，
+    // 所以到点无条件落终值。
+    setTimeout(finish, DUR_BASE + 80);
   }
 
   function renderTable(rows) {

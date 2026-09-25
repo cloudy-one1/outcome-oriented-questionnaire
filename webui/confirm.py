@@ -42,7 +42,9 @@ class ConfirmChannel:
 
     def __init__(
         self,
-        emit: Callable[[], None],
+        # object 而不是 None：广播器就是 session.emit_state，它顺手把发出去的那份
+        # 载荷返回给调用方，而这里用不着。
+        emit: Callable[[], object],
         *,
         timeout: float = CONFIRM_TIMEOUT_SECONDS,
         clock: Callable[[], float] = time.monotonic,

@@ -558,10 +558,10 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 
 | 范围 | 离线覆盖率 |
 |---|---|
-| 全部 | **90.7%** |
+| 全部 | **91.1%** |
 | `src/` | 92.3%（4794 条语句剩 369 行） |
-| `gui/` | 82.7%（2288 条语句剩 395 行） |
-| `webui/` | 99.1%（1258 条语句剩 11 行） |
+| `gui/` | 84.1%（2288 条语句剩 363 行） |
+| `webui/` | 99.1%（1270 条语句剩 11 行） |
 
 #### 已补齐的缺口（"补齐前"一列是登记时的实测）
 
@@ -575,14 +575,14 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 | `src/interactions/choices.py` | 58.8% | **100.0%**（剩 0 行） | `tests/test_choices_interaction.py` |
 | `src/interactions/sort.py` | 22.2% | **100.0%**（剩 0 行） | `tests/test_sort_interaction.py` |
 | `src/cli.py` | 74.3% | **84.6%**（剩 81 行，剩余是 run_batch 内的浏览器接线与降级分支） | `tests/test_cli_exit_and_reports.py`、`tests/test_cli_main.py`、`tests/test_cli_batch.py` |
-| `gui/`（11 个文件合计） | 15% | **82.7%**（`log_view`、`motion`、`theme`、`ticker` 已 100%） | `tests/test_gui_panels.py`、`tests/test_gui_proxies.py`、`tests/test_gui_run_loop.py` |
+| `gui/`（11 个文件合计） | 15% | **84.1%**（`log_view`、`motion`、`theme`、`ticker` 已 100%） | `tests/test_gui_panels.py`、`tests/test_gui_proxies.py`、`tests/test_gui_run_loop.py` |
 
 #### 仍然没有防线的地方
 
 | 模块 | 离线覆盖率 | 为什么还留着 |
 |---|---|---|
 | `gui/controller.py` | 37.1% | 配置导出/导入与二维码选文件已可注入替身文件框（`tests/test_gui_user_data.py`），剩 37% 的坎是探测题目那条 worker —— 它要真实 driver（`on_detect_questions` 整段 300-403 行） |
-| `gui/app.py` | 76.5% | `WJX_USER_DATA_DIR` 把 `configs/` + `data/` 整棵挪走之后，整窗已能在测试里构造（`tests/test_gui_user_data.py`：构造、输入校验、续传决策、历史库接线）。剩 206 行是 canvas 重绘与 resize/关窗回调，要真实 paint 事件与 mainloop 才走得到 |
+| `gui/app.py` | 80.5% | `WJX_USER_DATA_DIR` 把 `configs/` + `data/` 整棵挪走之后，整窗已能在测试里构造（`tests/test_gui_user_data.py`：构造、输入校验、续传决策、历史库接线；`tests/test_host_parity.py` 又把 `_on_start` 这条跑批路径接上了真窗口）。剩 156 行是 canvas 重绘与 resize/关窗回调，要真实 paint 事件与 mainloop 才走得到 |
 | `src/pipeline_stages/question_stage.py` | 63.3% | 逐题 DOM 交互主干：等待、「哪道题调哪个填充器」的分发、带框选项只勾不填的降级都已有离线测试（`tests/test_question_stage_dispatch.py`），真实点击仍靠 E2E |
 
 > 本块由 `python scripts/readme_coverage.py --write` 从 `coverage.json` 生成，`--check` 已进 CI 当门禁

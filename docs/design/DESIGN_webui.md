@@ -198,8 +198,13 @@ POST /api/shutdown           停止 + 收尾 + 退出（等价于 Tk 关窗）
    这一条修掉的实际缺陷是：纯 webui 进程里默认确认是 `popup_confirm`，它恒为 `False`，
    于是"检测到未完成批次"被**静默答成取消**。
 7. ~~删 `gui/`~~ → **推到赛后**（§11）
-8. Selenium 自测 E2E 进测试套件 + 对拍测试 + ~~CI 等价环境 `--write`~~（**已做**，
-   2026-09-25 在 `.venv-ci313` 里量并 `--write`：那本是动效提交欠下的账，见 CHANGELOG）
+8. ✅ Selenium 自测 E2E 进测试套件 + 对拍测试 + ~~CI 等价环境 `--write`~~ ——
+   2026-09-25 落地：`tests/test_webui_e2e.py` 7 项进 integration（真 HTTP + 真 SSE +
+   真 headless Edge，替身只有 driver 工厂与探测/答题两处），`tests/test_host_parity.py`
+   4 项进离线阻塞门禁（同一套表单值 → 两个宿主交给 `run_batch` 的 `RunState` 逐字段）。
+   CI 等价环境的 `--write` 是这一条之前先还的账（动效提交欠下的）。
+   抓到三条，两条是真缺陷（快照漏号把新事件挤掉、历史栏在批次结束后不作废），
+   见 CHANGELOG「E2E 进套件 + 两宿主对拍 —— 步骤 8」一节。
 
 **止损点**：第 3 步结束时如果 webui 还没跑通一次真实长跑，就停在那里。Tk 全程完好，
 所以任何一步停下都是可用状态 —— 这是推迟第 7 步换来的东西。
@@ -208,8 +213,11 @@ POST /api/shutdown           停止 + 收尾 + 退出（等价于 Tk 关窗）
 `tests/fixtures/mock_wjx.html`（经本地 HTTP 提供，因为 §5 只放行 http/https 的 URL）
 跑完 3 份真实提交，23 项断言全绿 —— 逐轮日志经 SSE 到达页面、计数与进度、`runs`
 收尾 `finished`、39 条答案落盘。抓到四条只有跑起来才看得见的问题，见 CHANGELOG
-「界面（第八个对标源）」一节。第 8 步的**进套件**部分仍未做：这轮验证是一次性脚本，
-不是回归网。
+「界面（第八个对标源）」一节。那轮确实是**一次性脚本**，但它没有原地蒸发：宿主这一侧的
+整条链（HTTP 路由 → worker 线程 → SSE → 前端渲染）已由第 8 步的 7 项 integration 接住，
+真探测与真提交仍由 `tests/test_e2e_integration.py`（25 项）覆盖。两边分工写在
+`tests/test_webui_e2e.py` 的模块文档里 —— 前者要真浏览器但把引擎换成替身（引擎自己还要
+再开一个浏览器，两个浏览器挤进必填检查只会换来随机红），后者正相反。
 
 ## 11. 赛后退役 Tk（另开一轮）
 
@@ -219,6 +227,13 @@ webui 达到 ① parity 清单逐条有对拍测试 ② 真实长跑连续若干
 并把三件东西一起安置：`gui/motion.py` / `gui/ticker.py`（本轮刚建、100% 覆盖，浏览器里
 CSS/JS 更强，届时是死代码，该删就删）、`gui/qr_utils.py`（§3 说的"先不移"到那时才移），
 以及 `gui/controller.py` 里 webui 尚未覆盖到的残余分支。
+
+2026-09-25（第 8 步之后）对这三条的实测状态：**② 到位**（真浏览器 3 份长跑 + 7 项
+integration 连跑三遍全绿）；**① 只到一小块** —— §4 那 16 行里目前有跨宿主对拍的是
+「表单五字段 → `RunState`」「权重表 → `weight_config_snapshot`」「交给 `run_batch` 的
+位置参数与关键字」这三条（`tests/test_host_parity.py` 4 项 +
+`tests/test_weight_parser_parity.py`），其余各行仍是"两个宿主各自有测试"而没有同一条
+命令打到两边的硬证据；**③ 未动**。所以别把"E2E 进套件"读成"可以删 Tk 了"。
 
 ## 12. 不做清单（react-bits 里明确不碰的）
 

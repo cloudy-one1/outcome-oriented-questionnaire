@@ -300,7 +300,7 @@ class WebService:
             f"✓ 已载入「{meta_name}」· 配置 {len(cfg)} 道 · 同步到表格 {synced} 道",
             "OK",
         )
-        self.session.emit("state", self.session.snapshot())
+        self.session.emit_state()
 
     def auto_load_default_config(self) -> None:
         path = self.session.paths.default_config_path

@@ -87,7 +87,7 @@
       },
       {
         "module": "gui/app.py",
-        "reason": "`WJX_USER_DATA_DIR` 把 `configs/` + `data/` 整棵挪走之后，整窗已能在测试里构造（`tests/test_gui_user_data.py`：构造、输入校验、续传决策、历史库接线）。剩 206 行是 canvas 重绘与 resize/关窗回调，要真实 paint 事件与 mainloop 才走得到"
+        "reason": "`WJX_USER_DATA_DIR` 把 `configs/` + `data/` 整棵挪走之后，整窗已能在测试里构造（`tests/test_gui_user_data.py`：构造、输入校验、续传决策、历史库接线；`tests/test_host_parity.py` 又把 `_on_start` 这条跑批路径接上了真窗口）。剩 156 行是 canvas 重绘与 resize/关窗回调，要真实 paint 事件与 mainloop 才走得到"
       },
       {
         "module": "src/pipeline_stages/question_stage.py",

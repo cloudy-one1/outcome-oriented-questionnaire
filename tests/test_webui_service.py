@@ -264,6 +264,33 @@ def test_broken_emit_sink_cannot_break_the_caller(tmp_path):
     assert sess.status == "运行中..."
 
 
+def test_a_state_event_and_an_older_response_never_share_a_number(session):
+    """SSE 载荷的号必须和内容在同一次加锁里定下来。
+
+    ``emit("state", snapshot())`` 先求实参再取号，广播出去的载荷因此带着**变更前**
+    的号；一份在处理线程里早读好、晚一步才送到浏览器的 HTTP 响应和它同号，而前端
+    只认号更大的 —— 新事件被旧响应挤掉。实测症状：探测完成后权重表整块不出现，
+    日志却写着探测成功（``test_webui_e2e`` 里等 13 行那条超时）。
+    """
+    sess, rec = session
+    in_flight = sess.snapshot()             # 处理线程读好了，还没回给浏览器
+    sess.set_field("count", 7)              # worker 在这期间改了状态并广播
+    fresh = rec.last("state")
+    assert fresh["form"]["count"] == 7
+    assert fresh["rev"] > in_flight["rev"]  # 同号 = 这次广播在前端被丢掉
+
+
+def test_writing_weight_texts_broadcasts_the_new_table(session):
+    """权重表是快照的一部分：静默写会让前端按号丢掉自己刚敲进去的那一格。"""
+    sess, rec = session
+    sess.set_questions([{"q": 1, "type": "single", "title": "t",
+                         "choices": ["a", "b"]}])
+    sess.set_weight_texts({1: "0.7,0.3"})
+    sent = rec.last("state")
+    assert sent["table"][0]["text"] == "0.7,0.3"
+    assert sent["rev"] == sess.snapshot()["rev"]
+
+
 def test_status_event_carries_a_tone_name_not_a_hex_color(session):
     sess, rec = session
     sess.set_status("运行中...")
