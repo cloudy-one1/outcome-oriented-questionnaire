@@ -28,7 +28,8 @@ from webui.api import (
     origin_is_same_origin,
     safe_download_name,
 )
-from webui.session import Availability, RunSession, SessionPaths
+from webui.session import (Availability, RunSession, SessionPaths,
+                            ValidationError)
 
 
 class FakeService:
@@ -64,6 +65,35 @@ class FakeService:
 
     def current_config_for_export(self):
         return self.cfg
+
+    # ---- 历史记录 ----
+    def history_runs(self, limit=50):
+        self.calls.append(("runs", limit))
+        return [{"id": 1, "status": "finished"}]
+
+    def history_stats(self):
+        return {"total_runs": 1, "total_success": 1}
+
+    def history_answers(self, run_id):
+        self.calls.append(("answers", run_id))
+        return [{"question_number": 1, "question_type": "single"}]
+
+    def history_export(self, kind):
+        self.calls.append(("export", kind))
+        if kind not in ("runs", "answers"):
+            raise ValidationError(f"未知的导出类型：{kind!r}")
+        return f"history_{kind}.csv", "id\r\n1\r\n".encode("utf-8-sig")
+
+
+    def purge_preview(self):
+        self.calls.append("preview")
+        return {"days": 7, "count": 3, "token": "tok-1"}
+
+    def purge_confirm(self, token):
+        self.calls.append(("purge", token))
+        if token != "tok-1":
+            raise ValidationError("确认凭据无效或已用过，请重新点一次「清理」")
+        return 3
 
 
 @pytest.fixture()
@@ -458,3 +488,87 @@ def test_run_and_stop_routes_delegate_to_the_service(api):
     assert post(made, "/api/run").status == 200
     assert post(made, "/api/stop").status == 200
     assert svc.calls == ["run", "stop"]
+
+
+# ============================================================ 历史记录路由
+
+
+def test_runs_route_returns_the_list_and_the_header_stats(api) -> None:
+    made, _session, svc = api
+    body = body_of(made.handle("GET", "/api/history/runs",
+                               host="127.0.0.1:8000"))
+    assert body["runs"] == [{"id": 1, "status": "finished"}]
+    assert body["stats"]["total_runs"] == 1
+    assert ("runs", 50) in svc.calls, "缺 limit 时走默认值"
+
+
+def test_the_runs_limit_comes_from_the_query_and_a_junk_one_falls_back(api) -> None:
+    """query 到 api 层已经是 ``dict[str, str]``（server 把 parse_qs 拍平过一次）。"""
+    made, _session, svc = api
+    made.handle("GET", "/api/history/runs", host="127.0.0.1:8000",
+                query={"limit": "12"})
+    made.handle("GET", "/api/history/runs", host="127.0.0.1:8000",
+                query={"limit": "abc"})
+    assert ("runs", 12) in svc.calls
+    assert ("runs", 50) in svc.calls, "非法 limit 回默认而不是 500"
+
+
+def test_answers_route_passes_the_run_id_through(api) -> None:
+    made, _session, svc = api
+    body = body_of(made.handle("GET", "/api/history/answers",
+                              host="127.0.0.1:8000",
+                              query={"run_id": "7"}))
+    assert body["run_id"] == 7
+    assert ("answers", 7) in svc.calls
+
+
+def test_the_csv_export_is_a_download_and_never_a_path(api) -> None:
+    """导出与配置导出同一条边界：响应体就是那份 CSV，请求里没有路径可给。"""
+    made, _session, _svc = api
+    resp = made.handle("GET", "/api/history/export", host="127.0.0.1:8000",
+                       query={"kind": "runs"})
+    assert resp.status == 200
+    assert resp.content_type.startswith("text/csv")
+    assert "history_runs.csv" in resp.headers["Content-Disposition"]
+    assert resp.body.startswith(b"\xef\xbb\xbf"), "BOM 掉了 Excel 就是一屏乱码"
+
+
+def test_an_unknown_export_kind_is_a_400_with_the_reason(api) -> None:
+    made, _session, _svc = api
+    resp = made.handle("GET", "/api/history/export", host="127.0.0.1:8000",
+                       query={"kind": "../../etc/passwd"})
+    assert resp.status == 400
+    assert "导出类型" in body_of(resp)["error"]
+
+
+def test_purge_without_a_token_only_previews(api) -> None:
+    """第一步不许有任何删除动作 —— 点一下「清理」就清空历史是不可接受的。"""
+    made, _session, svc = api
+    body = body_of(post(made, "/api/history/purge", {}))
+    assert body["count"] == 3 and body["days"] == 7
+    assert body["token"] == "tok-1"
+    assert svc.calls == ["preview"], "预览阶段不该调 purge_confirm"
+
+
+def test_purge_with_the_token_deletes_and_reports_the_count(api) -> None:
+    made, _session, svc = api
+    body = body_of(post(made, "/api/history/purge", {"token": "tok-1"}))
+    assert body["removed"] == 3
+    assert ("purge", "tok-1") in svc.calls
+
+
+def test_a_forged_token_is_rejected_at_the_http_layer(api) -> None:
+    made, _session, svc = api
+    resp = post(made, "/api/history/purge", {"token": "guess"})
+    assert resp.status == 400
+    assert "state" not in body_of(resp)
+    assert ("purge", "guess") in svc.calls, "service 自己会拒，路由不替它兜"
+
+
+def test_history_routes_answer_only_get_and_post_as_declared(api) -> None:
+    """方法用错就是 404：导出若允许 POST，等于多一条绕过 body 上限的写法。"""
+    made, _session, _svc = api
+    assert made.handle("POST", "/api/history/runs",
+                       host="127.0.0.1:8000").status == 404
+    assert made.handle("GET", "/api/history/purge",
+                       host="127.0.0.1:8000").status == 404

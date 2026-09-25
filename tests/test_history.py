@@ -209,6 +209,28 @@ class TestSubmissionHistory(unittest.TestCase):
         remaining = self.db._query_one("SELECT COUNT(*) c FROM answers WHERE id=?", (aid,))
         self.assertEqual(remaining["c"], 0)
 
+    def test_count_older_than_agrees_with_what_purge_actually_removes(self) -> None:
+        """预览的数字与实删必须来自同一句条件。
+
+        确认框说"3 条"而实际删掉 5 条，是不可逆的 —— 所以 ``count_runs_older_than``
+        与 ``purge_old`` 共用 ``_PURGE_WHERE``，这里把"说多少就是多少"钉成契约。
+        """
+        for _ in range(2):
+            rid = self.db.start_run("url", 1, "edge", False)
+            self.db.finish_run(rid, 1, 0, 1.0)
+            self.db._execute(
+                "UPDATE runs SET started_at = datetime('now', '-9 days') WHERE id=?",
+                (rid,),
+            )
+        fresh = self.db.start_run("url", 1, "edge", False)
+        self.db.finish_run(fresh, 1, 0, 1.0)
+
+        self.assertEqual(self.db.count_runs_older_than(7), 2)
+        self.assertEqual(self.db.purge_old(days_older_than=7), 2)
+        self.assertEqual(self.db.count_runs_older_than(7), 0,
+                         "删完还要报 0，否则界面会一直显示「有可清理的」")
+        self.assertEqual(len(self.db.query_runs(limit=10)), 1, "7 天内那条不该动")
+
     def test_stats_summary_empty_db(self) -> None:
         """空库 → 全 0，不抛异常。"""
         s = self.db.stats_summary()

@@ -661,19 +661,36 @@ class SubmissionHistory:
     # ------------------------------------------------------------------
     # 清理 API
     # ------------------------------------------------------------------
+    # 预览与实删共用这一句条件：确认框里报的数字和真删掉的数字若来自两处 SQL，
+    # "说好 3 条、实际删了 5 条"这种话就说得出口，而那是不可逆删除。
+    _PURGE_WHERE = "started_at < datetime('now', ?)"
+
+    @staticmethod
+    def _purge_param(days_older_than: int) -> str:
+        return f"-{int(days_older_than)} days"
+
+    def count_runs_older_than(self, days_older_than: int) -> int:
+        """``purge_old(days_older_than)`` 会删掉多少条 runs（连带它们的 answers）。"""
+        row = self._query_one(
+            f"SELECT COUNT(*) c FROM runs WHERE {self._PURGE_WHERE}",
+            (self._purge_param(days_older_than),),
+        )
+        return int(row["c"]) if row is not None else 0
+
     def purge_old(self, days_older_than: int) -> int:
         """清理 N 天前的 runs（含级联 answers）；返回被删除的 runs 数量。"""
+        param = self._purge_param(days_older_than)
         with self._locked():
             # 先查要删多少
-            q = self._conn.execute(
-                "SELECT COUNT(*) c FROM runs WHERE started_at < datetime('now', ?)",
-                (f"-{int(days_older_than)} days",),
+            q = self._execute(
+                f"SELECT COUNT(*) c FROM runs WHERE {self._PURGE_WHERE}",
+                (param,),
             ).fetchone()
             target = int(q["c"])
             if target == 0:
                 return 0
-            self._conn.execute(
-                "DELETE FROM runs WHERE started_at < datetime('now', ?)",
-                (f"-{int(days_older_than)} days",),
+            self._execute(
+                f"DELETE FROM runs WHERE {self._PURGE_WHERE}",
+                (param,),
             )
             return target

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import threading
 import time
 from collections.abc import Callable
@@ -32,11 +33,24 @@ from typing import Any
 from src import config as cfg_module
 from src.config_io import apply_weight_config
 from src.dialogs import popup_confirm
+from src.history_export import EXPORTS, build
 from src.models import RunState, normalize_question_type
-from webui.session import RunSession, ValidationError
 from src.weight_text import parse_weight_texts
+from webui.session import RunSession, ValidationError
 
 logger = logging.getLogger("wjx.webui.service")
+
+#: 「清理 N 天前」的 N。桌面版 ``gui/history_panel.purge_old`` 用的是同一个数，
+#: 两个界面按同一个期限删数据才谈得上"同一份历史库"。
+PURGE_DAYS = 7
+
+#: 批次列表一次最多取多少条：SQLite 本地读，500 条也就几毫秒，
+#: 但界面拿不到分页控件之前不该无上限地拉（长跑 9999 份的库会有几万行）。
+HISTORY_MAX_LIMIT = 500
+
+
+def _clamp_limit(limit: int) -> int:
+    return max(1, min(int(limit), HISTORY_MAX_LIMIT))
 
 try:  # selenium 是可选的：缺了只是探测/扫码不可用，配置与历史照常
     from selenium.webdriver.support.ui import WebDriverWait
@@ -169,6 +183,9 @@ class WebService:
         self._db_cached: Any = None
         self._state: RunState | None = None
         self._run_thread: threading.Thread | None = None
+        # 「清理历史」的一次性凭据：预览发一张、确认用掉一张（见 purge_preview）
+        self._purge_lock = threading.Lock()
+        self._purge_token: str | None = None
 
     # ------------------------------------------------------------ 内部
 
@@ -443,6 +460,113 @@ class WebService:
             db.close()
         except Exception as e:
             self._log(f"关闭历史库失败: {type(e).__name__}: {e}", "WARN")
+
+    # ------------------------------------------------------------ 历史记录
+
+    def history_runs(self, limit: int = 50) -> list[dict]:
+        """批次列表（最新在前）。库打不开时给空表而不是报错 —— 界面照样能用。"""
+        db = self.get_db()
+        if db is None:
+            return []
+        try:
+            return [dict(r) for r in db.query_runs(limit=_clamp_limit(limit))]
+        except Exception as e:
+            self._log(f"读批次列表失败: {type(e).__name__}: {e}", "FAIL")
+            return []
+
+    def history_stats(self) -> dict:
+        db = self.get_db()
+        if db is None:
+            return {}
+        try:
+            return dict(db.stats_summary())
+        except Exception as e:
+            self._log(f"读全库统计失败: {type(e).__name__}: {e}", "FAIL")
+            return {}
+
+    def history_answers(self, run_id: int) -> list[dict]:
+        db = self.get_db()
+        if db is None:
+            return []
+        try:
+            return [dict(a) for a in db.query_answers(int(run_id))]
+        except Exception as e:
+            self._log(f"读第 {run_id} 批明细失败: {type(e).__name__}: {e}", "FAIL")
+            return []
+
+    def history_export(self, kind: str) -> tuple[str, bytes]:
+        """``kind`` → ``(文件名, CSV 字节)``。格式与桌面版共用 ``src.history_export``。
+
+        utf-8-sig（BOM）是"Excel 双击要认得出中文"那条针对文件的决定，桌面版这么做，
+        下载这边也必须这么做 —— 少一个 BOM，Excel 打开就是一屏乱码。
+        """
+        if kind not in EXPORTS:
+            raise ValidationError(f"未知的导出类型：{kind!r}")
+        db = self.get_db()
+        if db is None:
+            raise ValidationError("未加载 src.history，无法导出历史记录")
+        try:
+            if kind == "answers":
+                rows: list[dict] = []
+                for run in [dict(r) for r in db.query_runs(limit=10000)]:
+                    try:
+                        rows.extend(dict(a) for a in
+                                    db.query_answers(int(run["id"])))
+                    except Exception:
+                        # 一批读不动不该毁掉整份导出（与桌面版同一条容错）
+                        logger.debug("批次 %s 的明细读取失败（跳过）",
+                                     run.get("id"), exc_info=True)
+            else:
+                rows = [dict(r) for r in db.query_runs(limit=10000)]
+        except Exception as e:
+            self._log(f"导出历史记录失败: {type(e).__name__}: {e}", "FAIL")
+            raise ValidationError(f"导出失败：{type(e).__name__}: {e}") from e
+        _name, text = build(kind, rows)
+        return _name, text.encode("utf-8-sig")
+
+    def purge_preview(self) -> dict:
+        """不删任何东西，只报"会删几条"并发一张一次性凭据。
+
+        桌面版靠 ``messagebox`` 确认；Web 这边把确认做成**服务端发、客户端回**的
+        token：数字由服务端算、删除由服务端做，请求里没有任何"删多少"可以被改。
+        """
+        db = self.get_db()
+        if db is None:
+            raise ValidationError("未加载 src.history，无法清理历史记录")
+        try:
+            count = db.count_runs_older_than(PURGE_DAYS)
+        except Exception as e:
+            self._log(f"预览清理范围失败: {type(e).__name__}: {e}", "FAIL")
+            raise ValidationError(f"预览失败：{type(e).__name__}: {e}") from e
+        token = secrets.token_urlsafe(16)
+        with self._purge_lock:
+            self._purge_token = token
+        return {"days": PURGE_DAYS, "count": count, "token": token}
+
+    def purge_confirm(self, token: Any) -> int:
+        """凭 token 才真删；**一次性的** —— 用掉就作废，新预览顶掉旧 token。
+
+        重放同一个 token 会二次删除，而第二次删的是"这之后又满 7 天"的那批数据，
+        症状是很久以后才发现少记录。
+
+        token 不对时**不动**当前待确认的那张：服务只监听回环、token 是 128 位随机数，
+        这里要挡的不是爆破而是"两个标签页各预览了一次"—— 把对的凭据连带作废，
+        用户只会觉得点了没反应。
+        """
+        db = self.get_db()
+        if db is None:
+            raise ValidationError("未加载 src.history，无法清理历史记录")
+        with self._purge_lock:
+            if not token or token != self._purge_token:
+                raise ValidationError("确认凭据无效或已用过，请重新点一次「清理」")
+            self._purge_token = None
+        try:
+            removed = int(db.purge_old(days_older_than=PURGE_DAYS))
+        except Exception as e:
+            self._log(f"清理旧历史失败: {type(e).__name__}: {e}", "FAIL")
+            raise ValidationError(f"清理失败：{type(e).__name__}: {e}") from e
+        self._log(f"已清理 {removed} 条 {PURGE_DAYS} 天前的运行记录", "OK")
+        return removed
 
     # ------------------------------------------------------------ 权重表
 

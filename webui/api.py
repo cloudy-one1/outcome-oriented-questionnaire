@@ -272,6 +272,52 @@ class Api:
         self.service.save_default_config()
         return Response.json({"ok": True, "state": self.session.snapshot()})
 
+    # ------------------------------------------------------------ 历史记录
+
+    def get_history_runs(self, _body: bytes, query: dict) -> Response:
+        """批次列表 + 全库统计，一次给全：界面那张表两样都要。"""
+        try:
+            limit = int(query.get("limit", "50"))
+        except ValueError:
+            limit = 50
+        return Response.json({
+            "ok": True,
+            "runs": self.service.history_runs(limit),
+            "stats": self.service.history_stats(),
+        })
+
+    def get_history_answers(self, _body: bytes, query: dict) -> Response:
+        try:
+            run_id = int(query.get("run_id", "0"))
+        except ValueError:
+            run_id = 0
+        return Response.json({"ok": True, "run_id": run_id,
+                              "answers": self.service.history_answers(run_id)})
+
+    def get_history_export(self, _body: bytes, query: dict) -> Response:
+        """下载而不是"服务器上的某个路径"：与配置导出同一条安全边界（设计稿 §6）。"""
+        name, data = self.service.history_export(query.get("kind", ""))
+        return Response(
+            status=HTTPStatus.OK,
+            body=data,
+            content_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": content_disposition(name)},
+        )
+
+    def post_history_purge(self, body: bytes, _query: dict) -> Response:
+        """两步删除：不带 token 只拿到"会删几条 + 一次性凭据"，带回来才真删。
+
+        请求里没有"删多少 / 删哪几天"这类参数 —— 范围由服务端定，客户端只能选择
+        确认或取消，篡改请求体换不掉删除范围。
+        """
+        payload = self._json_body(body)
+        token = payload.get("token")
+        if not token:
+            return Response.json({"ok": True, **self.service.purge_preview()})
+        removed = self.service.purge_confirm(str(token))
+        return Response.json({"ok": True, "removed": removed,
+                              "state": self.session.snapshot()})
+
     def post_weights(self, body: bytes, _query: dict) -> Response:
         """把权重表第 4 列写回会话。解析发生在点开始/导出时，不在这里。"""
         payload = self._json_body(body)
@@ -326,6 +372,10 @@ class Api:
         ("POST", "/api/config/export"): post_config_export,
         ("POST", "/api/config/save-default"): post_save_default,
         ("POST", "/api/weights"): post_weights,
+    ("GET", "/api/history/runs"): get_history_runs,
+    ("GET", "/api/history/answers"): get_history_answers,
+    ("GET", "/api/history/export"): get_history_export,
+    ("POST", "/api/history/purge"): post_history_purge,
         ("POST", "/api/run"): post_run,
         ("POST", "/api/stop"): post_stop,
         ("POST", "/api/shutdown"): post_shutdown,

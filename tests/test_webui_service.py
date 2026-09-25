@@ -114,20 +114,37 @@ def session(tmp_path):
     return make_session(tmp_path / "data")
 
 
+#: 测试里习惯用的短名 → WebService 的形参名
+_RENAMES = {
+    "save": "save_weight_config",
+    "load": "load_weight_config",
+    "validate": "validate_weight_config",
+    "build": "build_config",
+    "detect": "detect_questions",
+    "verification_showing": "is_smart_verification_showing",
+    "wait_verification": "wait_for_manual_verification",
+}
+#: 与形参同名的依赖，给了就透传、没给就用 WebService 自己的默认值
+_PASSTHROUGH = ("create_driver", "decode_qr", "spawn", "sleeper",
+                "history_db_cls", "confirm", "run_batch_fn", "join_timeout")
+
+
 def make_service(sess, **kw):
-    params = dict(
-        save_weight_config=kw.get("save"),
-        load_weight_config=kw.get("load"),
-        validate_weight_config=kw.get("validate"),
-        build_config=kw.get("build"),
-        create_driver=kw.get("create_driver"),
-        detect_questions=kw.get("detect"),
-        is_smart_verification_showing=kw.get("verification_showing"),
-        wait_for_manual_verification=kw.get("wait_verification"),
-        decode_qr=kw.get("decode_qr"),
-        spawn=kw.get("spawn", lambda fn: fn()),
-        sleeper=kw.get("sleeper", lambda _s: None),
-    )
+    """装配一个 WebService，外部依赖全部换成替身。
+
+    **未知关键字直接报错**：这里原来是 `params = dict(decode_qr=kw.get("decode_qr"), ...)`
+    那种白名单读法，传一个不在名单里的键（比如 `history_db_cls`）会被**静默丢弃**，
+    于是测试以为注入了真库、实际拿到的是刚建好的空库 —— 断言全绿而什么都没测。
+    本轮写历史用例时就踩了这个坑，所以改成"透传 + 拒绝未知"。
+    """
+    params = {new: kw.pop(old, None) for old, new in _RENAMES.items()}
+    for name in _PASSTHROUGH:
+        if name in kw:
+            params[name] = kw.pop(name)
+    params["spawn"] = params.get("spawn") or (lambda fn: fn())
+    params["sleeper"] = params.get("sleeper") or (lambda _s: None)
+    if kw:
+        raise TypeError(f"make_service 不认这些参数（会被静默丢弃）：{sorted(kw)}")
     return WebService(sess, **params)
 
 
@@ -1301,3 +1318,198 @@ def test_a_corrupt_weight_snapshot_does_not_swallow_the_resume_question(tmp_path
     assert svc.wait_for_run(5)
     assert asked == ["断点续传"]
     assert any("已忽略上次中断批次" in x for _, x in logs_of(sess))
+
+
+# ================================================================== 历史记录
+#
+# 真 SQLite 落在 tmp 下。这里钉的是 webui 这一侧的读与删；CSV 的**格式**契约在
+# tests/test_history_export.py（两个宿主共用那份），所以这里只验"导出这条路径
+# 真的用了它"，不重复逐列断言。
+
+from src.history import SubmissionHistory  # noqa: E402
+
+
+@pytest.fixture()
+def hist(tmp_path):
+    db = SubmissionHistory(str(tmp_path / "data" / "history.db"))
+    yield db
+    db.close()
+
+
+def _with_db(session, db):
+    sess, _rec = session
+    return sess, make_service(sess, history_db_cls=lambda _path: db)
+
+
+def _seed(db, url="https://x.test/s", *, days_ago=0, text="张三"):
+    rid = db.start_run(url, 2, "edge", False)
+    db.record_answer(rid, 1, 1, "single", [0], None, 100)
+    db.record_answer(rid, 1, 2, "text", None, text, 200)
+    db.finish_run(rid, 2, 0, 5.0)
+    if days_ago:
+        db._execute("UPDATE runs SET started_at = datetime('now', ?) WHERE id=?",
+                    (f"-{days_ago} days", rid))
+    return rid
+
+
+def test_history_lists_runs_and_carries_the_whole_library_stats(hist, session) -> None:
+    sess, svc = _with_db(session, hist)
+    old = _seed(hist, "https://x.test/old")
+    new = _seed(hist, "https://x.test/new")
+
+    runs = svc.history_runs(limit=10)
+    assert [int(r["id"]) for r in runs] == [new, old], "最新在前，一行都不能少"
+    assert runs[0]["survey_url"] == "https://x.test/new"
+    stats = svc.history_stats()
+    assert (stats["total_runs"], stats["total_success"]) == (2, 4)
+
+    answers = svc.history_answers(new)
+    assert [a["question_number"] for a in answers] == [1, 2]
+    assert answers[1]["text_answer"] == "张三"
+
+
+def test_history_reads_are_empty_rather_than_raising_when_there_is_no_db(
+    session
+) -> None:
+    """没装 src.history 时界面照常开，只是历史是空的。"""
+    svc = make_service(session[0], history_db_cls=None)
+    assert svc.history_runs() == []
+    assert svc.history_stats() == {}
+    assert svc.history_answers(1) == []
+
+
+def test_history_limit_is_clamped_so_one_page_cannot_ask_for_the_whole_db(
+    hist, session
+) -> None:
+    """SQLite 本地读很快，但界面还没有分页控件 —— 别让 URL 参数变成无上限拉取。"""
+    sess, svc = _with_db(session, hist)
+    for _ in range(3):
+        _seed(hist)
+    assert len(svc.history_runs(limit=0)) == 1
+    assert len(svc.history_runs(limit=999999)) == 3
+    assert len(svc.history_runs(limit=2)) == 2
+
+
+def test_export_returns_the_shared_csv_with_a_bom(hist, session) -> None:
+    """BOM 不是装饰：没有它，Excel 双击打开就是一屏乱码（桌面版也带）。"""
+    from src.history_export import RUNS_HEADER
+
+    sess, svc = _with_db(session, hist)
+    _seed(hist)
+    name, data = svc.history_export("runs")
+
+    assert name == "history_runs.csv"
+    assert data.startswith(b"\xef\xbb\xbf")
+    assert data.decode("utf-8-sig").splitlines()[0] == ",".join(RUNS_HEADER)
+
+
+def test_export_of_answers_reaches_across_every_run(hist, session) -> None:
+    sess, svc = _with_db(session, hist)
+    _seed(hist, "https://x.test/a")
+    _seed(hist, "https://x.test/b")
+    _name, data = svc.history_export("answers")
+    text = data.decode("utf-8-sig")
+    assert text.count("张三") == 2, "两批 × 每批一条填空答案，一批都不能漏"
+    assert len(text.strip().splitlines()) == 5, "表头 + 2 批 × 2 题"
+
+
+def test_export_of_a_page_controlled_value_still_passes_the_injection_guard(
+    hist, session
+) -> None:
+    """导出这条路径必须真的过防护 —— 只测 csv_safe 的话，漏调一次也是绿的。"""
+    sess, svc = _with_db(session, hist)
+    _seed(hist, "=cmd|'/C calc'!A0")
+    _name, data = svc.history_export("runs")
+    assert "'=cmd|'/C calc'!A0" in data.decode("utf-8-sig")
+
+
+def test_an_unknown_export_kind_is_a_validation_error_not_a_500(
+    hist, session
+) -> None:
+    sess, svc = _with_db(session, hist)
+    for bad in ("", "runs;drop", "../../etc/passwd"):
+        with pytest.raises(ValidationError):
+            svc.history_export(bad)
+
+
+def test_export_without_the_history_module_says_so(hist, session) -> None:
+    svc = make_service(session[0], history_db_cls=None)
+    with pytest.raises(ValidationError, match="src.history"):
+        svc.history_export("runs")
+
+
+# ------------------------------------------------------- 清理：一次性确认凭据
+
+
+def test_purge_preview_deletes_nothing_and_hands_back_a_token(hist, session) -> None:
+    sess, svc = _with_db(session, hist)
+    _seed(hist, days_ago=9)
+    _seed(hist, days_ago=1)
+
+    preview = svc.purge_preview()
+
+    assert preview["days"] == 7 and preview["count"] == 1
+    assert preview["token"], "没有凭据就没法走第二步"
+    assert len(svc.history_runs(limit=10)) == 2, "预览阶段一条都不许少"
+
+
+def test_purge_confirm_deletes_exactly_what_the_preview_counted(hist, session) -> None:
+    sess, svc = _with_db(session, hist)
+    _seed(hist, days_ago=9)
+    keep = _seed(hist, days_ago=1)
+
+    removed = svc.purge_confirm(svc.purge_preview()["token"])
+
+    assert removed == 1
+    assert [int(r["id"]) for r in svc.history_runs()] == [keep]
+    assert any("已清理 1 条" in row["text"] for row in sess.log_lines), \
+        "删了多少必须说出来，否则用户只能猜"
+
+
+def test_a_stolen_or_typed_in_token_never_deletes(hist, session) -> None:
+    sess, svc = _with_db(session, hist)
+    _seed(hist, days_ago=9)
+
+    for bad in ("", "guess", "x" * 64):
+        with pytest.raises(ValidationError):
+            svc.purge_confirm(bad)
+    assert len(svc.history_runs()) == 1, "错 token 一条都不该删"
+
+
+def test_a_token_is_single_use_so_a_replayed_request_cannot_double_delete(
+    hist, session
+) -> None:
+    """重放同一个 token 会二次删除，而第二次删的是"之后又满 7 天"的那批 ——
+    症状是很久以后才发现少记录，几乎查不到根因。"""
+    sess, svc = _with_db(session, hist)
+    _seed(hist, days_ago=9)
+    token = svc.purge_preview()["token"]
+
+    assert svc.purge_confirm(token) == 1
+    _seed(hist, days_ago=9)
+    with pytest.raises(ValidationError, match="用过"):
+        svc.purge_confirm(token)
+    assert len(svc.history_runs()) == 1, "重放不该把新灌进去的那批删掉"
+
+
+def test_a_new_preview_retires_the_previous_token(hist, session) -> None:
+    """同一时刻只留一张待确认凭据：两张同时有效的话，点旧的那张会删掉
+    新预览没算过的东西。反过来，被拒的旧 token 不该把新的那张一起毁掉 ——
+    两个标签页各点一次「清理」是很自然的动作。"""
+    sess, svc = _with_db(session, hist)
+    _seed(hist, days_ago=9)
+    first = svc.purge_preview()["token"]
+    second = svc.purge_preview()["token"]
+
+    assert first != second
+    with pytest.raises(ValidationError):
+        svc.purge_confirm(first)
+    assert svc.purge_confirm(second) == 1
+
+
+def test_purge_without_the_history_module_says_so(session) -> None:
+    svc = make_service(session[0], history_db_cls=None)
+    with pytest.raises(ValidationError, match="src.history"):
+        svc.purge_preview()
+    with pytest.raises(ValidationError, match="src.history"):
+        svc.purge_confirm("whatever")
