@@ -51,12 +51,44 @@ def _resolve_fonts(fonts: _FONTS_KIND | None) -> dict[str, tuple]:
 class CardFrame(tk.Frame):
     """`make_card()` 产出的卡片容器。
 
-    两个引用是给重绘/滚动事件取用的；显式声明而不是靠动态赋值，
+    三个引用是给重绘/滚动/折叠事件取用的；显式声明而不是靠动态赋值，
     这样 `gui/` 纳入 pyright 门禁后它们仍然是有类型的（v2.8）。
     """
 
     _card_canvas: tk.Canvas
     _card_body: tk.Frame
+    _card_toggle: Callable[[], None]
+
+
+class CardCanvas(tk.Canvas):
+    """卡片那块自绘边框的 Canvas —— 折叠开关挂在它上面（标题条点击的接收方）。"""
+
+    _card_toggle: Callable[[], None]
+
+
+class CardContent(tk.Frame):
+    """`make_card()` 的返回值：调用方往里放内容，也拿它来开合整张卡。
+
+    调用方通常只拿到这一块，所以折叠入口必须也挂在它身上，否则外部要开合
+    就得自己沿 ``.master`` 往上摸 —— 摸错一层就是 ``AttributeError``。
+    """
+
+    _card_toggle: Callable[[], None]
+
+
+def _card_of(widget: tk.Misc) -> CardFrame:
+    """沿 ``.master`` 往上找到那块 ``CardFrame``。
+
+    ``.master`` 的类型是 ``Misc | None``，而卡片结构里它必然是 ``CardFrame`` ——
+    收在这一个函数里，比在每个调用点各写一遍断言好查；结构被改动时这里是
+    唯一会响的地方（而不是某个控件静默少一个属性）。
+    """
+    node: tk.Misc | None = widget
+    while node is not None and not isinstance(node, CardFrame):
+        node = node.master
+    if node is None:
+        raise RuntimeError(f"{widget!r} 不在 make_card() 产出的卡片里")
+    return node
 
 
 def make_card(
@@ -83,7 +115,7 @@ def make_card(
     outer.pack_propagate(True)
 
     # Canvas 绘制 1.5px 细边（克制的点缀）
-    card_c = tk.Canvas(outer, bg=COLORS["bg"], highlightthickness=0, bd=0)
+    card_c = CardCanvas(outer, bg=COLORS["bg"], highlightthickness=0, bd=0)
     card_c.pack(fill=tk.BOTH, expand=True)
     card_c.bind("<Configure>", lambda e, cc=card_c, ac=accent:
                 paint_card_border(cc, ac))
@@ -126,7 +158,7 @@ def make_card(
     tk.Label(header, text="···", font=("Consolas", 9),
              fg=COLORS["text_muted"], bg=COLORS["surface"]).pack(side=tk.LEFT, padx=12)
 
-    inner_body = tk.Frame(body, bg=COLORS["surface"])
+    inner_body = CardContent(body, bg=COLORS["surface"])
     inner_body.pack(fill=tk.BOTH, expand=True, padx=16, pady=(6, 14))
     outer._card_canvas = card_c
     outer._card_body = body
@@ -141,7 +173,7 @@ def fit_card(content: tk.Frame, expand: bool = False) -> None:
     卡片实际是一块固定 ``-height`` 的 Canvas，内容超出就被裁掉而不是把框撑大。
     内容全部挂好之后调一次，才能既不漏行、又把腾出来的页面交给隔壁会 expand 的卡。
     """
-    outer = content.master.master.master
+    outer = _card_of(content)
     body = outer._card_body
     canvas = outer._card_canvas
     body.update_idletasks()
@@ -150,9 +182,9 @@ def fit_card(content: tk.Frame, expand: bool = False) -> None:
 
 
 def attach_collapse(
-    card_canvas: tk.Canvas,
+    card_canvas: CardCanvas,
     header: tk.Frame,
-    content: tk.Frame,
+    content: CardContent,
     body: tk.Frame,
     fonts_dict: _FONTS_KIND,
     ticker: Any | None = None,
@@ -172,7 +204,7 @@ def attach_collapse(
         bg=COLORS["surface"], cursor="hand2",
     )
     chevron.pack(side=tk.RIGHT, padx=(6, 0))
-    outer = card_canvas.master
+    outer = _card_of(card_canvas)
     state = {"collapsed": False}
     pad = {"fill": tk.BOTH, "expand": True, "padx": 16, "pady": (6, 14)}
 
