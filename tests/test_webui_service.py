@@ -957,7 +957,7 @@ def test_the_default_spawn_really_starts_a_thread(session):
 
 
 @pytest.mark.parametrize("broken", [
-    "src.config_io", "src.history", "gui.qr_utils", "selenium",
+    "src.config_io", "src.history", "src.qr_utils", "selenium",
 ])
 def test_probe_reports_false_for_whichever_optional_import_breaks(monkeypatch, broken):
     real_import = __import__
@@ -970,7 +970,7 @@ def test_probe_reports_false_for_whichever_optional_import_breaks(monkeypatch, b
     monkeypatch.setitem(__import__("builtins").__dict__, "__import__", fake_import)
     avail = Availability.probe()
     key = {"src.config_io": "config_io", "src.history": "history",
-           "gui.qr_utils": "qr", "selenium": "selenium"}[broken]
+           "src.qr_utils": "qr", "selenium": "selenium"}[broken]
     assert getattr(avail, key) is False
 
 

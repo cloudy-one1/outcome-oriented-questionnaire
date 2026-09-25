@@ -84,7 +84,7 @@ class Availability:
         except Exception:
             flags["history"] = False
         try:
-            from gui.qr_utils import decode_qr_from_image
+            from src.qr_utils import decode_qr_from_image
             flags["qr"] = decode_qr_from_image is not None
         except Exception:
             flags["qr"] = False

@@ -4,5 +4,7 @@
 
 模块：
     - app        : SurveyGUI 主窗口类（设置 + 权重表格 + 日志 + 运行控制）
-    - qr_utils   : 二维码解析工具（依赖 OpenCV，可选）
+
+（二维码解析曾在本子包，v3.4 移到 ``src/qr_utils.py`` —— Tk 与 webui 共用一个宿主，
+它零 tkinter 依赖，不该随桌面版一起退役。）
 """

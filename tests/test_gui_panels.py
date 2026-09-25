@@ -13,8 +13,8 @@
     3. gui/history_panel.py 的 v2.6 两处修复 —— ``_csv_safe`` 的 CSV 公式注入
        前缀（README 已对外承诺，此前零测试）、``get_db()`` 单实例缓存 +
        ``close_db()`` 清缓存（此前每点一次「历史」Tab 就在 Tk 主线程全表扫描）；
-    4. gui/log_view.py 的队列 → 终端渲染接缝、gui/qr_utils.py 的失败路径
-       （不得弹窗阻塞、必须返回 None）。
+    4. gui/log_view.py 的队列 → 终端渲染接缝（二维码失败路径已随
+       ``src/qr_utils.py`` 一起移到 ``tests/test_qr_utils.py``）。
 
 Tk 基座：根窗口由 ``conftest.py`` 的会话级 ``tk_root`` 夹具提供，全会话只建一个
 （Windows 上第二个 ``tk.Tk()`` 会抛 "Can't find a usable tk.tcl"，症状是后面的 GUI
@@ -41,7 +41,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 tk = pytest.importorskip("tkinter")
 ttk = pytest.importorskip("tkinter.ttk")
 
-from gui import qr_utils  # noqa: E402
 from gui import theme  # noqa: E402
 from gui import widgets  # noqa: E402
 from gui import weight_panel as wp_module  # noqa: E402
@@ -1118,76 +1117,6 @@ def test_sync_scroll_moves_line_number_column(log_view) -> None:
     view.log_text.update_idletasks()
     view._sync_scroll("0.5", "0.6")
     assert 0.0 < float(view.log_lineno.yview()[0]) <= 1.0
-
-
-# ---------------------------------------------------------------------------
-#  12. gui/qr_utils.py — 失败路径不得阻塞
-# ---------------------------------------------------------------------------
-def test_has_cv2_returns_a_bool() -> None:
-    assert isinstance(qr_utils.has_cv2(), bool)
-
-
-# kind → 旧 messagebox 函数名：保留这层映射，下面既有断言（showerror/showwarning/
-# showinfo）就不必跟着换口径。
-_KIND_TO_MESSAGEBOX = {
-    "info": "showinfo",
-    "warning": "showwarning",
-    "error": "showerror",
-    "confirm": "askyesno",
-}
-
-
-def _record_dialogs(monkeypatch) -> list[tuple[str, str]]:
-    """把 ``src.dialogs`` 的出口换成记录器。
-
-    这正是弹窗间接层的意义所在：不建 Tk、不等真人点掉，也能断言"失败路径提示了
-    几次、分别是哪一类"。
-    """
-    dialogs: list[tuple[str, str]] = []
-
-    def handler(kind: str, _title: str, message: str) -> bool:
-        dialogs.append((_KIND_TO_MESSAGEBOX[kind], message))
-        return False
-
-    monkeypatch.setattr(dialogs_mod, "_handler", handler)
-    return dialogs
-
-
-def test_decode_nonexistent_image_returns_none_with_one_dialog(
-    monkeypatch
-) -> None:
-    dialogs = _record_dialogs(monkeypatch)
-    assert qr_utils.decode_qr_from_image("Z:/definitely/not/here.png") is None
-    assert len(dialogs) == 1, f"只该提示一次，实际 {dialogs}"
-    expected = "showerror" if qr_utils.has_cv2() else "showwarning"
-    assert dialogs[0][0] == expected
-
-
-def test_decode_image_without_qr_returns_none(monkeypatch, tmp_path) -> None:
-    if not qr_utils.has_cv2():
-        pytest.skip("本机未安装 opencv，跳过真图片分支")
-    import cv2
-    import numpy as np
-
-    ok, buf = cv2.imencode(".png", np.zeros((24, 24, 3), dtype=np.uint8))
-    assert ok
-    png = tmp_path / "blank.png"
-    buf.tofile(str(png))
-
-    dialogs = _record_dialogs(monkeypatch)
-    assert qr_utils.decode_qr_from_image(str(png)) is None
-    assert [d[0] for d in dialogs] == ["showinfo"], "无二维码 → 未识别提示"
-
-
-def test_decode_non_image_bytes_returns_none(monkeypatch, tmp_path) -> None:
-    if not qr_utils.has_cv2():
-        pytest.skip("本机未安装 opencv，跳过坏字节分支")
-    bogus = tmp_path / "not-an-image.png"
-    bogus.write_bytes(b"\x00\x01\x02not a png at all")
-    dialogs = _record_dialogs(monkeypatch)
-    assert qr_utils.decode_qr_from_image(str(bogus)) is None
-    assert dialogs and dialogs[0][0] == "showerror"
-    assert "无法解析图片" in dialogs[0][1]
 
 
 # ===========================================================================

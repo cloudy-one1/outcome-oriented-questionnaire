@@ -60,7 +60,7 @@ def _python_files() -> list[Path]:
 def _suppression_lines(path: Path) -> list[int]:
     """只认真正的抑制指令：注释 token 本身以 ``# type: ignore`` / ``# pyright:`` 开头。
 
-    这样"解释为什么不用 ignore"的那些散文注释（`gui/qr_utils.py:15`、
+    这样"解释为什么不用 ignore"的那些散文注释（`src/qr_utils.py:15`、
     `src/browser/driver_factory.py:393`）不会被误判 —— 它们是句子中间提到这个词。
     """
     src = path.read_text(encoding="utf-8")

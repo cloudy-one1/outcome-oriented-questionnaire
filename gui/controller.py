@@ -37,7 +37,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 # V2.4 修复：原先从 src.interactions 导入 detect_questions 等三个名字
 # （它们实际在 src.detection / src.verification），且 src.utils.qr 路径不存在
-# （二维码实现在 gui.qr_utils）——整个 try 块必然失败并被吞掉，
+# （二维码实现在 src.qr_utils）——整个 try 块必然失败并被吞掉，
 # 导致"探测题目 / 扫码导入"按钮静默失效。
 try:
     from src.browser import create_driver
@@ -46,7 +46,7 @@ try:
         is_smart_verification_showing,
         wait_for_manual_verification,
     )
-    from .qr_utils import decode_qr_from_image
+    from src.qr_utils import decode_qr_from_image
 except Exception:  # pragma: no cover - 导入失败在方法内部会告警
     create_driver = None
     detect_questions = None

@@ -62,10 +62,13 @@ webui/static/      index.html · app.js · styles.css      ← 观感落这里
 - **搬而不是重写**：`gui/controller.py`（432 行，7 个命令）只依赖 host 的几个回调，
   改成 service 层即可。它现在只有 37% 覆盖，搬过来顺手补到高位。
 - 对接点原样复用：`src.cli.run_batch`、`src.models.RunState`、`src.history.SubmissionHistory`、
-  `src.config_io`、`gui/qr_utils.py` 的解码函数（**它刻意不 import tkinter，可直接复用**）、
+  `src.config_io`、`src/qr_utils.py` 的解码函数（**它刻意不 import tkinter，可直接复用**）、
   `src.dialogs.register_popup_handler` / `register_file_picker`。
-- `qr_utils` 从 `gui/` 移到 `webui/` 或 `src/`？—— **不移**，`webui` 直接 import `gui.qr_utils`，
-  等赛后退役 Tk 时再一起安置。本轮不制造"移动文件"这种无谓 diff。
+- `qr_utils` 从 `gui/` 移到 `webui/` 或 `src/`？—— 本轮**不移**（§10 的原计划），
+  `webui` 先直接 import `gui.qr_utils`。**2026-09-26 已移到 `src/qr_utils.py`**：
+  它是第 7 步的第一件事 —— Tk 与 webui 都吃它，留在 `gui/` 里就等于"删宿主会连带删掉
+  一个宿主无关的模块"。零 tkinter 依赖没变，失败路径的契约测试一起从
+  `tests/test_gui_panels.py` 拆成 `tests/test_qr_utils.py`，好让它不随桌面版退役。
 
 ## 4. parity 清单（Tk 全部表面 → webui 对应）
 
@@ -225,10 +228,15 @@ POST /api/shutdown           停止 + 收尾 + 退出（等价于 Tk 关窗）
 
 本轮**不做**，只登记条件，免得赛后重新推演：
 webui 达到 ① parity 清单逐条有对拍测试 ② 真实长跑连续若干批无回归 ③ README/CHANGELOG
-的 GUI 章节已改写成以 webui 为主 —— 三条齐了才删 `gui/` 的 4913 行与 3381 行 GUI 测试，
-并把三件东西一起安置：`gui/motion.py` / `gui/ticker.py`（本轮刚建、100% 覆盖，浏览器里
-CSS/JS 更强，届时是死代码，该删就删）、`gui/qr_utils.py`（§3 说的"先不移"到那时才移），
-以及 `gui/controller.py` 里 webui 尚未覆盖到的残余分支。
+的 GUI 章节已改写成以 webui 为主 —— 三条齐了才删 `gui/`（**2026-09-26 实测：10 个文件
+4671 行**）与 GUI 测试（`tests/test_gui_*.py` 7 个文件 **3241 行**），并把这几件东西
+一起安置：`gui/motion.py` / `gui/ticker.py`（本轮刚建、100% 覆盖，浏览器里 CSS/JS 更强，
+届时是死代码，该删就删）、`gui/controller.py` 里 webui 尚未覆盖到的残余分支，
+以及**两处不是"删"而是"改写"的依赖**：`tests/test_packaging.py` 钉着 `wjx-gui = gui.app:main`
+与 `packages` 名单，`tests/test_webui_entry.py` 拿 `gui/app.py` 的 `user_data_root` 当参照物
+（"第二份实现"这个前提会随宿主一起消失）。
+
+`gui/qr_utils.py` 已经在 2026-09-26 移进 `src/qr_utils.py`（§3 那条"先不移"到此作废）。
 
 2026-09-25（第 8 步之后）对这三条的实测状态：**② 到位**（真浏览器 3 份长跑 + 8 项
 webui integration 在 `.venv-ci313` 连跑四遍全绿，且在 GitHub 的 windows runner 上也绿 ——

@@ -79,6 +79,28 @@
 - 数字：离线 1662 → **1678 项**（CI 干净口径 1674 passed + 4 skipped）、integration 仍 33 项、
   TOTAL 91.1% 未动；ruff / pyright 全 0。
 
+### 变更（退役 Tk 的第一件不是删，是拆耦合：`qr_utils` 从 `gui/` 移进 `src/`）
+
+- §10 第 7 步开工。第一处硬耦合在 `webui` 自己身上：`session.py` 与 `service.py` 都
+  `from gui.qr_utils import decode_qr_from_image` —— 一个**宿主无关**的模块（零 tkinter，
+  提示全走 `src.dialogs` 间接层）住在准备退役的包里，真删 Tk 会把它一起带走。
+  移到 `src/qr_utils.py`，四处 import 改指（`gui/controller.py` 两处、webui 两处）。
+- 它的失败路径契约此前埋在 `tests/test_gui_panels.py` 第 12 节，跟着整文件的
+  `importorskip("tkinter")` 门槛一起被罩着 —— 拆成独立的 `tests/test_qr_utils.py`。
+  不拆的话，"删掉 GUI 测试"会顺手删掉一条与 GUI 无关的防线，而这是这条线唯一
+  钉住"解不出必给 None、失败只提示一次、是哪一类"的地方。
+- **代价立刻显形**：`gui/` 是覆盖率口径里的组豁免（`group_exempt_prefix`），`src/` 不是。
+  模块一搬过去 `--write` 就当众红 —— `src/qr_utils.py` 只有 52%，缺口全在"真的解一张图"
+  那 16 行（要 OpenCV，CI 口径不装可选依赖，两条真读图用例 skip）。按本仓库的规矩
+  写进 `coverage_gaps.json` 登记理由，不为了绿而扩豁免。
+- 口径：`src/` 92.3% → **92.0%**、`gui/` 84.1% → **84.6%**（11 个文件 → 10 个），
+  TOTAL **91.1%** 不动。
+- 数字：离线 1678 → **1679 项**（缺口清单多一行，参数化用例 +1；CI 干净口径 1675 passed +
+  4 skipped）、integration 仍 **33 项**全绿；ruff / pyright 全 0。
+- 第 7 步剩下的两块（§11 的条件）：**① parity 清单 16 行只有 3 行有跨宿主对拍**、
+  **③ README/CHANGELOG 仍以桌面版为主**。这两块不补齐就删，等于把 13 行用户表面
+  从"两个宿主可比"降级成"只有 webui 自己说它对"，而且永久不可追回。
+
 ## [3.4.0] - 2026-09-25
 
 v3 第三程：**给同一台引擎再添一个宿主，并且先证明它和桌面版给出的是同一份东西**。

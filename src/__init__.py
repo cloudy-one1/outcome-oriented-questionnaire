@@ -9,7 +9,7 @@ v2.4 模块变更日志（扫描发现问题的整改批次）：
         - P0 修复：``gui/controller.py`` 从 ``src.interactions`` 导入不存在的
           ``detect_questions`` 等符号 + 引用不存在的 ``src.utils.qr`` 包 →
           "探测题目/扫码"静默失效；改从 ``src.detection`` / ``src.verification``
-          / ``gui.qr_utils`` 导入
+          / ``src.qr_utils`` 导入
         - P0 修复：``gui/history_panel.py`` 引用不存在的列（ok_count/q_number/
           q_type/recorded_at/note）且对 sqlite3.Row 误用 .get() → 历史 Tab
           必然刷不出；本地 dict 转换 + 列名对齐 schema + purge_old 签名修正，

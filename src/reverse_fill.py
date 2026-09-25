@@ -82,7 +82,7 @@ __all__ = [
 # 用 importlib 而不是 "try: import openpyxl / except ImportError + # type: ignore"：
 # 后者在装了的环境里被 pyright 判成冗余 ignore（reportUnnecessaryTypeIgnoreComment
 # 是 warning），没装的环境里又报模块解析不了 —— 两侧各留一条，数量随环境 ±1。
-# 同一个套路在 gui/qr_utils.py:14-24 已经是仓库范例。注解写成 Any 而不是模块类型，
+# 同一个套路在 src/qr_utils.py:14-24 已经是仓库范例。注解写成 Any 而不是模块类型，
 # 于是 ``openpyxl.load_workbook`` 在本文件里是 Any，不会牵出一条 union 展开。
 openpyxl: Any = None
 try:

@@ -92,6 +92,10 @@
       {
         "module": "src/pipeline_stages/question_stage.py",
         "reason": "逐题 DOM 交互主干：等待、「哪道题调哪个填充器」的分发、带框选项只勾不填的降级都已有离线测试（`tests/test_question_stage_dispatch.py`），真实点击仍靠 E2E"
+      },
+      {
+        "module": "src/qr_utils.py",
+        "reason": "缺口全在「真的解一张图」那 16 行：要 OpenCV，而 CI 口径不装可选依赖，`tests/test_qr_utils.py` 里两条真读图用例因此 skip。缺依赖时的降级顺序、失败路径提示几次与是哪一类、解不出必给 None 都已有契约。该模块 v3.4 从 `gui/` 移到 `src/`（Tk 与 webui 共用），因此不再是 gui 组豁免的一员"
       }
     ]
   },

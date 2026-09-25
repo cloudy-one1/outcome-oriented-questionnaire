@@ -74,7 +74,7 @@ except Exception:  # pragma: no cover - 无 selenium 的环境
     SELENIUM_AVAILABLE = False
 
 try:
-    from gui.qr_utils import decode_qr_from_image as _decode_qr
+    from src.qr_utils import decode_qr_from_image as _decode_qr
 except Exception:  # pragma: no cover
     _decode_qr = None
 
