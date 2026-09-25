@@ -103,4 +103,11 @@ jobs:
       - name: E2E 必须真的在浏览器里跑过
         # 全 skip 时 pytest 退出码仍是 0，这一条把"驱动没起来 => job 永远绿"堵死。
         # 退出码三态照 scripts/e2e_gate.py：0 通过 / 1 一条都没真跑 / 2 报告读不了
-        run: python scripts/e2e_gate.py e2e-junit.xml
+        #
+        # 两个 --require-file 堵的是另一半：conftest 会把浏览器故障降级成 skip，
+        # 只有全局计数的话"作答那 25 项跑了、webui 那 8 项全被吞成 skip"依然是绿的，
+        # 而后者正是本轮新宿主唯一的真浏览器防线。两边各自点名，缺一即红。
+        run: >
+          python scripts/e2e_gate.py e2e-junit.xml
+          --require-file tests/test_e2e_integration.py
+          --require-file tests/test_webui_e2e.py

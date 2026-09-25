@@ -462,14 +462,14 @@ pip install -r requirements-dev.txt
 # 全量测试（含依赖真实浏览器驱动的 E2E）
 python -m pytest tests/ -v
 
-# 离线套件（无浏览器环境 / CI，1662 项；只装 requirements*.txt 的口径下会有若干 skip）
+# 离线套件（无浏览器环境 / CI，1678 项；只装 requirements*.txt 的口径下会有若干 skip）
 python -m pytest tests/ -m "not integration" -q
 
 # 仅浏览器 E2E（需本机 Edge / Chrome + WebDriver，33 项：25 项作答链路 + 8 项 webui 控制台）
 python -m pytest tests/ -m integration -q
 ```
 
-当前测试全部通过：**1695 项**（离线 1662 + 浏览器 33）。
+当前测试全部通过：**1711 项**（离线 1678 + 浏览器 33）。
 
 > **类型门禁不随环境变**：`src/` + `gui/` + 入口在两种环境下都是 **0 error
 > 0 warning**。三处可选依赖（`opencv-python`、`undetected_chromedriver`、`openpyxl`）
@@ -482,7 +482,7 @@ python -m pytest tests/ -m integration -q
 >
 > | 门禁 | 装齐可选依赖（开发机） | 未装（CI / 干净 venv） |
 > |---|---|---|
-> | 离线套件 | 1662 passed | 1658 passed + 4 skipped（二维码解析 2 项、`.xlsx` 真读 1 项，外加全新检出时 `coverage.json` 还不存在 —— 文档口径比对那一项也 skip，它是同一次运行**末尾**才产出的） |
+> | 离线套件 | 1678 passed | 1674 passed + 4 skipped（二维码解析 2 项、`.xlsx` 真读 1 项，外加全新检出时 `coverage.json` 还不存在 —— 文档口径比对那一项也 skip，它是同一次运行**末尾**才产出的） |
 > | 覆盖率 | 总口径比 CI 高约 0.2pp（`src/` +0.1、`gui/` +0.5、`webui/` 不变）—— 三个可选项各自改变一侧的分支走向 | 见下方「已知缺口（诚实记录）」的生成块，那是门禁认的唯一口径 |
 >
 > 覆盖率数字现在只有一个来源：`scripts/readme_coverage.py` 从 `coverage.json` 生成，
@@ -500,7 +500,7 @@ python -m pytest tests/ -m integration -q
 | 覆盖率 | `pytest --cov=src --cov=gui --cov=webui --cov-fail-under=70`（权威名单是 `scripts/readme_coverage.py` 的 `PACKAGES`，`ci.yml` 与它不一致会红） | 实测值见下方「已知缺口（诚实记录）」的生成块（那个数字只能由 `scripts/readme_coverage.py` 写）；地板从本仓库 `ci.yml` 读出并随生成块一起落盘，只许上调——**v3.1 不动它**：`3.10` 那条 leg 本机量不到（这台机器只有 3.11/3.12/3.13），不拿没量过的环境赌门禁 |
 | 文档口径 | `python scripts/readme_coverage.py --check` | README 的覆盖率段落是生成物：数字漂移超过容差、缺口模块改名、低覆盖模块没登记理由，都在这里红 |
 | 类型抑制禁令 | `pytest tests/test_ci_guards.py` | `src/` + `gui/` + 入口里不许出现新的 `# type: ignore` / `# pyright:`；现存 3 处登记在 `BASELINE` 里、只准变小（v3.1 前是零登记，靠 v2.8 那批清零） |
-| E2E 阻塞性 | `pytest -m integration --junitxml=… && python scripts/e2e_gate.py …` | e2e job 从 v3.1 起**阻塞**：浏览器/驱动自身故障由 `tests/conftest.py` 降级成 skip，"全 skip 也算绿"由数 junit 的 `e2e_gate.py` 堵住 |
+| E2E 阻塞性 | `pytest -m integration --junitxml=… && python scripts/e2e_gate.py … --require-file tests/test_e2e_integration.py --require-file tests/test_webui_e2e.py` | e2e job 从 v3.1 起**阻塞**：浏览器/驱动自身故障由 `tests/conftest.py` 降级成 skip，"全 skip 也算绿"由数 junit 的 `e2e_gate.py` 堵住。**堵的是整片**——"作答那 25 项跑了、webui 那 8 项全被吞成 skip"全局计数依然好看，所以两个测试文件各点一次名，缺一个就红（2026-09-25 补） |
 | 镜像构建 | `.github/workflows/docker-smoke.yml`（每周一 + 手动） | `docker build` → `wjx-fill --help` → `import src.*`，只构建不发布；**不在** push 的必填检查里，所以 Dockerfile 的口径写在它自己头上、由 `tests/test_packaging.py` 与 workflow 双向对齐 |
 
 - **`ruff.toml`** 启用 `E9/F63/F7/F82` + `F401/F841/F541`。后三条是刻意加的零误报

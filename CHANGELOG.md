@@ -56,6 +56,28 @@
   且广播出去的 `rev` 等于当前值；空跑时按停止不许白推一次。
 - 数字：离线 1660 → **1662 项**（CI 干净口径 1658 passed + 4 skipped）、integration
   仍 **33 项**；TOTAL 91.1% 未动，`--check` 绿；ruff / pyright 全 0。
+  **runner 已实测转绿**（run 33：`test (3.13)` / `test (3.10)` / `e2e` 三条 leg 全 success，
+  step 6 取证正确地 skip、step 7 gate 通过）—— 这是三次推送以来第一次。
+
+### 门禁（skip 会骗过全局计数 —— 给浏览器 leg 的两个文件分别点名）
+
+- 上面那条红能看见，是因为它**没被降级**（`call` 阶段断言失败）。反过来如果它当初表现为
+  "驱动起不来 → `tests/conftest.py` 吞成 skip"，那条 leg 依然全绿：`e2e_gate.py` 此前只有
+  一个全局 `--min-run`（默认 1），而"作答那 25 项"照样跑，`ran=25 >= 1` → 过。
+  **新宿主唯一的真浏览器防线可以整片消失而没人知道。**
+- 补 `--require-file`（可重复）：点名的那个文件必须**至少一条真跑过、且不许整片 skip**。
+  CI 里两份都点名：`tests/test_e2e_integration.py`（25 项）与 `tests/test_webui_e2e.py`（8 项）。
+  路径与点号模块名两种写法都认（`tests/test_x.py` / `tests.test_x`），且按 `.` 边界匹配 ——
+  `tests/test_webui_e2e_extra.py` 不算 `tests/test_webui_e2e.py` 跑过。
+- 退出码语义没动（0 过 / 1 没真跑 / 2 报告读不了），"点名的文件整片 skip"归 1：
+  它是"这条 leg 什么都没证明"，不是"配置写错了读不动"。输出照旧全 ASCII（runner 控制台编码不固定）。
+- 两次实测都在真报告上做，不用合成 XML 自证：一份 33 项的真实 junit 下 `25/25` 与 `8/8`
+  各自点名通过；把那 8 条改写成 `skipped` 之后 `ran=25`（旧口径会绿）而新口径退 1 并指名文件。
+- 契约测试 `tests/test_e2e_gate_script.py` 16 项（这个脚本此前一项测试都没有）：
+  全 skip / 空报告 / 缺文件 / 半截 XML / 无 `<testsuite>` / 部分 skip 仍算过 /
+  同名前缀不算数 / 两种路径写法 / 多个点名里任一条不合格即红。
+- 数字：离线 1662 → **1678 项**（CI 干净口径 1674 passed + 4 skipped）、integration 仍 33 项、
+  TOTAL 91.1% 未动；ruff / pyright 全 0。
 
 ## [3.4.0] - 2026-09-25
 
