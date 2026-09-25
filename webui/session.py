@@ -1,0 +1,340 @@
+"""``webui`` 的会话状态 —— 表单值、运行态、日志环形缓冲。
+
+设计稿：``docs/design/DESIGN_webui.md`` §3。
+
+这个模块**不 import tkinter、不 import http**：它只是被 HTTP 处理线程与
+Selenium worker 线程共同读写的状态容器，所有"要告诉界面一声"的动作都通过
+构造时注入的 ``emit(kind, payload)`` 走。Tk 宿主那边对应的是
+``SurveyGUI`` 的一堆 ``StringVar`` + ``root.after(0, ...)`` + 按钮 ``configure``，
+这三样在这里分别变成：普通字段、``emit``、``busy`` 集合。
+
+线程约定：worker 线程只允许调 ``log`` / ``set_status`` / ``finish_run`` /
+``update_progress`` 与 ``emit``；表单字段只由 HTTP 处理线程写。
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import threading
+import time
+from collections import deque
+from collections.abc import Callable
+from typing import Any
+
+from src.config import BROWSER_OPTIONS
+
+# 状态字 → 语义色名。颜色是视图的事，所以这里给名字而不是 #hex。
+STATUS_COLORS: dict[str, str] = {
+    "就绪": "neutral",
+    "正在探测题目...": "warn",
+    "正在解析二维码...": "warn",
+    "运行中...": "running",
+    "正在停止...": "warn",
+}
+
+DEFAULT_LOG_CAPACITY = 2000
+COUNT_MIN = 1
+COUNT_MAX = 9999
+URL_MAX = 500  # 与 Tk 宿主一致：超长会被静默截断后真的拿去导航（设计稿 §5「不碰」）
+
+_URL_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+
+class ValidationError(ValueError):
+    """字段级校验失败。api 层把它翻成 400 + 人话错误（设计稿 §5 修第 1 条）。"""
+
+
+class Availability:
+    """可选依赖的可用性快照，决定前端哪些按钮该灰。
+
+    Tk 里这些判定散在 ``_HAS_CONFIG_IO`` / ``_HAS_HISTORY`` 与 controller 的
+    整体 try 导入里；这里集中成一个对象，一次算完。
+    """
+
+    def __init__(self, **flags: bool) -> None:
+        self.config_io = bool(flags.get("config_io", False))
+        self.history = bool(flags.get("history", False))
+        self.qr = bool(flags.get("qr", False))
+        self.selenium = bool(flags.get("selenium", False))
+
+    def as_dict(self) -> dict[str, bool]:
+        return {
+            "config_io": self.config_io,
+            "history": self.history,
+            "qr": self.qr,
+            "selenium": self.selenium,
+        }
+
+    @classmethod
+    def probe(cls) -> "Availability":
+        """按真实导入结果算一次可用性，对应 Tk 的 ``_HAS_CONFIG_IO`` / ``_HAS_HISTORY``
+        与 controller 那个整体 try。集中成一处，前端只读 ``snapshot()['availability']``。
+        """
+        flags: dict[str, bool] = {}
+        try:
+            import src.config_io  # noqa: F401
+            flags["config_io"] = True
+        except Exception:
+            flags["config_io"] = False
+        try:
+            import src.history  # noqa: F401
+            flags["history"] = True
+        except Exception:
+            flags["history"] = False
+        try:
+            from gui.qr_utils import decode_qr_from_image
+            flags["qr"] = decode_qr_from_image is not None
+        except Exception:
+            flags["qr"] = False
+        try:
+            import selenium  # noqa: F401
+            from src.browser import create_driver  # noqa: F401
+            flags["selenium"] = True
+        except Exception:
+            flags["selenium"] = False
+        return cls(**flags)
+
+
+class SessionPaths:
+    """三条数据路径在启动时一次性快照 —— 与 Tk 宿主同一个理由：
+    跑到一半改 ``WJX_USER_DATA_DIR`` 会让历史库与配置文件指向两棵不同的树。
+    """
+
+    def __init__(self, user_data_root: str) -> None:
+        self.user_data_root = user_data_root
+        self.config_dir = os.path.join(user_data_root, "configs")
+        self.default_config_path = os.path.join(
+            self.config_dir, "default_weight_config.json"
+        )
+        self.history_db_path = os.path.join(user_data_root, "data", "history.db")
+
+
+def _noop_emit(_kind: str, _payload: Any) -> None:
+    return None
+
+
+class RunSession:
+    """一次 webui 服务期间的全部可变状态。"""
+
+    def __init__(
+        self,
+        *,
+        paths: SessionPaths,
+        availability: Availability | None = None,
+        emit: Callable[[str, Any], None] = _noop_emit,
+        log_capacity: int = DEFAULT_LOG_CAPACITY,
+    ) -> None:
+        self.paths = paths
+        self.availability = availability or Availability()
+        self._emit = emit
+        self._lock = threading.RLock()
+        self.log_lines: deque[dict[str, Any]] = deque(maxlen=log_capacity)
+        self._log_seq = 0
+
+        # ---- 表单 ----
+        self.url: str = ""
+        self.count: int = 1
+        self.browser: str = "edge"
+        self.use_uc: bool = False
+        # 与 Tk 宿主一致：GUI 侧默认**不**把填空题原文写进历史库（设计稿 §5「不碰」）
+        self.no_record_text: bool = True
+
+        # ---- 运行态 ----
+        self.status: str = "就绪"
+        self.running: bool = False
+        self.busy: set[str] = set()
+        self.success_count = 0
+        self.fail_count = 0
+        self.current_round = 0
+        self.total_rounds = 0
+
+        # ---- 探测结果与权重表 ----
+        self.questions: list[dict[str, Any]] = []
+        self.weight_texts: dict[int, str] = {}
+
+    # ------------------------------------------------------------ 事件出口
+
+    def emit(self, kind: str, payload: Any = None) -> None:
+        try:
+            self._emit(kind, payload)
+        except Exception:  # 出口坏了不该把调用方一起拖死；api 层自己会记日志
+            pass
+
+    # ------------------------------------------------------------ 表单
+
+    def set_field(self, name: str, value: Any) -> None:
+        """带校验的单字段写入。校验失败抛 ``ValidationError``。"""
+        with self._lock:
+            if name == "url":
+                self.url = self._validated_url(value)
+            elif name == "count":
+                self.count = self._validated_count(value)
+            elif name == "browser":
+                self.browser = self._validated_browser(value)
+            elif name == "use_uc":
+                # 刻意不因 browser != chrome 而清零：与 Tk 宿主行为一致（§5「不碰」）
+                self.use_uc = bool(value)
+            elif name == "no_record_text":
+                self.no_record_text = bool(value)
+            else:
+                raise ValidationError(f"未知字段：{name}")
+        self.emit("state", self.snapshot())
+
+    @staticmethod
+    def _validated_url(value: Any) -> str:
+        url = str(value or "").strip()
+        if not url:
+            raise ValidationError("问卷 URL 不能为空")
+        if not _URL_SCHEME_RE.match(url):
+            raise ValidationError("问卷 URL 必须以 http:// 或 https:// 开头")
+        return url[:URL_MAX]
+
+    @staticmethod
+    def _validated_count(value: Any) -> int:
+        """手输也要夹范围 —— Tk 只在 +/− 按钮上夹，输 abc 直接抛 TclError。"""
+        try:
+            count = int(str(value).strip())
+        except (TypeError, ValueError):
+            raise ValidationError(f"提交份数必须是整数，收到：{value!r}") from None
+        if not COUNT_MIN <= count <= COUNT_MAX:
+            raise ValidationError(
+                f"提交份数要在 {COUNT_MIN} ~ {COUNT_MAX} 之间，收到：{count}"
+            )
+        return count
+
+    def _validated_browser(self, value: Any) -> str:
+        browser = str(value or "").strip().lower()
+        if browser not in BROWSER_OPTIONS:
+            raise ValidationError(
+                "浏览器只支持 {}，收到：{!r}".format(
+                    " / ".join(BROWSER_OPTIONS), value)
+            )
+        return browser
+
+    def form_values(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "url": self.url,
+                "count": self.count,
+                "browser": self.browser,
+                "use_uc": self.use_uc,
+                "no_record_text": self.no_record_text,
+            }
+
+    # ------------------------------------------------------------ 运行态
+
+    def set_status(self, text: str) -> None:
+        with self._lock:
+            self.status = text
+        self.emit("status", {"text": text, "tone": STATUS_COLORS.get(text, "neutral")})
+
+    def begin_command(self, name: str) -> None:
+        """替代 Tk 的"按钮 configure(disabled)"。"""
+        with self._lock:
+            self.busy.add(name)
+        self.emit("state", self.snapshot())
+
+    def end_command(self, name: str) -> None:
+        with self._lock:
+            self.busy.discard(name)
+        self.emit("state", self.snapshot())
+
+    def is_busy(self, name: str) -> bool:
+        with self._lock:
+            return name in self.busy
+
+    def start_run(self, total_rounds: int) -> None:
+        with self._lock:
+            self.running = True
+            self.total_rounds = total_rounds
+        self.set_status("运行中...")
+
+    def request_stop(self) -> None:
+        with self._lock:
+            if not self.running:
+                return
+        self.set_status("正在停止...")
+
+    def finish_run(self) -> None:
+        with self._lock:
+            self.running = False
+        self.set_status("就绪")
+
+    def update_progress(
+        self, *, success: int, fail: int, current_round: int, total_rounds: int
+    ) -> None:
+        with self._lock:
+            self.success_count = success
+            self.fail_count = fail
+            self.current_round = current_round
+            self.total_rounds = total_rounds
+        self.emit(
+            "progress",
+            {
+                "success": success,
+                "fail": fail,
+                "round": current_round,
+                "total": total_rounds,
+                "percent": (current_round / total_rounds * 100) if total_rounds else 0.0,
+            },
+        )
+
+    # ------------------------------------------------------------ 日志
+
+    def log(self, message: str, tag: str = "INFO") -> dict[str, Any]:
+        """worker 线程也调它，所以必须线程安全，且只做两件事：进环形缓冲、emit。"""
+        with self._lock:
+            self._log_seq += 1
+            row = {
+                "n": self._log_seq,
+                "ts": time.strftime("%H:%M:%S"),
+                "tag": tag,
+                "text": str(message),
+            }
+            self.log_lines.append(row)
+        self.emit("log", row)
+        return row
+
+    # ------------------------------------------------------------ 探测结果
+
+    def set_questions(self, questions: list[dict[str, Any]]) -> None:
+        with self._lock:
+            self.questions = list(questions)
+            self.weight_texts = {
+                int(q["q"]): self.weight_texts.get(int(q["q"]), "")
+                for q in questions
+                if isinstance(q.get("q"), int)
+            }
+        self.emit("questions", {"count": len(questions)})
+
+    def set_weight_texts(self, texts: dict[int, str]) -> None:
+        with self._lock:
+            self.weight_texts.update({int(k): str(v) for k, v in texts.items()})
+
+    # ------------------------------------------------------------ 快照
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "form": self.form_values(),
+                "status": self.status,
+                "status_tone": STATUS_COLORS.get(self.status, "neutral"),
+                "running": self.running,
+                "busy": sorted(self.busy),
+                "counts": {
+                    "success": self.success_count,
+                    "fail": self.fail_count,
+                    "round": self.current_round,
+                    "total": self.total_rounds,
+                },
+                "questions": len(self.questions),
+                "log_lines": self._log_seq,
+                "availability": self.availability.as_dict(),
+                "limits": {"count_min": COUNT_MIN, "count_max": COUNT_MAX},
+                "paths": {
+                    "user_data_root": self.paths.user_data_root,
+                    "config_dir": self.paths.config_dir,
+                    "history_db": self.paths.history_db_path,
+                },
+            }
