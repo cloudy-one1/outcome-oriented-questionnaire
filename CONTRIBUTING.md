@@ -29,7 +29,7 @@ pip install -e .                                    # 之后可直接用 wjx-fil
 | 门禁 | 命令 |
 |---|---|
 | 静态检查 | `python -m ruff check .` |
-| 类型检查 | `npx pyright`（`src/` + `gui/` + 入口 **0 error 0 warning**，不设 baseline、不写 `# type: ignore`） |
+| 类型检查 | `npx pyright`（`src/` + `gui/` + `webui/` + 入口 **0 error 0 warning**，不设 baseline、不写 `# type: ignore`） |
 | 离线套件 + 覆盖率地板 | `pytest tests/ -m "not integration" --cov=src --cov=gui --cov-report=json:coverage.json --cov-fail-under=$(grep -oE 'cov-fail-under=[0-9.]+' .github/workflows/ci.yml | cut -d= -f2)` |
 | 文档口径 | `python scripts/readme_coverage.py --check` |
 | 浏览器 E2E | `pytest tests/ -m integration -v --junitxml=e2e-junit.xml && python scripts/e2e_gate.py e2e-junit.xml` |
@@ -39,7 +39,7 @@ pip install -e .                                    # 之后可直接用 wjx-fil
   手改 README 那一块会在 `--check` 处变红。
 - **E2E 是阻塞的**。`scripts/e2e_gate.py` 会数 junit 里的实际执行条数 —— 驱动没起来
   导致整片 skip 也照样是绿，那条就是堵这个洞的。只跑离线套件不算验过。
-- **`src/` + `gui/` + 入口里不许新增 `# type: ignore` / `# pyright:`**，现存条目登记在
+- **`src/` + `gui/` + `webui/` + 入口里不许新增 `# type: ignore` / `# pyright:`**，现存条目登记在
   `tests/test_ci_guards.py` 的 `BASELINE` 里、只准变小。
 
 ## 测试怎么写

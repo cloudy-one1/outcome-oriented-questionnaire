@@ -283,11 +283,33 @@ def test_request_stop_only_while_running(session):
     assert (sess.running, sess.status) == (False, "就绪")
 
 
+def test_idle_status_restore_is_a_no_op_during_a_run(session):
+    """后台命令收尾那句「就绪」不能盖掉长跑状态。
+
+    按钮禁用态由 ``running`` 单独驱动，所以真出问题时只有状态条这一行文字在说谎 ——
+    见 ``test_a_detect_that_lands_after_the_run_started``。
+    """
+    sess, rec = session
+    sess.start_run(3)
+    sess.restore_idle_status("就绪")
+    assert (sess.running, sess.status) == (True, "运行中...")
+    assert rec.last("status")["text"] == "运行中..."
+
+    sess.finish_run()
+    sess.restore_idle_status("就绪")
+    assert sess.status == "就绪"
+
+
 def test_detecting_questions_seeds_weight_texts_and_keeps_edited_ones(session):
+    """探测完每行要有预填（等权重串），已经改过的不能被覆盖。"""
     sess, _ = session
     sess.set_weight_texts({1: "0.5,0.5"})
-    sess.set_questions([{"q": 1, "type": "single"}, {"q": 2, "type": "scale"}])
-    assert sess.weight_texts == {1: "0.5,0.5", 2: ""}
+    sess.set_questions([{"q": 1, "type": "single", "choices": ["a", "b"]},
+                        {"q": 2, "type": "scale", "scale": 5}])
+    assert sess.weight_texts == {1: "0.5,0.5", 2: "1,1,1,1,1"}
+    rows = sess.table_rows()
+    assert [(r["q"], r["label"], r["n"]) for r in rows] == [
+        (1, "单选", "2"), (2, "量表", "1~5")]
 
 
 def test_snapshot_reports_availability_and_limits(session):
@@ -408,6 +430,25 @@ def test_detect_without_any_question_element_fails_before_calling_detect(session
     assert called == []
     assert ("FAIL", "未能在页面中找到题目元素") in logs_of(sess)
     assert driver.quit_called is True
+
+
+def test_a_detect_that_lands_after_the_run_started_keeps_the_running_status(session):
+    """探测线程的 ``driver.quit()`` 要一到两秒，收尾很容易落在「开始运行」之后。
+
+    这一条钉的是 2026-09-25 浏览器 E2E 里抓到的画面：批次正在跑第 2/3 份，
+    状态条却写着「就绪」。按钮是对的（禁用态看 ``running``），只有文字在骗人。
+    """
+    sess, _ = session
+    driver = FakeDriver()
+    sess.set_field("url", "https://x.test/s")
+    svc = make_service(sess, create_driver=lambda *a, **k: driver,
+                       detect=lambda d: [{"q": 1, "type": "single"}])
+    sess.start_run(5)                       # 用户点了「开始运行」
+    svc._detect_worker("https://x.test/s")  # 探测线程此刻才走到 finally
+    assert sess.status == "运行中..."
+
+    sess.finish_run()
+    assert sess.status == "就绪"
 
 
 def test_detect_verification_timeout_stops_and_reports(session):

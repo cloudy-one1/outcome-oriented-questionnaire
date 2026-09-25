@@ -234,6 +234,19 @@ class RunSession:
             self.status = text
         self.emit("status", {"text": text, "tone": STATUS_COLORS.get(text, "neutral")})
 
+    def restore_idle_status(self, text: str) -> None:
+        """后台命令收尾时把状态条还给「就绪」—— 但只在真的没在跑的时候还。
+
+        探测 worker 的 ``finally`` 要先 ``driver.quit()``（一到两秒），这条很容易
+        落在用户已经点了「开始运行」之后，于是长跑期间状态条写着「就绪」。
+        按钮的禁用态由 ``running`` 单独驱动，所以只有这一行文字在说谎 ——
+        比整块界面都不动更难发现。
+        """
+        with self._lock:
+            if self.running:
+                return
+        self.set_status(text)
+
     def begin_command(self, name: str) -> None:
         """替代 Tk 的"按钮 configure(disabled)"。"""
         with self._lock:
@@ -304,14 +317,34 @@ class RunSession:
     # ------------------------------------------------------------ 探测结果
 
     def set_questions(self, questions: list[dict[str, Any]]) -> None:
+        """收下探测结果，并给每行预填默认权重串（留空 = 等权重随机）。"""
+        from webui.weights import default_text_for
+
         with self._lock:
             self.questions = list(questions)
-            self.weight_texts = {
-                int(q["q"]): self.weight_texts.get(int(q["q"]), "")
-                for q in questions
-                if isinstance(q.get("q"), int)
+            for q in questions:
+                qi = q.get("q")
+                if not isinstance(qi, int):
+                    continue
+                self.weight_texts.setdefault(qi, default_text_for(q))
+            rows = self.table_rows()
+        self.emit("questions", {"count": len(questions), "rows": rows})
+
+    def table_rows(self) -> list[dict[str, Any]]:
+        """权重表的行模型：题号 · 类型标签 · 选项/规模 · 当前文本。"""
+        from webui.weights import scale_label, type_label
+
+        return [
+            {
+                "q": int(q["q"]),
+                "type": str(q.get("type", "")),
+                "label": type_label(q.get("type")),
+                "n": scale_label(q),
+                "text": self.weight_texts.get(int(q["q"]), ""),
             }
-        self.emit("questions", {"count": len(questions)})
+            for q in self.questions
+            if isinstance(q.get("q"), int)
+        ]
 
     def set_weight_texts(self, texts: dict[int, str]) -> None:
         with self._lock:
@@ -334,6 +367,7 @@ class RunSession:
                     "total": self.total_rounds,
                 },
                 "questions": len(self.questions),
+                "table": self.table_rows(),
                 "log_lines": self._log_seq,
                 "availability": self.availability.as_dict(),
                 "limits": {"count_min": COUNT_MIN, "count_max": COUNT_MAX},

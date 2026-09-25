@@ -50,22 +50,22 @@ try:  # selenium 是可选的：缺了只是探测/扫码不可用，配置与�
 
     SELENIUM_AVAILABLE = True
 except Exception:  # pragma: no cover - 无 selenium 的环境
-    WebDriverWait = None  # type: ignore[assignment]
-    _create_driver = None  # type: ignore[assignment]
-    _detect_questions = None  # type: ignore[assignment]
-    _is_smart_verification_showing = None  # type: ignore[assignment]
-    _wait_for_manual_verification = None  # type: ignore[assignment]
+    WebDriverWait = None
+    _create_driver = None
+    _detect_questions = None
+    _is_smart_verification_showing = None
+    _wait_for_manual_verification = None
     SELENIUM_AVAILABLE = False
 
 try:
     from gui.qr_utils import decode_qr_from_image as _decode_qr
 except Exception:  # pragma: no cover
-    _decode_qr = None  # type: ignore[assignment]
+    _decode_qr = None
 
 try:
     from src.history import SubmissionHistory as _SubmissionHistory
 except Exception:  # pragma: no cover
-    _SubmissionHistory = None  # type: ignore[assignment]
+    _SubmissionHistory = None
 
 _ROUND_LEVELS: dict[str, str] = {
     "success": "OK",
@@ -175,11 +175,17 @@ class WebService:
     def _log(self, msg: str, tag: str = "INFO") -> None:
         self.session.log(msg, tag)
 
-    def _save_ready(self, action: str) -> bool:
+    def _save_ready(self, action: str) -> Callable[..., None] | None:
+        """导出类动作的前置检查：能救就返回那个导出函数，不能就报过原因并给 None。
+
+        返回**函数本身**而不是 bool：调用方拿到的是同一个被验过的对象，
+        于是"检查说可以、调用时又是 None"这种错位在结构上不存在，
+        也不用在调用点挂一条 ``# type: ignore``。
+        """
         if not self.session.availability.config_io or self._save_wc is None:
             self._log(f"未加载 src/config_io，无法{action}配置", "FAIL")
-            return False
-        return True
+            return None
+        return self._save_wc
 
     def current_config_for_export(self) -> dict | None:
         """给 api 层用的公开入口：拿当前权重表对应的 cfg，拿不到就返回 None。"""
@@ -195,7 +201,8 @@ class WebService:
     # ------------------------------------------------------------ 配置 IO
 
     def export_config(self, filepath: str) -> None:
-        if not self._save_ready("导出"):
+        save = self._save_ready("导出")
+        if save is None:
             return
         cfg = self._current_config()
         if cfg is None:
@@ -211,7 +218,7 @@ class WebService:
                 self._log(
                     f"导出前校验发现 {len(warnings)} 条警告，首条：{warnings[0]}", "WARN"
                 )
-            self._save_wc(filepath, cfg, meta=meta)  # type: ignore[misc]
+            save(filepath, cfg, meta=meta)
             self._log(
                 f"✓ 已导出配置 → {_relative_to(filepath, self.session.paths.user_data_root)}",
                 "OK",
@@ -220,7 +227,8 @@ class WebService:
             self._log(f"导出配置失败: {type(e).__name__}: {e}", "FAIL")
 
     def save_default_config(self) -> None:
-        if not self._save_ready("另存默认"):
+        save = self._save_ready("另存默认")
+        if save is None:
             return
         cfg = self._current_config()
         if cfg is None:
@@ -233,7 +241,7 @@ class WebService:
                 "description": f"Web 界面另存默认 · 共 {len(cfg)} 道题",
                 "survey_url": self.session.url[:200],
             }
-            self._save_wc(path, cfg, meta=meta)  # type: ignore[misc]
+            save(path, cfg, meta=meta)
             self._log(f"✓ 已另存默认配置 → {_relative_to(path, self.session.paths.user_data_root)}",
                       "OK")
         except Exception as e:
@@ -247,7 +255,7 @@ class WebService:
             self._log(f"配置文件不存在: {path}", "FAIL")
             return
         try:
-            cfg, meta = self._load_wc(path)  # type: ignore[misc]
+            cfg, meta = self._load_wc(path)
         except Exception as e:
             self._log(f"读取配置失败: {type(e).__name__}: {e}", "FAIL")
             return
@@ -306,7 +314,7 @@ class WebService:
                 self._log(f"二维码解析成功 ✓: {result}", "OK")
         else:
             self._log("未识别到二维码内容 ✗", "FAIL")
-        self.session.set_status(READY_STATUS)
+        self.session.restore_idle_status(READY_STATUS)
         self.session.end_command("qr")
 
     # ------------------------------------------------------------ 探测题目
@@ -354,7 +362,7 @@ class WebService:
                     driver.quit()
                 except Exception:
                     logger.debug("探测收尾 driver.quit() 失败（忽略）", exc_info=True)
-            self.session.set_status(READY_STATUS)
+            self.session.restore_idle_status(READY_STATUS)
             self.session.end_command("detect")
 
     def _wait_page_ready(self, driver: Any) -> None:

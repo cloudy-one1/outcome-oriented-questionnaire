@@ -172,8 +172,30 @@ def test_field_validation_survives_the_wire(server):
     assert session.count == 1
 
 
-def test_a_missing_frontend_file_says_so_instead_of_500(server):
-    """步骤 3 之前 static/index.html 本来就不存在 —— 报错要能指向原因。"""
+@pytest.mark.parametrize("path,marker", [
+    ("/", "<!DOCTYPE html>"),
+    ("/app.js", "EventSource"),
+    ("/styles.css", "prefers-reduced-motion"),
+])
+def test_the_three_frontend_files_are_served_non_empty(server, path, marker):
+    """设计稿 §7 风险 3：静态文件没打进包 → 服务起得来但页面全白。
+
+    这条同时是"前端文件真的存在且不是空壳"的门禁。
+    """
+    handle, _session, _svc, _api = server
+    resp, body = get(handle, path)
+    assert resp.status == 200
+    assert len(body) > 200
+    assert marker.encode("utf-8") in body
+
+
+def test_a_missing_frontend_file_points_at_the_install(server, monkeypatch, tmp_path):
+    """报错要指回真正的原因：静态文件没跟着装上来。"""
+    import webui.server as srv
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setattr(srv, "STATIC_DIR", str(empty))
     handle, _session, _svc, _api = server
     resp, body = get(handle, "/")
     assert resp.status == 404
@@ -274,6 +296,34 @@ def test_an_abruptly_closed_client_is_unsubscribed(server):
     sock.close()
     assert _wait_until(lambda: api.events.client_count == 0, timeout=10), \
         "断开后订阅没被摘掉，长跑一晚线程数会跟着标签页涨"
+
+
+def test_hanging_up_leaves_no_traceback_on_the_console(server, capsys):
+    """浏览器掐线不是故障，不该在 stderr 上留下整段 traceback。
+
+    keep-alive 空闲期被 RST 时，服务端正阻塞在"读下一行请求"，异常一路冒到
+    ``socketserver.handle_error`` —— 基类的做法是往 stderr 打一整段。长跑期间那块
+    stderr 是唯一的出口，而 EventSource 每 30 秒就重连一次，噪音会把真信息冲干净。
+    """
+    handle, _session, _svc, _api = server
+    conn = http.client.HTTPConnection("127.0.0.1", handle.port, timeout=5)
+    conn.request("GET", "/api/health")
+    assert conn.getresponse().status == 200
+    # 响应读得干净，``conn.sock`` 才还在（上一条测试记的就是这个坑）。
+    # 读完之后服务端回到 keep-alive 的 readline，此刻掐线才命中要钉的那条路径。
+    conn.sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                         struct.pack("ii", 1, 0))
+    conn.close()
+    time.sleep(1.0)                     # 让请求线程真的走到 handle_error
+
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "Exception occurred during processing" not in err
+    # 只咽掉这一条连接的声音，服务本身必须继续接活
+    again = http.client.HTTPConnection("127.0.0.1", handle.port, timeout=5)
+    again.request("GET", "/api/health")
+    assert again.getresponse().status == 200
+    again.close()
 
 
 def test_a_graceful_close_is_reclaimed_by_the_lifetime_cap(server, monkeypatch):

@@ -207,6 +207,29 @@ def test_field_endpoint_rejects_a_non_object_body(api):
     assert post(made, "/api/field", raw=b"\xff\xfe").status == 400
 
 
+def test_weights_endpoint_is_the_only_way_the_table_gets_back(api):
+    """权重表整列一次写回：前端在浏览器里，服务端是唯一能收下它的地方。
+
+    键是 JSON 的字符串，而内部表示按 int 题号存 —— 这里不转，``parse_weights``
+    拿到的是 ``"1"`` 而不是 ``1``，整列会静默变成"没填"，于是所有题退化成等权重。
+    """
+    made, session, _svc = api
+    session.set_questions([{"q": 1, "type": "single", "choices": ["a", "b"]}])
+    resp = post(made, "/api/weights", {"texts": {"1": "0.9,0.1", "2": None}})
+    assert resp.status == 200
+    assert session.weight_texts == {1: "0.9,0.1", 2: ""}
+    assert body_of(resp)["state"]["table"][0]["text"] == "0.9,0.1"
+
+
+def test_weights_endpoint_rejects_a_body_that_is_not_a_table(api):
+    made, _session, _svc = api
+    for payload in ({"texts": ["0.5,0.5"]}, {"texts": None}, {}):
+        assert post(made, "/api/weights", payload).status == 400
+    bad = post(made, "/api/weights", {"texts": {"第一题": "1,1"}})
+    assert bad.status == 400
+    assert "整数" in body_of(bad)["error"]
+
+
 def test_detect_endpoint_delegates(api):
     made, _session, svc = api
     assert post(made, "/api/detect").status == 200

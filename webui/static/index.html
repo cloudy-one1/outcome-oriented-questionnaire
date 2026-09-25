@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>问卷星自动填写工具 · Web 控制台</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="masthead">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">WJ</span>
+      <span class="brand-text">
+        <strong>问卷星自动填写工具</strong>
+        <em id="subtitle">Web 控制台 · 只监听本机回环地址</em>
+      </span>
+    </div>
+    <div class="status" id="status" role="status" aria-live="polite">
+      <span class="status-dot" id="status-dot" aria-hidden="true"></span>
+      <span class="status-label">状态</span>
+      <span class="status-text is-shimmer" id="status-text">就绪</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="column column-left">
+      <article class="card" id="card-settings">
+        <header class="card-head">
+          <h2><span class="card-bar" aria-hidden="true"></span>⚙ 基本设置</h2>
+        </header>
+        <div class="card-body">
+          <div class="field">
+            <label for="url">🔗 问卷 URL</label>
+            <input id="url" name="url" type="text" autocomplete="off"
+                   placeholder="https://www.wjx.top/vm/xxxx.aspx">
+          </div>
+          <div class="field">
+            <label for="count">📊 提交份数</label>
+            <div class="count-row">
+              <button type="button" class="step" id="count-minus"
+                      aria-label="减少一份">−</button>
+              <input id="count" name="count" type="number" min="1" max="9999" value="1">
+              <button type="button" class="step" id="count-plus"
+                      aria-label="增加一份">+</button>
+              <span class="hint">份（1 ~ 9999）</span>
+            </div>
+          </div>
+          <div class="field">
+            <label for="browser">🌐 浏览器</label>
+            <select id="browser" name="browser"></select>
+          </div>
+          <div class="field field-stack">
+            <label class="check">
+              <input type="checkbox" id="use-uc">
+              <span>UC 模式（更强反爬，需 undetected-chromedriver；仅 Chrome 生效）</span>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="no-record-text" checked>
+              <span>🔒 不记录填空文本（保护隐私，历史库 text_answer 写 NULL）</span>
+            </label>
+          </div>
+          <div class="actions">
+            <button type="button" class="btn btn-primary" id="btn-detect">🔍 探测题目</button>
+            <button type="button" class="btn btn-ghost" id="btn-export">💾 导出配置</button>
+            <button type="button" class="btn btn-ghost" id="btn-save-default">⭐ 另存默认</button>
+            <label class="btn btn-ghost file-btn" for="file-import">📂 导入配置
+              <input type="file" id="file-import" accept=".json,application/json">
+            </label>
+          </div>
+          <p class="field-note" id="settings-note"></p>
+        </div>
+      </article>
+
+      <article class="card card-grow" id="card-weights">
+        <header class="card-head">
+          <h2><span class="card-bar card-bar-green" aria-hidden="true"></span>📋 权重配置</h2>
+          <span class="card-meta" id="table-meta">未探测</span>
+        </header>
+        <div class="card-body">
+          <p class="hint">
+            每题一行，权重用英文逗号分隔，例如 <code>0.3,0.5,0.2</code>
+            （留空则使用等权重随机）
+          </p>
+          <div class="table" id="table" role="table" aria-label="权重表">
+            <div class="table-head" role="row">
+              <span role="columnheader">题号</span>
+              <span role="columnheader">类型</span>
+              <span role="columnheader">选项/空数</span>
+              <span role="columnheader">权重 / 答案文本（英文逗号分隔）</span>
+            </div>
+            <div id="table-body"></div>
+            <p class="empty" id="table-empty">
+              点「🔍 探测题目」读取问卷结构后，这里会出现可编辑的权重表。
+            </p>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section class="column column-right">
+      <article class="card card-grow terminal-card">
+        <header class="card-head">
+          <h2><span class="card-bar card-bar-red" aria-hidden="true"></span>🖥 运行日志</h2>
+          <span class="card-meta" id="line-count">0 lines</span>
+        </header>
+        <div class="terminal">
+          <div class="terminal-bar" aria-hidden="true">
+            <span class="dot dot-red"></span><span class="dot dot-amber"></span>
+            <span class="dot dot-green"></span>
+            <span class="terminal-title">wjx · run log</span>
+          </div>
+          <div class="terminal-scroll" id="log-scroll" role="log" aria-live="polite"
+               aria-label="运行日志">
+            <div class="log-gutter" id="log-gutter" aria-hidden="true"></div>
+            <div class="log-lines" id="log-lines"></div>
+          </div>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <footer class="controlbar">
+    <div class="controlbar-row">
+      <button type="button" class="btn btn-run" id="btn-run">▶ 开始运行</button>
+      <button type="button" class="btn btn-stop" id="btn-stop" disabled>■ 停止</button>
+      <div class="progress-block">
+        <div class="progress-top">
+          <span>⚡ 执行进度</span>
+          <span><b id="pct">0.0%</b> <span class="muted" id="rounds">0 / 0</span></span>
+        </div>
+        <div class="progress-track" role="progressbar" aria-valuemin="0"
+             aria-valuemax="100" aria-valuenow="0" id="progress">
+          <div class="progress-fill" id="progress-fill"></div>
+        </div>
+      </div>
+      <div class="badges">
+        <div class="badge badge-ok"><span>✓ 成功</span><b id="ok-count">0</b></div>
+        <div class="badge badge-fail"><span>✕ 失败</span><b id="fail-count">0</b></div>
+      </div>
+    </div>
+    <p class="conn" id="conn" role="status"></p>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

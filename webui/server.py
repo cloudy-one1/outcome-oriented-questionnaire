@@ -22,6 +22,7 @@ import logging
 import os
 import queue
 import socket
+import sys
 import threading
 import time
 import webbrowser
@@ -42,6 +43,12 @@ STATIC_FILES: dict[str, tuple[str, str]] = {
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
 }
 MAX_SSE_CLIENTS = 4
+
+# 浏览器主动断线时抛的三种形状：RST（关标签页 / keep-alive 空闲被掐）、
+# 写半边断了、以及 Windows 上"对端已重置"落到 accept 之后的 recv。
+# 共同点：请求已经处理完或还没开始，服务端没有任何东西要挽回。
+_CLIENT_ABORTS = (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)
+
 # 心跳间隔同时也是**断连检测间隔**：服务端只有在写的时候才会发现客户端走了。
 # 但这条不可靠 —— 客户端优雅关闭（FIN）后，往半关闭连接里写是静默成功的，
 # 实测 http.client 的 close() 就永远触发不了写失败。所以只有"到点主动收线"
@@ -253,6 +260,22 @@ class WebUIServer:
             daemon_threads = True
             allow_reuse_address = True
             address_family = family
+
+            def handle_error(self, request, client_address):
+                """客户端自己掐线不是故障，别往 stderr 上喷 traceback。
+
+                关标签页、EventSource 自动重连、以及 keep-alive 空闲期被浏览器
+                RST，都会让 ``handle_one_request`` 在读下一行请求时抛
+                ConnectionResetError。基类的处理是打一整段 traceback，而这块
+                stderr 正是长跑期间唯一看得见的出口 —— 一晚上重连几十次，
+                真信息会被自己的噪音埋掉（设计稿 §5「日志可见性」）。
+                """
+                exc = sys.exc_info()[1]
+                if isinstance(exc, _CLIENT_ABORTS):
+                    logger.debug("客户端断开（忽略）: %s", client_address,
+                                 exc_info=True)
+                    return
+                super().handle_error(request, client_address)
 
         handler = type("BoundHandler", (WebUIRequestHandler,), {"api": api})
         return _Server((host, port), handler)

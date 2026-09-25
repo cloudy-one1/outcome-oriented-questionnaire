@@ -83,13 +83,15 @@ def test_optional_extras_are_pinned_to_the_documented_versions(pyproject: dict) 
 
 
 def test_console_scripts_point_at_real_entry_functions(pyproject: dict) -> None:
-    from src.cli import main as cli_main
     from gui.app import main as gui_main
+    from src.cli import main as cli_main
+    from webui.__main__ import main as web_main
 
     scripts = pyproject["project"]["scripts"]
     assert scripts["wjx-fill"] == "src.cli:main"
     assert scripts["wjx-gui"] == "gui.app:main"
-    assert callable(cli_main) and callable(gui_main)
+    assert scripts["wjx-web"] == "webui.__main__:main"
+    assert callable(cli_main) and callable(gui_main) and callable(web_main)
 
 
 def test_declared_packages_cover_every_imported_module(pyproject: dict) -> None:
@@ -99,13 +101,34 @@ def test_declared_packages_cover_every_imported_module(pyproject: dict) -> None:
     """
     declared = set(pyproject["tool"]["setuptools"]["packages"])
     on_disk = set()
-    for base in ("src", "gui"):
+    for base in ("src", "gui", "webui"):
         for dirpath, dirnames, filenames in os.walk(os.path.join(ROOT, base)):
             dirnames[:] = [d for d in dirnames if d != "__pycache__"]
             if "__init__.py" in filenames:
                 rel = os.path.relpath(dirpath, ROOT).replace(os.sep, ".")
                 on_disk.add(rel)
     assert on_disk - declared == set(), f"未声明的子包: {sorted(on_disk - declared)}"
+
+
+def test_the_static_files_the_console_serves_are_declared_and_exist(
+    pyproject: dict
+) -> None:
+    """静态文件漏进 wheel 的症状是"整个工具坏了"，而源码目录跑着一切正常。
+
+    所以这里两头都钉：``server.STATIC_FILES`` 里每个名字都得在 ``package-data``
+    里出现，并且磁盘上真有这个文件且非空。少任何一头，``pip install`` 之后
+    ``wjx-web`` 起得来、端口听得见，页面却是一片空白。
+    """
+    from webui.server import STATIC_FILES
+
+    declared = pyproject["tool"]["setuptools"]["package-data"]["webui"]
+    served = {"static/" + name for name, _type in STATIC_FILES.values()}
+    assert set(declared) == served, (
+        "package-data 与 server.STATIC_FILES 不同名："
+        "装出来的包会少文件")
+    for name in declared:
+        path = os.path.join(ROOT, "webui", *name.split("/"))
+        assert os.path.getsize(path) > 0, f"{name} 是空的"
 
 
 def test_dockerfile_is_referenced_honestly() -> None:

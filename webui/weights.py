@@ -153,6 +153,63 @@ def _text_for(texts: dict, qi: Any) -> str:
     return str(texts.get(str(key), "") or "")
 
 
+# 存储名 → 展示标签。与 gui/weight_panel 的胶囊文案对齐，但**这是 webui 自己的一份**
+# （理由同本模块开头：本轮 Tk 是参照实现，共用会让对拍失去独立性）。
+TYPE_LABELS: dict[str, str] = {
+    "single": "单选",
+    "multi": "多选",
+    "dropdown": "下拉",
+    "scale": "量表",
+    "text": "填空",
+    "matrix": "矩阵",
+    "matrix_multi": "矩多",
+    "sort": "排序",
+}
+
+_FIELD_LABELS = {
+    "name": "姓名字段", "phone": "手机字段", "mobile": "手机字段",
+    "tel": "手机字段", "email": "邮箱字段",
+    "address": "地址字段", "addr": "地址字段", "age": "年龄字段",
+    "company": "公司字段", "org": "公司字段",
+}
+
+
+def type_label(qtype: Any) -> str:
+    return TYPE_LABELS.get(normalize_question_type(str(qtype or "")), "其它")
+
+
+def default_text_for(q: dict) -> str:
+    """探测完给每行预填的默认串 —— 留空即"等权重随机"，所以矩阵/排序不预填。"""
+    storage = normalize_question_type(str(q.get("type", "single")))
+    if storage in _CHOICE_TYPES:
+        n = len(q.get("choices", []))
+        if not n:
+            return ""
+        return ",".join(f"{1.0 / n:.4f}" for _ in range(n))
+    if storage in _SCALE_TYPES:
+        return ",".join(["1"] * int(q.get("scale", 5) or 0))
+    if storage in _TEXT_TYPES:
+        return ",".join(str(x) for x in (q.get("options") or []))
+    return ""
+
+
+def scale_label(q: dict) -> str:
+    """第 3 列"选项/空数"该写什么。"""
+    storage = normalize_question_type(str(q.get("type", "single")))
+    if storage in _CHOICE_TYPES:
+        return str(len(q.get("choices", [])))
+    if storage in _SCALE_TYPES:
+        n = int(q.get("scale", 5) or 0)
+        return f"{int(q.get('scale_min', 1) or 1)}~{n}"
+    if storage in _TEXT_TYPES:
+        return _FIELD_LABELS.get(str(q.get("field") or ""), "自由文本")
+    if storage in _MATRIX_TYPES:
+        return f"{len(q.get('rows', []))}行 × {len(q.get('cols', []))}列"
+    if storage in _SORT_TYPES:
+        return f"{len(q.get('items', []))} 项可排"
+    return str(len(q.get("choices", [])))
+
+
 def parse_weights(questions: list[dict], texts: dict[int, str]
                   ) -> tuple[dict, list[str]]:
     """返回 ``(cfg, warnings)``。warnings 是要往日志里刷的人话，不阻断。"""
@@ -198,4 +255,5 @@ def parse_weights(questions: list[dict], texts: dict[int, str]
     return cfg, warnings
 
 
-__all__ = ["parse_weights"]
+__all__ = ["parse_weights", "default_text_for", "scale_label", "type_label",
+           "TYPE_LABELS"]

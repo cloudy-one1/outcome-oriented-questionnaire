@@ -10,7 +10,13 @@
   // 可选导入的 Callable|None 在闭包内重新收窄、weight_panel 的 cfg 显式声明成
   // dict[str, Any]、qr_utils 的可选 cv2 换 importlib 以免 ignore 注释随环境变成
   // "冗余"）。没有 baseline、没有豁免 —— 需要豁免的门禁只会退化成装饰。
-  "include": ["src", "gui", "run_cli.py", "run_gui.py", "conftest.py"],
+  //
+  // webui/ 与 run_web.py 于 v3.3.1 步骤 3 一并纳入：进来之前先量过，1214 句
+  // 0 error，只有 8 条"随环境变成冗余"的 ignore 注释 —— 正是上面那条陷阱的翻版，
+  // 全部删掉而不是留着豁免（导出/另存默认那两处改成 `_save_ready` 返回函数本身，
+  // 检查与调用从此是同一个对象）。
+  "include": ["src", "gui", "webui", "run_cli.py", "run_gui.py", "run_web.py",
+              "conftest.py"],
   "exclude": ["**/__pycache__", ".pytest_cache", ".ruff_cache"],
   "typeCheckingMode": "basic",
   "pythonVersion": "3.10",

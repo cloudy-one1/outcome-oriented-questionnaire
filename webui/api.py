@@ -272,6 +272,20 @@ class Api:
         self.service.save_default_config()
         return Response.json({"ok": True, "state": self.session.snapshot()})
 
+    def post_weights(self, body: bytes, _query: dict) -> Response:
+        """把权重表第 4 列写回会话。解析发生在点开始/导出时，不在这里。"""
+        payload = self._json_body(body)
+        texts = payload.get("texts")
+        if not isinstance(texts, dict):
+            raise ValidationError("texts 必须是一个 题号→字符串 的对象")
+        try:
+            cleaned = {int(k): ("" if v is None else str(v))
+                       for k, v in texts.items()}
+        except (TypeError, ValueError):
+            raise ValidationError("题号必须是整数") from None
+        self.session.set_weight_texts(cleaned)
+        return Response.json({"ok": True, "state": self.session.snapshot()})
+
     def post_run(self, _body: bytes, _query: dict) -> Response:
         self.service.start_run()
         return Response.json({"ok": True, "state": self.session.snapshot()})
@@ -311,6 +325,7 @@ class Api:
         ("POST", "/api/config/import"): post_config_import,
         ("POST", "/api/config/export"): post_config_export,
         ("POST", "/api/config/save-default"): post_save_default,
+        ("POST", "/api/weights"): post_weights,
         ("POST", "/api/run"): post_run,
         ("POST", "/api/stop"): post_stop,
         ("POST", "/api/shutdown"): post_shutdown,
