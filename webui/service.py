@@ -153,6 +153,10 @@ class WebService:
             return False
         return True
 
+    def current_config_for_export(self) -> dict | None:
+        """给 api 层用的公开入口：拿当前权重表对应的 cfg，拿不到就返回 None。"""
+        return self._current_config()
+
     def _current_config(self) -> dict | None:
         if self._build_cfg is None:
             self._log("权重解析尚未接线（设计稿 §10 步骤 4），无法导出配置", "FAIL")

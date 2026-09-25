@@ -155,6 +155,11 @@ class RunSession:
 
     # ------------------------------------------------------------ 事件出口
 
+    def attach_emitter(self, emitter: Callable[[str, Any], None]) -> None:
+        """换掉事件出口。api 层建好广播器之后调一次，之后所有状态变化都走 SSE。"""
+        with self._lock:
+            self._emit = emitter
+
     def emit(self, kind: str, payload: Any = None) -> None:
         try:
             self._emit(kind, payload)
