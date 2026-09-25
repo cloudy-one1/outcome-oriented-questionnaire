@@ -305,6 +305,9 @@ def run(session: Any, service: Any, *, host: str = "127.0.0.1", port: int = 0,
         session.log("收到 Ctrl-C，正在停止并收尾…", "WARN")
     finally:
         server.shutdown()
+        # 还挂着的确认必须叫醒：等答案的那条请求线程不属于 server.shutdown() 会
+        # join 的范围，不取消的话它会一直等到超时才放行
+        session.confirms.cancel_all()
     return 0
 
 

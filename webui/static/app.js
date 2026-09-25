@@ -26,6 +26,7 @@
   var fieldTimers = {};
   var weightTimer = null;
   var runsLoaded = false;
+  var shownConfirmId = null;
 
   function $(id) { return document.getElementById(id); }
 
@@ -40,7 +41,9 @@
      "btn-hist-refresh", "btn-export-runs", "btn-export-answers",
      "hist-meta", "btn-purge", "purge-note", "purge-ask", "purge-ask-text",
      "btn-purge-yes", "btn-purge-no", "runs-body", "runs-empty", "runs-meta",
-     "answers-body", "answers-empty", "ans-meta"
+     "answers-body", "answers-empty", "ans-meta",
+     "confirm-dialog", "confirm-title", "confirm-message",
+     "confirm-yes", "confirm-no"
     ].forEach(function (id) { els[id] = $(id); });
   }
 
@@ -145,6 +148,7 @@
     els["table-meta"].textContent = state.questions
       ? state.questions + " 题" : "未探测";
     if (state.table) { renderTable(state.table); }
+    paintConfirm(state.confirms);
   }
 
   function fillForm(form) {
@@ -338,6 +342,38 @@
   }
 
   function pad4(n) { return ("    " + n).slice(-4); }
+
+  // ---------------------------------------------------------- 确认对话框
+  //
+  // 内容只来自服务端快照里的 confirms，前端不另存一份"问题"。
+  // 因此断线重连、刷新页面、服务端超时撤下，全都由同一个 render 收敛。
+
+  function paintConfirm(confirms) {
+    var dlg = els["confirm-dialog"];
+    var first = (confirms || [])[0];
+    if (!first) {
+      shownConfirmId = null;
+      if (dlg.open) { dlg.close(); }
+      return;
+    }
+    if (shownConfirmId === first.id) { return; }
+    shownConfirmId = first.id;
+    els["confirm-title"].textContent = first.title;
+    els["confirm-message"].textContent = first.message;
+    if (!dlg.open) { dlg.showModal(); }
+  }
+
+  function answerConfirm(accept) {
+    var id = shownConfirmId;
+    if (!id) { return; }
+    shownConfirmId = null;              // 连点两下不该发出两次答案
+    api("/api/confirm", { id: id, accept: accept })
+      .then(function (r) { paintConfirm(r.state.confirms); })
+      .catch(function (err) {
+        showNote(err && err.message ? err.message : String(err));
+        refresh();                      // 答案没送达：回到唯一真相源再判一次
+      });
+  }
 
   // ------------------------------------------------------------ 历史记录
   //
@@ -566,7 +602,12 @@
       ev.target.value = "";
     });
     document.addEventListener("keydown", function (ev) {
-      if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") { els["btn-run"].click(); }
+      if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") {
+        // 确认框开着的时候不再叠一次"开始运行"：模态框挡住了鼠标，但挡不住
+        // document 上的键盘监听，快捷键照样会发第二个请求、问第二个确认
+        if (els["confirm-dialog"].open) { return; }
+        els["btn-run"].click();
+      }
     });
 
     els["tab-run"].addEventListener("click", function () { switchView("run"); });
@@ -591,6 +632,14 @@
     els["btn-purge-no"].addEventListener("click", function () {
       hidePurgeAsk();
       setPurgeNote("已取消，什么都没删。", "");
+    });
+
+    els["confirm-yes"].addEventListener("click", function () { answerConfirm(true); });
+    els["confirm-no"].addEventListener("click", function () { answerConfirm(false); });
+    // Esc / 点遮罩关闭都算"取消"——与桌面版 messagebox 关掉即否同一个语义
+    els["confirm-dialog"].addEventListener("cancel", function (ev) {
+      ev.preventDefault();
+      answerConfirm(false);
     });
   }
 

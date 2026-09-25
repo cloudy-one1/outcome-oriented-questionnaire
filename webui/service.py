@@ -32,7 +32,6 @@ from typing import Any
 
 from src import config as cfg_module
 from src.config_io import apply_weight_config
-from src.dialogs import popup_confirm
 from src.history_export import EXPORTS, build
 from src.models import RunState, normalize_question_type
 from src.weight_text import parse_weight_texts
@@ -156,7 +155,8 @@ class WebService:
         decode_qr: Callable[[str], str | None] | None = _decode_qr,
         spawn: Callable[[Callable[[], None]], None] = _spawn_thread,
         history_db_cls: Any | None = _SubmissionHistory,
-        confirm: Callable[[str, str], bool] = popup_confirm,
+        # 默认走 SSE 反向通道（浏览器里答）；测试与别的宿主可以整个换掉
+        confirm: Callable[[str, str], bool] | None = None,
         run_batch_fn: Callable[..., None] | None = None,
         join_timeout: float = 30.0,
         page_ready_timeout: int = 25,
@@ -180,7 +180,7 @@ class WebService:
         self._settle_seconds = settle_seconds
         self._sleep = sleeper
         self._history_db_cls = history_db_cls
-        self._confirm = confirm
+        self._confirm = confirm if confirm is not None else session.confirms.ask
         self._run_batch = run_batch_fn
         self._join_timeout = join_timeout
         self._db_cached: Any = None

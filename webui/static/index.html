@@ -226,6 +226,16 @@
     <p class="conn" id="conn" role="status"></p>
   </footer>
 
+  <dialog class="confirm" id="confirm-dialog" aria-labelledby="confirm-title">
+    <h3 id="confirm-title"></h3>
+    <pre id="confirm-message"></pre>
+    <div class="confirm-actions">
+      <button type="button" class="btn btn-run" id="confirm-yes">确定</button>
+      <button type="button" class="btn btn-ghost" id="confirm-no">取消</button>
+    </div>
+    <p class="confirm-hint">按 Esc 等同取消。超过两分钟没答，问题会自动撤下并按取消处理。</p>
+  </dialog>
+
   <script src="/app.js"></script>
 </body>
 </html>

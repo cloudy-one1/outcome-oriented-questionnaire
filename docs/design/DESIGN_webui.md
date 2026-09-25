@@ -148,7 +148,8 @@ webui/static/      index.html · app.js · styles.css      ← 观感落这里
 GET  /                       index.html；/app.js /styles.css 静态
 GET  /api/state              首屏一次拿全：表单值 + 运行态 + 三个可用性开关
 GET  /api/events             SSE：log / progress / status / questions / state（+ gap 标记）
-                                    confirm 待第 6 步
+                                    confirm 走 state 里的 confirms 字段，不另开事件：
+                                    对话框内容因此只有一份真相，重连/刷新/超时都收敛
 POST /api/field              单字段写入（服务端校验）
 POST /api/detect             探测题目            POST /api/qr             上传二维码图
 POST /api/config/import      上传 JSON（白名单）  /export  /save-default
@@ -190,7 +191,12 @@ POST /api/shutdown           停止 + 收尾 + 退出（等价于 Tk 关窗）
    与原设计的一处偏离：**清理不走 SSE 反向通道**（那是第 6 步给"引擎中途要人确认"
    准备的），而是 `POST /api/history/purge` 的两步式一次性 token —— 删除范围由服务端定，
    请求体里没有可篡改的参数。CSV 的两个文件各一个 `kind`，不做 zip 也不做多文件下载。
-6. 确认弹窗反向通道与断点续传（现在只剩这一条用得上它：`resume` 那个确认）
+6. ✅ 确认弹窗反向通道与断点续传 —— 2026-09-25 落地：`webui/confirm.py` 一条 SSE 出去、
+   `POST /api/confirm` 回来的通道；引擎侧签名与桌面版逐字相同，所以
+   `_apply_resumable_run` 一行没改。三条硬性质：等不到按最保守答案（不续传）、
+   **超时之后到达的答案作废**、收尾 `cancel_all()` 叫醒等待者而不是让它干等。
+   这一条修掉的实际缺陷是：纯 webui 进程里默认确认是 `popup_confirm`，它恒为 `False`，
+   于是"检测到未完成批次"被**静默答成取消**。
 7. ~~删 `gui/`~~ → **推到赛后**（§11）
 8. Selenium 自测 E2E 进测试套件 + 对拍测试 + ~~CI 等价环境 `--write`~~（**已做**，
    2026-09-25 在 `.venv-ci313` 里量并 `--write`：那本是动效提交欠下的账，见 CHANGELOG）

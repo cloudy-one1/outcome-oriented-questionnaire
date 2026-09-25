@@ -23,6 +23,7 @@ from collections.abc import Callable
 from typing import Any
 
 from src.config import BROWSER_OPTIONS
+from webui.confirm import ConfirmChannel
 
 # 状态字 → 语义色名。颜色是视图的事，所以这里给名字而不是 #hex。
 STATUS_COLORS: dict[str, str] = {
@@ -152,6 +153,11 @@ class RunSession:
         # ---- 探测结果与权重表 ----
         self.questions: list[dict[str, Any]] = []
         self.weight_texts: dict[int, str] = {}
+
+        # ---- 确认反向通道（设计稿 §10 步骤 6）----
+        # 推的是"整份快照"而不是单独一个 confirm 事件：对话框的内容因此只有
+        # snapshot() 一处真相，断线重连 / 刷新页面 / 超时自动关闭都收敛到同一个状态。
+        self.confirms = ConfirmChannel(lambda: self.emit("state", self.snapshot()))
 
     # ------------------------------------------------------------ 事件出口
 
@@ -367,6 +373,7 @@ class RunSession:
                     "total": self.total_rounds,
                 },
                 "questions": len(self.questions),
+                "confirms": self.confirms.pending(),
                 "table": self.table_rows(),
                 "log_lines": self._log_seq,
                 "availability": self.availability.as_dict(),

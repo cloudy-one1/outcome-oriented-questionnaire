@@ -319,6 +319,20 @@ class Api:
         return Response.json({"ok": True, "removed": removed,
                               "state": self.session.snapshot()})
 
+    def post_confirm(self, body: bytes, _query: dict) -> Response:
+        """浏览器把确认的答案交回来。
+
+        id 不认识就是 400 而不是静默成功：那条确认多半已经超时作废，而"答了但没生效"
+        与"答了且生效"在用户看来完全一样 —— 只有批次从第 1 份开跑之后才会露馅。
+        """
+        payload = self._json_body(body)
+        cid = payload.get("id")
+        if not cid:
+            raise ValidationError("缺少确认 id")
+        if not self.session.confirms.answer(cid, bool(payload.get("accept"))):
+            raise ValidationError("这个确认已经过期或答过了")
+        return Response.json({"ok": True, "state": self.session.snapshot()})
+
     def post_history_refresh(self, _body: bytes, _query: dict) -> Response:
         """换视图之后想拿最新批次：只回历史负载，不夹带整份 state。
 
@@ -388,6 +402,7 @@ class Api:
     ("GET", "/api/history/export"): get_history_export,
     ("POST", "/api/history/purge"): post_history_purge,
     ("POST", "/api/history/refresh"): post_history_refresh,
+    ("POST", "/api/confirm"): post_confirm,
         ("POST", "/api/run"): post_run,
         ("POST", "/api/stop"): post_stop,
         ("POST", "/api/shutdown"): post_shutdown,

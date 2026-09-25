@@ -15,6 +15,8 @@ import base64
 import json
 import os
 import queue
+import threading
+import time
 
 import pytest
 
@@ -584,3 +586,47 @@ def test_the_history_refresh_avoids_shipping_the_whole_state_back(api) -> None:
     body = body_of(post(made, "/api/history/refresh", {}))
     assert body["runs"] and "state" not in body
     assert ("runs", 50) in svc.calls
+
+
+# ============================================================ 确认反向通道
+
+
+def test_a_confirm_without_an_id_is_a_400(api) -> None:
+    made, _session, _svc = api
+    assert post(made, "/api/confirm", {"accept": True}).status == 400
+
+
+def test_answering_a_confirm_that_already_expired_says_so(api) -> None:
+    """静默接受一个过期答案，用户只会觉得"我明明点了继续"。"""
+    made, _session, _svc = api
+    resp = post(made, "/api/confirm", {"id": "stale", "accept": True})
+    assert resp.status == 400
+    assert "过期" in body_of(resp)["error"]
+
+
+def test_the_http_answer_reaches_the_thread_that_is_asking(api) -> None:
+    """整条往返：service 线程阻塞在 ask()，HTTP 请求把答案递回去。
+
+    这里走真线程而不是替身 —— 通道要验的就是跨线程唤醒。
+    """
+    made, session, _svc = api
+    out = {}
+    started = threading.Event()
+
+    def ask():
+        started.set()
+        out["value"] = session.confirms.ask("断点续传", "是否从第 4 份继续？")
+
+    worker = threading.Thread(target=ask, daemon=True)
+    worker.start()
+    assert started.is_set()
+    for _ in range(150):
+        if session.confirms.pending():
+            break
+        time.sleep(0.02)
+
+    cid = session.confirms.pending()[0]["id"]
+    body = body_of(post(made, "/api/confirm", {"id": cid, "accept": True}))
+    assert body["state"]["confirms"] == [], "答完之后快照里就该撤下"
+    worker.join(5)
+    assert out["value"] is True
