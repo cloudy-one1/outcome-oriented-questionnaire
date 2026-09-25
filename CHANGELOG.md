@@ -2,6 +2,36 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [未发布]（目标 3.4.1）
+
+### 门禁（CI 红了而本地按 CI 口径全绿 —— 给这种情况装一个能读的出口）
+
+- 起因是**一条还没查明的红**：`tests/test_webui_e2e.py` 推上去之后 `e2e` job 开始红
+  （`fdb4487` 及以前是绿的，两条离线 leg 始终绿）。本地按 CI 口径复现 —— HEAD 用
+  `git archive` 导成干净检出（没有 `configs/`、`data/`、`.pytest_cache`）、
+  `.venv-ci313` 只装 `requirements*`、`PYTHONIOENCODING=cp437`、CI 原样命令
+  `pytest tests/ -m integration -v` —— **33/33 全绿**。分歧卡在一个机制上：
+  Actions 的**日志**匿名 API 是 403（要登录），只有 check-run 的**注解**能匿名读，
+  而 pytest 从来不写注解。于是"红在 runner、本地查不到"这种局面无解，除非有人搬日志。
+- 新增 `scripts/ci_annotate_e2e.py` 与 e2e job 里一步 `if: failure()`：把
+  `e2e-junit.xml` 的失败搬成注解，并且**按 junit 的标签把两种红分开** ——
+  `<failure>` 是用例自己断言失败（界面、时序、代码回归），`<error>` 是 fixture 在
+  setup/teardown 炸的（driver 起不来、端口 bind 不上）。这两种红的查法完全不同，
+  而以前要从日志里人工翻几十行才知道是哪种。标题里带上转义后的用例名，正文带异常原文
+  和正文里那几条 `E ` 行。
+- 顺带把 `ran` / `skipped` 计数也写进注解：`tests/conftest.py` 会把"浏览器/驱动自身
+  故障"降级成 skip，那种降级只出现在日志里，匿名侧同样看不见 —— 这正是
+  `scripts/e2e_gate.py` 数 junit 的同一个理由。
+- 两条实测细节：脚本**永远退 0**（事后取证不该把 job 变得更红）；第一版在 cp437 控制台
+  上直接 `UnicodeEncodeError` 死了 —— 注解正文里必然有中文，而本机 cp936 测不出来，
+  现在开头就把输出流 `reconfigure` 成 UTF-8。
+- 契约测试 `tests/test_ci_annotate_e2e_script.py` 7 项：两种红分得开、命令语法不被
+  用例名里的 `::` 腰斩、真换行与 `#` 走 `%0A` / `%23`、skip 计数在、缺文件与坏 XML
+  各自报错但仍退 0、超配额截断要明说截了几条。
+- **仍未查明**：`e2e` 那条红的原因。这一步只是把下一次红的取证搬到不用人肉的地方。
+- 数字：离线 1653 → **1660 项**（CI 干净口径 1656 passed + 4 skipped）、integration
+  仍 **33 项**；ruff / pyright 全 0。
+
 ## [3.4.0] - 2026-09-25
 
 v3 第三程：**给同一台引擎再添一个宿主，并且先证明它和桌面版给出的是同一份东西**。
