@@ -213,7 +213,8 @@ python run_web.py                 # 装过本仓库后等价于 wjx-web
   提交问卷"的开关交给同网段的任何人。
 - 数据树与桌面版同源：`configs/` 与 `data/` 都在项目根，`WJX_USER_DATA_DIR` 可整棵挪走。
 - 退出：终端 `Ctrl-C`（请求停止 → 等当前轮次收尾 → 关浏览器 → 闭合历史库）。
-- 历史 Tab 与页面内退出按钮还没接，这两件在计划里；眼下查历史用 `--stats` 或桌面版。
+- 「📜 历史记录」页签里有批次列表、逐题明细、两个 CSV 导出与「清理 7 天前」；
+  清理是两步式的 —— 先报"会删几条"，你确认了才真删。
 
 ---
 
@@ -554,10 +555,10 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 
 | 范围 | 离线覆盖率 |
 |---|---|
-| 全部 | **90.5%** |
-| `src/` | 92.2%（4749 条语句剩 370 行） |
-| `gui/` | 82.8%（2303 条语句剩 396 行） |
-| `webui/` | 99.7%（1085 条语句剩 3 行） |
+| 全部 | **90.6%** |
+| `src/` | 92.3%（4794 条语句剩 369 行） |
+| `gui/` | 82.7%（2288 条语句剩 395 行） |
+| `webui/` | 99.1%（1194 条语句剩 11 行） |
 
 #### 已补齐的缺口（"补齐前"一列是登记时的实测）
 
@@ -571,7 +572,7 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 | `src/interactions/choices.py` | 58.8% | **100.0%**（剩 0 行） | `tests/test_choices_interaction.py` |
 | `src/interactions/sort.py` | 22.2% | **100.0%**（剩 0 行） | `tests/test_sort_interaction.py` |
 | `src/cli.py` | 74.3% | **84.6%**（剩 81 行，剩余是 run_batch 内的浏览器接线与降级分支） | `tests/test_cli_exit_and_reports.py`、`tests/test_cli_main.py`、`tests/test_cli_batch.py` |
-| `gui/`（11 个文件合计） | 15% | **82.8%**（`log_view`、`motion`、`theme`、`ticker` 已 100%） | `tests/test_gui_panels.py`、`tests/test_gui_proxies.py`、`tests/test_gui_run_loop.py` |
+| `gui/`（11 个文件合计） | 15% | **82.7%**（`log_view`、`motion`、`theme`、`ticker` 已 100%） | `tests/test_gui_panels.py`、`tests/test_gui_proxies.py`、`tests/test_gui_run_loop.py` |
 
 #### 仍然没有防线的地方
 

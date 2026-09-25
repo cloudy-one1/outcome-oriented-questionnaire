@@ -30,6 +30,7 @@ from http import HTTPStatus
 from urllib.parse import quote
 from typing import Any, Callable
 
+from webui.service import HISTORY_PAGE
 from webui.session import ValidationError
 
 MAX_BODY_BYTES = 8 * 1024 * 1024          # 8MB：够一张二维码截图，也够一份大配置
@@ -318,6 +319,16 @@ class Api:
         return Response.json({"ok": True, "removed": removed,
                               "state": self.session.snapshot()})
 
+    def post_history_refresh(self, _body: bytes, _query: dict) -> Response:
+        """换视图之后想拿最新批次：只回历史负载，不夹带整份 state。
+
+        没有这个端点的话前端只能退回去打 ``/api/state`` —— 那个响应带着整张
+        权重表，而它和"刚跑完的那几批"没有半点关系，白给浏览器传几十 KB。
+        """
+        return Response.json({"ok": True,
+                              "runs": self.service.history_runs(HISTORY_PAGE),
+                              "stats": self.service.history_stats()})
+
     def post_weights(self, body: bytes, _query: dict) -> Response:
         """把权重表第 4 列写回会话。解析发生在点开始/导出时，不在这里。"""
         payload = self._json_body(body)
@@ -376,6 +387,7 @@ class Api:
     ("GET", "/api/history/answers"): get_history_answers,
     ("GET", "/api/history/export"): get_history_export,
     ("POST", "/api/history/purge"): post_history_purge,
+    ("POST", "/api/history/refresh"): post_history_refresh,
         ("POST", "/api/run"): post_run,
         ("POST", "/api/stop"): post_stop,
         ("POST", "/api/shutdown"): post_shutdown,

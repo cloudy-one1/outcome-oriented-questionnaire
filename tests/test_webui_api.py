@@ -572,3 +572,15 @@ def test_history_routes_answer_only_get_and_post_as_declared(api) -> None:
                        host="127.0.0.1:8000").status == 404
     assert made.handle("GET", "/api/history/purge",
                        host="127.0.0.1:8000").status == 404
+
+
+def test_the_history_refresh_avoids_shipping_the_whole_state_back(api) -> None:
+    """换视图/刷新只要批次，不要整张权重表。
+
+    没有这个端点的话前端只能退回 ``/api/state`` —— 那里面有 13 题的表，
+    和"刚跑完的那几批"没有半点关系。
+    """
+    made, _session, svc = api
+    body = body_of(post(made, "/api/history/refresh", {}))
+    assert body["runs"] and "state" not in body
+    assert ("runs", 50) in svc.calls

@@ -48,6 +48,9 @@ PURGE_DAYS = 7
 #: 但界面拿不到分页控件之前不该无上限地拉（长跑 9999 份的库会有几万行）。
 HISTORY_MAX_LIMIT = 500
 
+#: 历史页默认一次给多少批：够看一整屏，又不至于把 9999 份的库全拉进浏览器
+HISTORY_PAGE = 50
+
 
 def _clamp_limit(limit: int) -> int:
     return max(1, min(int(limit), HISTORY_MAX_LIMIT))

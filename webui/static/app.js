@@ -25,6 +25,7 @@
   var stream = null;
   var fieldTimers = {};
   var weightTimer = null;
+  var runsLoaded = false;
 
   function $(id) { return document.getElementById(id); }
 
@@ -34,7 +35,12 @@
      "file-import", "settings-note", "table", "table-body", "table-empty",
      "table-meta", "status", "status-text", "line-count", "log-scroll",
      "log-gutter", "log-lines", "btn-run", "btn-stop", "pct", "rounds",
-     "progress", "progress-fill", "ok-count", "fail-count", "conn"
+     "progress", "progress-fill", "ok-count", "fail-count", "conn",
+     "tab-run", "tab-history", "view-run", "view-history",
+     "btn-hist-refresh", "btn-export-runs", "btn-export-answers",
+     "hist-meta", "btn-purge", "purge-note", "purge-ask", "purge-ask-text",
+     "btn-purge-yes", "btn-purge-no", "runs-body", "runs-empty", "runs-meta",
+     "answers-body", "answers-empty", "ans-meta"
     ].forEach(function (id) { els[id] = $(id); });
   }
 
@@ -333,6 +339,182 @@
 
   function pad4(n) { return ("    " + n).slice(-4); }
 
+  // ------------------------------------------------------------ 历史记录
+  //
+  // 这一栏里的文本大部分**来自被抓取的页面**（问卷 URL、报错信息、下拉选项文案），
+  // 所以一律走 textContent；任何一处 innerHTML 都等于给自己做一个 XSS 入口。
+
+  function setPurgeNote(text, kind) {
+    els["purge-note"].textContent = text || "";
+    els["purge-note"].dataset.state = kind || "";
+  }
+
+  function switchView(which) {
+    var showHistory = which === "history";
+    els["view-run"].hidden = showHistory;
+    els["view-history"].hidden = !showHistory;
+    els["tab-run"].setAttribute("aria-selected", showHistory ? "false" : "true");
+    els["tab-history"].setAttribute("aria-selected", showHistory ? "true" : "false");
+    if (showHistory && !runsLoaded) { loadRuns(); }
+  }
+
+  function loadRuns() {
+    runsLoaded = true;
+    return api("/api/history/runs").then(function (r) {
+      paintRuns(r);
+    }).catch(function (err) {
+      runsLoaded = false;
+      setPurgeNote("读批次失败：" + (err.message || err), "fail");
+    });
+  }
+
+  function paintRuns(r) {
+    renderRuns(r.runs || []);
+    var s = r.stats || {};
+    els["hist-meta"].textContent = s.total_runs
+      ? (s.total_runs + " 批 · 成功率 " + Math.round((s.success_rate || 0) * 100) + "%")
+      : "空库";
+  }
+
+  function renderRuns(runs) {
+    var body = els["runs-body"];
+    body.textContent = "";
+    els["runs-empty"].hidden = runs.length > 0;
+    els["runs-meta"].textContent = runs.length ? runs.length + " 批" : "";
+    var staggered = runs.length <= STAGGER_MAX && !reduced();
+    runs.forEach(function (run, i) {
+      var line = document.createElement("div");
+      line.className = "table-row run-row";
+      line.setAttribute("role", "row");
+      if (staggered) { line.style.animationDelay = (i * STAGGER) + "ms"; }
+      line.appendChild(cell("cell-id", String(run.id)));
+      line.appendChild(cell("cell-mono", run.started_at || ""));
+      var st = document.createElement("div");
+      var pill = document.createElement("span");
+      pill.className = "st-" + (run.status || "");
+      pill.textContent = run.status || "";
+      st.appendChild(pill);
+      line.appendChild(st);
+      line.appendChild(cell("cell-n", String(run.total_submissions)));
+      line.appendChild(cell("cell-n",
+        (run.success_count || 0) + " / " + (run.fail_count || 0)));
+      line.appendChild(cell("cell-url", run.survey_url || ""));
+      line.addEventListener("click", function () { selectRun(run.id, line); });
+      body.appendChild(line);
+    });
+  }
+
+  function selectRun(runId, row) {
+    els["view-history"].querySelectorAll(".run-row").forEach(function (n) {
+      n.setAttribute("aria-selected", n === row ? "true" : "false");
+    });
+    els["ans-meta"].textContent = "读取中…";
+    els["answers-body"].textContent = "";
+    api("/api/history/answers?run_id=" + encodeURIComponent(runId))
+      .then(function (r) { renderAnswers(r.answers || []); })
+      .catch(function (err) {
+        els["ans-meta"].textContent = "";
+        setPurgeNote("读明细失败：" + (err.message || err), "fail");
+      });
+  }
+
+  function renderAnswers(answers) {
+    els["answers-empty"].hidden = answers.length > 0;
+    els["ans-meta"].textContent = answers.length
+      ? answers.length + " 条" : "无明细";
+    var body = els["answers-body"];
+    body.textContent = "";
+    var staggered = answers.length <= STAGGER_MAX && !reduced();
+    answers.forEach(function (a, i) {
+      var line = document.createElement("div");
+      line.className = "table-row ans-row";
+      line.setAttribute("role", "row");
+      if (staggered) { line.style.animationDelay = (i * STAGGER) + "ms"; }
+      line.appendChild(cell("cell-n", String(a.submission_index)));
+      line.appendChild(cell("cell-id", "Q" + a.question_number));
+      line.appendChild(cell("cell-mono", a.question_type || ""));
+      line.appendChild(cell("cell-mono", a.options_selected || ""));
+      line.appendChild(cell("cell-url", a.text_answer || ""));
+      line.appendChild(cell("cell-n", (a.elapsed_ms || 0) + "ms"));
+      body.appendChild(line);
+    });
+  }
+
+  function filenameOf(header) {
+    if (!header) { return ""; }
+    var star = /filename\*=UTF-8''([^;]+)/i.exec(header);
+    if (star) {
+      try { return decodeURIComponent(star[1]); } catch (e) { return ""; }
+    }
+    var plain = /filename="?([^";]+)"?/i.exec(header);
+    return plain ? plain[1] : "";
+  }
+
+  function downloadCsv(kind) {
+    setPurgeNote("正在导出 " + kind + " …", "busy");
+    fetch("/api/history/export?kind=" + encodeURIComponent(kind))
+      .then(function (resp) {
+        if (!resp.ok) {
+          return resp.json().catch(function () { return {}; })
+            .then(function (p) { throw new Error(p.error || ("HTTP " + resp.status)); });
+        }
+        var name = filenameOf(resp.headers.get("Content-Disposition"))
+          || ("history_" + kind + ".csv");
+        return resp.blob().then(function (b) { return { blob: b, name: name }; });
+      })
+      .then(function (r) {
+        download(r.blob, r.name);
+        setPurgeNote("已导出 " + r.name, "");
+      })
+      .catch(function (err) { setPurgeNote(String(err.message || err), "fail"); });
+  }
+
+  // 一次性凭据：预览发一张，确认用掉一张；本地也只在"刚预览过"的那一次有效
+  var purgeToken = null;
+
+  function hidePurgeAsk() {
+    purgeToken = null;
+    els["purge-ask"].hidden = true;
+  }
+
+  function askPurge() {
+    els["btn-purge"].disabled = true;
+    setPurgeNote("正在统计范围…", "busy");
+    api("/api/history/purge", {}).then(function (r) {
+      if (!r.count) {
+        hidePurgeAsk();
+        setPurgeNote("没有 " + r.days + " 天前的批次，无需清理。", "");
+        return;
+      }
+      purgeToken = r.token;
+      els["purge-ask-text"].textContent =
+        "将删除 " + r.count + " 条 " + r.days + " 天前的批次（连带它们的逐题答案），不可恢复。确认？";
+      els["purge-ask"].hidden = false;
+      setPurgeNote("", "");
+    }).catch(function (err) {
+      setPurgeNote(String(err.message || err), "fail");
+    }).finally(function () {
+      els["btn-purge"].disabled = false;
+    });
+  }
+
+  function confirmPurge() {
+    if (!purgeToken) { return; }
+    var token = purgeToken;
+    purgeToken = null;              // 先清：连点两下不该发出两次确认
+    els["btn-purge-yes"].disabled = true;
+    api("/api/history/purge", { token: token }).then(function (r) {
+      hidePurgeAsk();
+      setPurgeNote("已删除 " + r.removed + " 条批次", "");
+      render(r.state);
+      return loadRuns();
+    }).catch(function (err) {
+      setPurgeNote(String(err.message || err), "fail");
+    }).finally(function () {
+      els["btn-purge-yes"].disabled = false;
+    });
+  }
+
   // ------------------------------------------------------------ 动作
 
   function bindActions() {
@@ -385,6 +567,30 @@
     });
     document.addEventListener("keydown", function (ev) {
       if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") { els["btn-run"].click(); }
+    });
+
+    els["tab-run"].addEventListener("click", function () { switchView("run"); });
+    els["tab-history"].addEventListener("click", function () { switchView("history"); });
+    els["btn-hist-refresh"].addEventListener("click", function () {
+      setPurgeNote("", "");
+      // 走 /api/history/refresh 而不是 /api/state：换视图只想看最新批次，
+      // 没必要让浏览器再传一遍整张权重表
+      api("/api/history/refresh", {}).then(function (r) {
+        paintRuns(r);
+        els["answers-body"].textContent = "";
+        els["ans-meta"].textContent = "";
+        els["answers-empty"].hidden = false;
+      }).catch(function (err) {
+        setPurgeNote("刷新失败：" + (err.message || err), "fail");
+      });
+    });
+    els["btn-export-runs"].addEventListener("click", function () { downloadCsv("runs"); });
+    els["btn-export-answers"].addEventListener("click", function () { downloadCsv("answers"); });
+    els["btn-purge"].addEventListener("click", askPurge);
+    els["btn-purge-yes"].addEventListener("click", confirmPurge);
+    els["btn-purge-no"].addEventListener("click", function () {
+      hidePurgeAsk();
+      setPurgeNote("已取消，什么都没删。", "");
     });
   }
 

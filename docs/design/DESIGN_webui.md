@@ -154,8 +154,9 @@ POST /api/detect             探测题目            POST /api/qr             �
 POST /api/config/import      上传 JSON（白名单）  /export  /save-default
 POST /api/weights            存权重表，错误以 WARN 列表回流
 POST /api/run                开始（全部校验在此）  POST /api/stop
-GET  /api/history/runs  /api/history/runs/{id}/answers  /api/history/export
-POST /api/history/purge      需一次性 confirm token
+GET  /api/history/runs?limit=   /api/history/answers?run_id=   /api/history/export?kind=
+POST /api/history/refresh        只要批次，不夹带整份 state
+POST /api/history/purge          不带 token = 预览并发放一次性 token；带 token = 真删
 POST /api/shutdown           停止 + 收尾 + 退出（等价于 Tk 关窗）
 ```
 
@@ -185,8 +186,11 @@ POST /api/shutdown           停止 + 收尾 + 退出（等价于 Tk 关窗）
 4. ✅ 权重表与探测回流 + §5 末的解析函数抽取 —— 表与回流随第 3 步落地；解析已合成
    **`src/weight_text.parse_weight_texts`** 一份（先逐题型对拍、抓到三条才合并），
    对拍测试改钉两个宿主的接线
-5. 历史 Tab（列表 / 明细 / CSV 两个文件 / purge+confirm）
-6. 确认弹窗反向通道与断点续传
+5. ✅ 历史 Tab（列表 / 明细 / CSV 两个文件 / purge+confirm）—— 2026-09-25 落地。
+   与原设计的一处偏离：**清理不走 SSE 反向通道**（那是第 6 步给"引擎中途要人确认"
+   准备的），而是 `POST /api/history/purge` 的两步式一次性 token —— 删除范围由服务端定，
+   请求体里没有可篡改的参数。CSV 的两个文件各一个 `kind`，不做 zip 也不做多文件下载。
+6. 确认弹窗反向通道与断点续传（现在只剩这一条用得上它：`resume` 那个确认）
 7. ~~删 `gui/`~~ → **推到赛后**（§11）
 8. Selenium 自测 E2E 进测试套件 + 对拍测试 + ~~CI 等价环境 `--write`~~（**已做**，
    2026-09-25 在 `.venv-ci313` 里量并 `--write`：那本是动效提交欠下的账，见 CHANGELOG）

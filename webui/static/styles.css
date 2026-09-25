@@ -32,9 +32,19 @@
 
 * { box-sizing: border-box; }
 
+/* 视图切换靠 hidden 属性，而 `.layout` / `.history` 自带 `display: grid` ——
+   作者样式压过 UA 的 `[hidden] { display: none }`，结果是"切到历史视图后
+   运行视图还留在屏幕上"。这条兜底必须在所有布局规则之后仍然生效。 */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
-  min-height: 100vh;
+  /* 整页不滚，滚的是 main：body 一滚，底部那条 sticky 控制栏就会压住内容 ——
+     文档只比视口高一点点的时候，最后几行**永远**在控制栏底下点不到
+     （权重表第 13 行、历史最后一批都中招）。改成 main 自己滚，
+     控制栏是实打实的最后一格，谁也不会被它盖住。 */
+  height: 100vh;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   background: var(--bg);
@@ -374,8 +384,69 @@ input:focus-visible, select:focus-visible, button:focus-visible, .check input:fo
 }
 .conn[data-state="lost"] { color: var(--fail); }
 
+/* ------------------------------------------------------------ 视图切换与历史 */
+
+.tabs {
+  display: flex; gap: 4px;
+  padding: 0 22px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.tab {
+  appearance: none; border: 0; background: transparent; cursor: pointer;
+  padding: 11px 16px 9px;
+  font: 700 13px/1 "Microsoft YaHei UI", sans-serif;
+  color: var(--ink-mute);
+  border-bottom: 2px solid transparent;
+}
+
+.tab[aria-selected="true"] { color: var(--primary); border-bottom-color: var(--primary); }
+.tab:focus-visible { outline: 2px solid var(--primary); outline-offset: -3px; }
+
+main { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: auto; }
+
+.history {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(420px, 1.05fr) minmax(360px, .95fr);
+  gap: 16px;
+  padding: 16px 22px 8px;
+  min-height: 0;
+}
+
+.hist-toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.btn-danger { background: var(--fail); color: #fff; }
+.btn-danger:disabled { background: #c9ced6; }
+
+.purge-row { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.purge-note { font-size: 12px; color: var(--ink-soft); }
+.purge-note[data-state="busy"] { color: var(--warn); }
+.purge-note[data-state="fail"] { color: var(--fail); }
+
+.purge-ask {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 8px 0 0; font-size: 12px; color: var(--fail);
+}
+
+/* 两张表的列宽与权重表不同，所以各自给一份 grid 模板（行仍复用 .table-row 的样式）。
+   题型列要装得下最长的存储名 `matrix_multi` —— 72px 会截成 "matrix_mul"，
+   而它正是最需要看清楚的那一格。 */
+.runs-head, .run-row { grid-template-columns: 46px 130px 76px 54px 68px minmax(0, 1fr); }
+.ans-head, .ans-row { grid-template-columns: 40px 52px 96px 96px minmax(0, 1fr) 60px; }
+
+.run-row { cursor: pointer; }
+.run-row[aria-selected="true"] > * { background: #eaf1ff; }
+.cell-id { font: 700 12px/1 var(--mono); color: var(--primary-ink); justify-content: center; }
+.cell-mono { font: 11px/1.4 var(--mono); color: var(--ink-soft); }
+.cell-url { font: 11px/1.4 var(--mono); color: var(--ink-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-finished { color: var(--ok); font-weight: 700; }
+.st-failed { color: var(--fail); font-weight: 700; }
+.st-running { color: var(--warn); font-weight: 700; }
+
 @media (max-width: 900px) {
   .layout { grid-template-columns: 1fr; }
+  .history { grid-template-columns: 1fr; }
   .field > label { flex-basis: 96px; }
 }
 

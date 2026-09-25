@@ -1513,3 +1513,95 @@ def test_purge_without_the_history_module_says_so(session) -> None:
         svc.purge_preview()
     with pytest.raises(ValidationError, match="src.history"):
         svc.purge_confirm("whatever")
+
+
+# ------------------------------------------------- 历史库坏掉时的降级路径
+#
+# 这些分支是刻意写的（读不出就给空表 + 一句 FAIL，而不是让整页 500），
+# 但"写了"不等于"对"：不测的话，谁把 return [] 改成 raise 也没人知道。
+
+class _RaisingHistory:
+    """每个方法都炸的历史库替身。``skip_answers`` 让明细单独炸。"""
+
+    def __init__(self, *, runs=None, skip_answers=()):
+        self._runs = list(runs or [])
+        self._skip = set(skip_answers)
+
+    def query_runs(self, limit=50, status=None):
+        return self._runs
+
+    def query_answers(self, run_id):
+        if run_id in self._skip:
+            raise OSError("database disk image is malformed")
+        return [{"run_id": run_id, "submission_index": 1, "question_number": 1,
+                 "question_type": "single", "options_selected": "[0]",
+                 "text_answer": None, "elapsed_ms": 5, "created_at": "t"}]
+
+    def stats_summary(self):
+        raise OSError("database disk image is malformed")
+
+    def count_runs_older_than(self, days):
+        raise OSError("database disk image is malformed")
+
+    def purge_old(self, days_older_than):
+        raise OSError("database disk image is malformed")
+
+
+def _raising_service(session, db):
+    sess, _rec = session
+    return sess, make_service(sess, history_db_cls=lambda _path: db)
+
+
+def test_a_malformed_db_empties_the_lists_and_says_so_instead_of_500(
+    session
+) -> None:
+    sess, svc = _raising_service(session, _RaisingHistory(
+        runs=[{"id": 1, "status": "finished"}]))
+    assert svc.history_stats() == {}
+    assert [r["id"] for r in svc.history_runs()] == [1]
+    assert any("全库统计" in row["text"] and row["tag"] == "FAIL"
+               for row in sess.log_lines), "降级必须留痕，否则用户以为库是空的"
+
+
+def test_one_unreadable_run_does_not_void_the_whole_answers_export(session) -> None:
+    """一批明细炸掉不该毁掉整份导出 —— 那是"备份失败"级别的损失。"""
+    db = _RaisingHistory(runs=[{"id": 1}, {"id": 2}], skip_answers={2})
+    _sess, svc = _raising_service(session, db)
+    name, data = svc.history_export("answers")
+    assert name == "history_answers.csv"
+    assert data.decode("utf-8-sig").strip().count("\n") == 1, "只导出能读的那一批"
+
+
+def test_an_export_that_cannot_even_list_runs_is_a_readable_error(session) -> None:
+    class _NoRuns(_RaisingHistory):
+        def query_runs(self, limit=50, status=None):
+            raise OSError("locked")
+
+    sess, svc = _raising_service(session, _NoRuns())
+    with pytest.raises(ValidationError, match="导出失败"):
+        svc.history_export("runs")
+    assert any("导出历史记录失败" in row["text"] for row in sess.log_lines)
+
+
+def test_a_purge_preview_that_blows_up_is_a_readable_error(session) -> None:
+    sess, svc = _raising_service(session, _RaisingHistory())
+    with pytest.raises(ValidationError, match="预览失败"):
+        svc.purge_preview()
+    assert any("预览清理范围失败" in row["text"] for row in sess.log_lines)
+
+
+def test_a_purge_that_fails_mid_way_still_consumes_its_token(session) -> None:
+    """删除抛异常时 token 也必须已经花掉。
+
+    抛异常不代表没删 —— 状态未知的时候再给一次"点一下就删"的机会，
+    等于把二次删除的门槛降回一次点击。
+    """
+    db = _RaisingHistory()
+    sess, svc = _raising_service(session, db)
+    svc._purge_token = "tok-live"
+
+    with pytest.raises(ValidationError, match="清理失败"):
+        svc.purge_confirm("tok-live")
+    assert svc._purge_token is None
+    with pytest.raises(ValidationError, match="无效或已用过"):
+        svc.purge_confirm("tok-live")

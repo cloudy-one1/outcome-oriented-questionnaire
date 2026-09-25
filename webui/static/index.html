@@ -22,8 +22,16 @@
     </div>
   </header>
 
-  <main class="layout">
-    <section class="column column-left">
+  <nav class="tabs" aria-label="视图切换">
+    <button type="button" class="tab" id="tab-run" aria-selected="true"
+            aria-controls="view-run">▶ 运行</button>
+    <button type="button" class="tab" id="tab-history" aria-selected="false"
+            aria-controls="view-history">📜 历史记录</button>
+  </nav>
+
+  <main>
+  <section class="layout" id="view-run" role="tabpanel" aria-labelledby="tab-run">
+    <div class="column column-left">
       <article class="card" id="card-settings">
         <header class="card-head">
           <h2><span class="card-bar" aria-hidden="true"></span>⚙ 基本设置</h2>
@@ -95,9 +103,9 @@
           </div>
         </div>
       </article>
-    </section>
+    </div>
 
-    <section class="column column-right">
+    <div class="column column-right">
       <article class="card card-grow terminal-card">
         <header class="card-head">
           <h2><span class="card-bar card-bar-red" aria-hidden="true"></span>🖥 运行日志</h2>
@@ -116,7 +124,84 @@
           </div>
         </div>
       </article>
-    </section>
+    </div>
+  </section>
+
+  <section class="history" id="view-history" role="tabpanel"
+           aria-labelledby="tab-history" hidden>
+    <div class="column">
+      <article class="card">
+        <header class="card-head">
+          <h2><span class="card-bar" aria-hidden="true"></span>🗂 导出与清理</h2>
+          <span class="card-meta" id="hist-meta">未读取</span>
+        </header>
+        <div class="card-body">
+          <div class="hist-toolbar">
+            <button type="button" class="btn btn-ghost" id="btn-hist-refresh">⟳ 刷新</button>
+            <button type="button" class="btn btn-ghost" id="btn-export-runs">⬇ 批次 CSV</button>
+            <button type="button" class="btn btn-ghost" id="btn-export-answers">⬇ 明细 CSV</button>
+          </div>
+          <p class="hint">
+            两个 CSV 与桌面版导出的是同一份格式（同一套表头与注入防护）。
+            明细里的填空文本默认不入库 —— 勾掉「🔒 不记录填空文本」才会有内容。
+          </p>
+          <div class="purge-row">
+            <button type="button" class="btn btn-danger" id="btn-purge">🗑 清理 7 天前</button>
+            <span class="purge-note" id="purge-note" role="status"></span>
+          </div>
+          <p class="purge-ask" id="purge-ask" hidden>
+            <span id="purge-ask-text"></span>
+            <button type="button" class="btn btn-danger" id="btn-purge-yes">确认删除</button>
+            <button type="button" class="btn btn-ghost" id="btn-purge-no">取消</button>
+          </p>
+        </div>
+      </article>
+
+      <article class="card card-grow">
+        <header class="card-head">
+          <h2><span class="card-bar card-bar-green" aria-hidden="true"></span>📜 运行批次</h2>
+          <span class="card-meta" id="runs-meta"></span>
+        </header>
+        <div class="card-body">
+          <div class="table" role="table" aria-label="运行批次">
+            <div class="table-head runs-head" role="row">
+              <span role="columnheader">ID</span>
+              <span role="columnheader">开始</span>
+              <span role="columnheader">状态</span>
+              <span role="columnheader">份数</span>
+              <span role="columnheader">✓ / ✕</span>
+              <span role="columnheader">问卷</span>
+            </div>
+            <div id="runs-body"></div>
+            <p class="empty" id="runs-empty">还没有运行记录。</p>
+          </div>
+        </div>
+      </article>
+    </div>
+
+    <div class="column">
+      <article class="card card-grow">
+        <header class="card-head">
+          <h2><span class="card-bar card-bar-red" aria-hidden="true"></span>📋 答题明细</h2>
+          <span class="card-meta" id="ans-meta"></span>
+        </header>
+        <div class="card-body">
+          <div class="table" role="table" aria-label="答题明细">
+            <div class="table-head ans-head" role="row">
+              <span role="columnheader">份</span>
+              <span role="columnheader">题号</span>
+              <span role="columnheader">题型</span>
+              <span role="columnheader">选中项</span>
+              <span role="columnheader">文本</span>
+              <span role="columnheader">耗时</span>
+            </div>
+            <div id="answers-body"></div>
+            <p class="empty" id="answers-empty">点左边任意一批查看这一批的逐题答案。</p>
+          </div>
+        </div>
+      </article>
+    </div>
+  </section>
   </main>
 
   <footer class="controlbar">
