@@ -104,7 +104,8 @@
   ① 默认时钟写成 `time.monotonic`，它返回**秒**而所有时长是毫秒 —— 补间慢一千倍，
   表现成动画永远不动，而注入假毫秒时钟的用例全绿；现在 `monotonic_ms()` 直接量墙钟。
   ② 只缩画布高度不缩 `expand`，折叠后只剩一个空白框；现在断言隔壁卡片确实拿到空间。
-  ③ `pack()` 之后 `winfo_reqheight()` 要等一次 idle 才重算，立刻量会拿到折叠态的 50。- 同进程构造第二个 `SurveyGUI` 以前会 `TclError: Duplicate element aurora_tab`，被
+  ③ `pack()` 之后 `winfo_reqheight()` 要等一次 idle 才重算，立刻量会拿到折叠态的 50。
+- 同进程构造第二个 `SurveyGUI` 以前会 `TclError: Duplicate element aurora_tab`，被
   `except Exception: pytest.skip` 咽成整模块静默跳过（比红难发现）；元素名是全局的，
   现在撞了就复用，新测试夹具也改成构造失败直接判失败。
 - 数字：离线套件 1203 → **1301 项通过**（+98，4 跳过不变）；`gui/motion.py` 276 句、
@@ -126,6 +127,74 @@
   与"需 undetected-chromedriver"都是用户点之前该知道的前提。
 - 验证：改前改后各抓一轮窗口图对拍（`PrintWindow` 离屏抓取，不跟操作系统抢前台焦点），
   两个页签的选中/未选中态都实测过一遍；`ruff` 干净，本机 3.10 venv 全量 **1203 通过 / 4 跳过**。
+
+### 界面（第八个对标源：本地 Web 控制台，第 1~3 步落地）
+
+- 设计稿 `docs/design/DESIGN_webui.md`。对标 `DavidHDev/react-bits`（MIT + Commons Clause，
+  可借的只有外观与"按文本/微交互/背景/UI 分四类登记"的目录法，不搬代码）。范围是
+  **换宿主不换引擎**：stdlib `ThreadingHTTPServer` + SSE 提供一层浏览器界面，`src/` 一行
+  没动 —— "引擎零 tkinter 依赖"这条事实在动手前核实过，它是整个方案的地基。Tk 全程完好，
+  删 Tk 的第 7 步按决定推到赛后，于是每一步都是可停的可用的。
+- 新增 `webui/{session,service,api,server,weights}.py` + `webui/static/{index.html,
+  styles.css,app.js}` + `run_web.py` / `wjx-web` 入口。批次语义仍然只有一份：
+  `WebService._run_loop` 把 `RunState` 直接交给 `src.cli.run_batch`，与 CLI、桌面版同一条入口。
+- 设计稿 §5「只修三类」的落地：① **输入校验**（份数手输夹到 1~9999、URL 必须带 scheme，
+  非法值 400 + 人话错误 —— Tk 手输 `abc` 是未捕获 `TclError`，表现为"点了没反应"）；
+  ② **安全边界**（只 bind 回环、每个请求校验 `Host` 与 `Origin` 挡 DNS rebinding、body
+  上限、端点一律不接路径：导出=下载、导入=请求体）；③ **日志可见性**（SSE 每客户端一条
+  有界订阅，溢出补 `gap` 标记让前端回读 `/api/state` 而不是猜中间状态；30s 寿命上限兜底
+  "优雅关闭收不回槽位"—— Windows 上这两件事是分开发生的）。
+- **止损点已过**：真浏览器跑完 3 份真实提交。headless Edge 驱动控制台、有窗口的 Edge
+  答题，问卷页用 `tests/fixtures/mock_wjx.html` 经本地 HTTP 提供（§5 只放行 http/https
+  的 URL）。23 项断言全绿：逐轮日志逐条到达页面、计数与进度、`runs` 收尾 `finished`、
+  39 条答案落盘。
+- 四条**只有跑起来才抓得到**的（当时离线 1560 项全绿）：
+  1. **长跑期间状态条写着「就绪」**。探测 worker 的 `finally` 要先 `driver.quit()`（一到
+     两秒），收尾那句 `set_status("就绪")` 于是落在用户点了「开始运行」之后。按钮禁用态
+     由 `running` 单独驱动，所以只有这一行文字在说谎 —— 比整块界面都不动更难发现。
+     新增 `RunSession.restore_idle_status()`：跑着就不还。
+  2. **控制条整块滚出视野**。13 行权重表把文档撑超一屏，进度条、计数、「开始运行」一起
+     沉到视口以下 —— 长跑期间要盯的三样全在折叠线下。桌面版把它放在窗口底部是同一个
+     理由，改成 `position: sticky`。
+  3. **探测完卡片还挂着「未探测」几秒**。`questions` 事件自带 `count` 却只刷表不刷计数，
+     要等下一个 `state` 事件才收敛。与「点了没反应」同一类读不出来的状态。
+  4. **stderr 被 traceback 糊住**。keep-alive 空闲期被浏览器 RST 时服务端正阻塞在"读下
+     一行请求"，异常冒到 `socketserver.handle_error` 就打印整段 traceback —— 而长跑期间
+     那块 stderr 是唯一出口，EventSource 每 30s 重连一次会把真信息冲干净。`handle_error`
+     现在忽略三种客户端断线（降级到 `logger.debug` 留痕），只此一条连接的声音被咽掉，
+     服务本身继续接活。
+- 补了本轮**新写却没人走**的两个接缝：`POST /api/weights`（权重表唯一的回写路径，键在
+  JSON 里是字符串、内部按 `int` 题号存，不转就整列静默变"没填"、所有题退化成等权重）与
+  `build_service` 的那三个 `config_io` 名字（import 失败被咽成 `pass`，仓库里改个名就是
+  三个按钮集体变灰 —— 桌面版 `gui/controller.py` 顶部注释记的就是同一件事付过的账）。
+- 数字：`webui/` 七个模块 1214 句、**99%**（本机 3.13 口径，7 句未覆盖）；离线套件
+  1301 → **1563 项通过**。缺口表已用 CI 等价环境（3.13 + 只装 `requirements*`）`--write`
+  重生成：TOTAL 87.9% → **89.0%**、`gui/` 9 个文件 78.1% → **11 个文件 83.5%**
+  （`motion`、`ticker` 均 100%）、`gui/app.py` 71.1% → 76.5%。第 8 步的"把这条 E2E
+  收进测试套件"还没做 —— 本轮验证是一次性脚本，不是回归网。
+
+### 门禁（补账：动效那一提交把两条阻塞检查跑红了）
+
+- `4d1b549`（GUI 动效层）之后 `gui/widgets.py` 有 **12 条 pyright error**，而 `ci.yml`
+  的类型检查是阻塞的、且本仓库明写"没有 baseline、没有豁免"。也就是说那个提交把 CI
+  弄红了，本轮动手前重跑门禁才发现。根因是折叠卡片新加的两件事：往 `tk.Canvas` /
+  `tk.Frame` 上动态挂 `_card_toggle`（v2.8 纳管 `gui/` 时专门立过规矩：Tkinter 动态属性
+  改成类级声明），以及 `content.master.master.master` 这种 `.master` 链 —— 它的类型是
+  `Misc | None`，于是 `.pack` 与 `_card_canvas` 全部读不出来。
+- 修法沿用该文件自己的先例：`CardFrame` 补 `_card_toggle` 声明，另加 `CardCanvas` /
+  `CardContent` 两个各只有一行声明的子类；`.master` 链收进 `_card_of()`，结构被改动时
+  只有这一处会响，而不是某个控件静默少一个属性。**测试与调用点一行没改。**
+- README 的覆盖率块同步补账：`--check` 在 CI 等价环境里红四行（87.9/78.1/9 个文件/
+  `app.py` 71.1%），全部来自动效提交欠下的那次"`--write` 待重生成"。已在钉死的口径下
+  重跑 `--write`，不是手改数字。
+- `webui/` 与 `run_web.py` 一并纳入类型门禁：进来之前先量过，1214 句 **0 error**，
+  只有 8 条"随环境变成冗余"的 `# type: ignore` —— 正是 `pyrightconfig.json` 注释里
+  点名过的陷阱（`qr_utils` 当年为此改用 importlib）。全部删掉而不是留着豁免：导出/
+  另存默认那两处改成 `_save_ready()` **返回函数本身**，于是"检查说可以、调用时又是
+  `None`"这种错位在结构上不存在。`SCOPED_PATHS` 与 CONTRIBUTING 的门禁表同步。
+- 五条门禁在 CI 等价环境（3.13 + 只装 `requirements*`）全绿：ruff、`npx pyright` 0/0、
+  离线 1536 通过 / 3 跳过（三条都是可选依赖：opencv ×2、openpyxl ×1）、覆盖率地板
+  89.03% ≥ 70、`readme_coverage --check`、浏览器 E2E `ran=25 skipped=0`。
 
 ## [3.3.0] - 2026-09-23
 

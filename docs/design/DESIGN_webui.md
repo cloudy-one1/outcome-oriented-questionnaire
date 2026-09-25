@@ -147,7 +147,8 @@ webui/static/      index.html · app.js · styles.css      ← 观感落这里
 ```
 GET  /                       index.html；/app.js /styles.css 静态
 GET  /api/state              首屏一次拿全：表单值 + 运行态 + 三个可用性开关
-GET  /api/events             SSE：log / progress / status / detected / confirm / state
+GET  /api/events             SSE：log / progress / status / questions / state（+ gap 标记）
+                                    confirm 待第 6 步
 POST /api/field              单字段写入（服务端校验）
 POST /api/detect             探测题目            POST /api/qr             上传二维码图
 POST /api/config/import      上传 JSON（白名单）  /export  /save-default
@@ -178,17 +179,26 @@ POST /api/shutdown           停止 + 收尾 + 退出（等价于 Tk 关窗）
 
 ## 10. 落地顺序（每步可停）
 
-1. `webui/session.py` + `service.py`（搬 controller）+ 后端测试 —— 不起服务也能测
-2. `webui/server.py` + `api.py` + SSE + 安全测试
-3. 第一版前端（表单 / 日志 / 进度）+ `wjx-web` 入口 —— **止损点见下**
-4. 权重表与探测回流（含 §5 末的解析函数抽取）
+1. ✅ `webui/session.py` + `service.py`（搬 controller）+ 后端测试 —— 不起服务也能测
+2. ✅ `webui/server.py` + `api.py` + SSE + 安全测试
+3. ✅ 第一版前端（表单 / 日志 / 进度）+ `wjx-web` 入口 —— **止损点已过，见下**
+4. 权重表与探测回流 —— **表与回流已随第 3 步落地**（`POST /api/weights` + `table_rows`
+   预填），剩下的只有 §5 末的解析函数抽取（先对拍再共用）
 5. 历史 Tab（列表 / 明细 / CSV 两个文件 / purge+confirm）
 6. 确认弹窗反向通道与断点续传
 7. ~~删 `gui/`~~ → **推到赛后**（§11）
-8. Selenium 自测 E2E + 对拍测试 + CI 等价环境 `--write`
+8. Selenium 自测 E2E 进测试套件 + 对拍测试 + ~~CI 等价环境 `--write`~~（**已做**，
+   2026-09-25 在 `.venv-ci313` 里量并 `--write`：那本是动效提交欠下的账，见 CHANGELOG）
 
 **止损点**：第 3 步结束时如果 webui 还没跑通一次真实长跑，就停在那里。Tk 全程完好，
 所以任何一步停下都是可用状态 —— 这是推迟第 7 步换来的东西。
+
+2026-09-25 实测过闸：真浏览器（headless Edge 驱动控制台 + 有窗口 Edge 答题）对
+`tests/fixtures/mock_wjx.html`（经本地 HTTP 提供，因为 §5 只放行 http/https 的 URL）
+跑完 3 份真实提交，23 项断言全绿 —— 逐轮日志经 SSE 到达页面、计数与进度、`runs`
+收尾 `finished`、39 条答案落盘。抓到四条只有跑起来才看得见的问题，见 CHANGELOG
+「界面（第八个对标源）」一节。第 8 步的**进套件**部分仍未做：这轮验证是一次性脚本，
+不是回归网。
 
 ## 11. 赛后退役 Tk（另开一轮）
 

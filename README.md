@@ -195,6 +195,26 @@ python run_gui.py
 > 关闭窗口会先请求停止并等待当前轮次收尾（上限 30s），再关闭浏览器并闭合历史记录 ——
 > 直接强杀进程会让 `runs` 表停在中途状态并残留浏览器进程。
 
+### Web 控制台（与桌面版同一套引擎，宿主换成浏览器）
+
+```bash
+python run_web.py                 # 装过本仓库后等价于 wjx-web
+# 可选：--port 8765 固定端口（默认由系统分配并打印），--open-browser 自动打开
+```
+
+终端会打印 `http://127.0.0.1:<端口>/`，浏览器打开它，上面那七步一模一样。
+
+换掉的**只有宿主**：探测、答题、提交、历史落盘走的还是 `src/cli.run_batch`，与 CLI 和
+桌面版同一份实现、同一个 `RunState`，所以"GUI 与 CLI 跑出不同结果"这类问题在结构上
+不存在。日志与进度由服务端经 SSE 推给页面，**关掉页面不会中断长跑**，重新打开即接上。
+
+- 只监听 `127.0.0.1`，且每个请求校验 `Host` 与 `Origin` 是本机回环（挡 DNS rebinding）。
+  **没有登录与鉴权**，所以不要把它转发到局域网或公网 —— 那等于把"驱动一个浏览器自动
+  提交问卷"的开关交给同网段的任何人。
+- 数据树与桌面版同源：`configs/` 与 `data/` 都在项目根，`WJX_USER_DATA_DIR` 可整棵挪走。
+- 退出：终端 `Ctrl-C`（请求停止 → 等当前轮次收尾 → 关浏览器 → 闭合历史库）。
+- 历史 Tab 与页面内退出按钮还没接，这两件在计划里；眼下查历史用 `--stats` 或桌面版。
+
 ---
 
 ## 断点续传
@@ -534,9 +554,9 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 
 | 范围 | 离线覆盖率 |
 |---|---|
-| 全部 | **87.9%** |
-| `src/` | 91.9%（4600 条语句剩 371 行） |
-| `gui/` | 78.1%（1917 条语句剩 419 行） |
+| 全部 | **89.0%** |
+| `src/` | 92.0%（4600 条语句剩 370 行） |
+| `gui/` | 83.5%（2437 条语句剩 402 行） |
 
 #### 已补齐的缺口（"补齐前"一列是登记时的实测）
 
@@ -550,14 +570,14 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 | `src/interactions/choices.py` | 58.8% | **100.0%**（剩 0 行） | `tests/test_choices_interaction.py` |
 | `src/interactions/sort.py` | 22.2% | **100.0%**（剩 0 行） | `tests/test_sort_interaction.py` |
 | `src/cli.py` | 74.3% | **84.6%**（剩 81 行，剩余是 run_batch 内的浏览器接线与降级分支） | `tests/test_cli_exit_and_reports.py`、`tests/test_cli_main.py`、`tests/test_cli_batch.py` |
-| `gui/`（9 个文件合计） | 15% | **78.1%**（`log_view`、`theme` 已 100%） | `tests/test_gui_panels.py`、`tests/test_gui_proxies.py`、`tests/test_gui_run_loop.py` |
+| `gui/`（11 个文件合计） | 15% | **83.5%**（`log_view`、`motion`、`theme`、`ticker` 已 100%） | `tests/test_gui_panels.py`、`tests/test_gui_proxies.py`、`tests/test_gui_run_loop.py` |
 
 #### 仍然没有防线的地方
 
 | 模块 | 离线覆盖率 | 为什么还留着 |
 |---|---|---|
 | `gui/controller.py` | 37.1% | 配置导出/导入与二维码选文件已可注入替身文件框（`tests/test_gui_user_data.py`），剩 37% 的坎是探测题目那条 worker —— 它要真实 driver（`on_detect_questions` 整段 300-403 行） |
-| `gui/app.py` | 71.1% | `WJX_USER_DATA_DIR` 把 `configs/` + `data/` 整棵挪走之后，整窗已能在测试里构造（`tests/test_gui_user_data.py`：构造、输入校验、续传决策、历史库接线）。剩 206 行是 canvas 重绘与 resize/关窗回调，要真实 paint 事件与 mainloop 才走得到 |
+| `gui/app.py` | 76.5% | `WJX_USER_DATA_DIR` 把 `configs/` + `data/` 整棵挪走之后，整窗已能在测试里构造（`tests/test_gui_user_data.py`：构造、输入校验、续传决策、历史库接线）。剩 206 行是 canvas 重绘与 resize/关窗回调，要真实 paint 事件与 mainloop 才走得到 |
 | `src/pipeline_stages/question_stage.py` | 63.3% | 逐题 DOM 交互主干：等待、「哪道题调哪个填充器」的分发、带框选项只勾不填的降级都已有离线测试（`tests/test_question_stage_dispatch.py`），真实点击仍靠 E2E |
 
 > 本块由 `python scripts/readme_coverage.py --write` 从 `coverage.json` 生成，`--check` 已进 CI 当门禁
@@ -633,6 +653,7 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 | `SECURITY.md` | 哪些落盘位置含个人信息、什么算安全问题、私有报告入口 |
 | `src/` | 引擎：探测 → 作答 → 提交；`src/interactions/` 一种题型一个模块 |
 | `gui/` | Tkinter 界面，与 CLI 共用同一条 pipeline |
+| `webui/` | 本地 Web 控制台的宿主（stdlib HTTP + SSE），同样只调 `src/cli.run_batch` |
 | `scripts/` | 门禁工具本身（README 覆盖率口径的生成脚本、E2E 计数闸门） |
 | `tests/` | 离线套件与浏览器 E2E；mock 问卷在 `tests/fixtures/` |
 
