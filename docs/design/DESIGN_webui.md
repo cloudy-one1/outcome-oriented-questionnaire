@@ -182,8 +182,9 @@ POST /api/shutdown           停止 + 收尾 + 退出（等价于 Tk 关窗）
 1. ✅ `webui/session.py` + `service.py`（搬 controller）+ 后端测试 —— 不起服务也能测
 2. ✅ `webui/server.py` + `api.py` + SSE + 安全测试
 3. ✅ 第一版前端（表单 / 日志 / 进度）+ `wjx-web` 入口 —— **止损点已过，见下**
-4. 权重表与探测回流 —— **表与回流已随第 3 步落地**（`POST /api/weights` + `table_rows`
-   预填），剩下的只有 §5 末的解析函数抽取（先对拍再共用）
+4. ✅ 权重表与探测回流 + §5 末的解析函数抽取 —— 表与回流随第 3 步落地；解析已合成
+   **`src/weight_text.parse_weight_texts`** 一份（先逐题型对拍、抓到三条才合并），
+   对拍测试改钉两个宿主的接线
 5. 历史 Tab（列表 / 明细 / CSV 两个文件 / purge+confirm）
 6. 确认弹窗反向通道与断点续传
 7. ~~删 `gui/`~~ → **推到赛后**（§11）

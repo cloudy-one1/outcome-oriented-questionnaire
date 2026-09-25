@@ -1,15 +1,18 @@
-"""``webui/weights.py`` 的解析契约（设计稿 §10 步骤 4 的 4a 半边）。
+"""``src/weight_text.parse_weight_texts`` 的解析契约（设计稿 §10 步骤 4）。
 
-这一份是 **webui 自己独立实现**，不调 ``gui/weight_panel`` —— 本轮 Tk 是参照实现，
-两边共用一份的话"parity 对拍"就退化成自己等于自己。对拍测试在步骤 4 的收尾里
-（``test_webui_parity.py``），这里先把 webui 这一侧的规则逐条钉住。
+两个宿主（桌面版 ``gui/weight_panel``、webui ``service``）共用这一份，所以这里钉的是
+**唯一一份**的规则；宿主接线是否一致由 ``tests/test_weight_parser_parity.py`` 钉。
+
+来历：这一版语义是从"webui 自己独立实现一遍、与桌面版逐题型对拍"里长出来的 ——
+对拍抓到的三条（锚点整份缺失、矩阵空行号被接受、结尾多一个 ``|`` 毁掉整份行权重）
+各有一条回归在这里。
 """
 
 from __future__ import annotations
 
 import pytest
 
-from webui.weights import parse_weights
+from src.weight_text import parse_weight_texts
 
 
 def one(qtype="single", **kw):
@@ -19,7 +22,7 @@ def one(qtype="single", **kw):
 
 
 def cfg_of(questions, texts):
-    cfg, warnings = parse_weights(questions, texts)
+    cfg, warnings = parse_weight_texts(questions, texts)
     return cfg, warnings
 
 
@@ -192,9 +195,22 @@ def test_an_unknown_type_with_junk_is_skipped_with_a_warning():
     assert "未知题型" in warnings[0]
 
 
-def test_the_question_stem_anchor_is_carried_through():
-    cfg, _ = cfg_of(one(choices=["a", "b"], anchor="第 1 题"), {1: "1,1"})
-    assert cfg[1]["anchor"] == "第 1 题"
+def test_the_anchor_is_computed_from_the_stem_not_copied_from_the_question():
+    """探测输出的题目 dict 里**没有** ``anchor`` 这个键 —— 锚点是算出来的。
+
+    上一版写的是 ``q.get("anchor")``，于是 webui 产出的整份配置一条锚点都没有：
+    题号只是"保存时这道题在第几格"的遗迹，问卷中间插一题就整份错位，而错位是
+    静默的（选项数恰好还来得及）。形状由 ``tests/test_weight_parser_parity.py``
+    与 Tk 逐题对拍钉住。
+    """
+    cfg, _ = cfg_of(one(title="你最常用的浏览器", choices=["a", "b"]), {1: "1,1"})
+    assert cfg[1]["anchor"] == {"title": "你最常用的浏览器",
+                                "signature": "single:2"}
+
+
+def test_a_question_without_a_stem_gets_no_anchor():
+    cfg, _ = cfg_of(one(choices=["a", "b"]), {1: "1,1"})
+    assert "anchor" not in cfg[1]
 
 
 def test_a_question_without_a_number_is_ignored():

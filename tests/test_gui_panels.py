@@ -553,9 +553,9 @@ def test_empty_weight_field_is_omitted_so_equal_weights_apply(frame) -> None:
     "raw, expected_fragment",
     [
         ("abc,def,ghi", "权重格式错误"),
-        ("0.5,0.5", "权重数(2) != 选项数(3)"),
-        ("0.5,0.5,0.5,0.5", "权重数(4) != 选项数(3)"),
-        ("0.5,,0.5", "权重数(2) != 选项数(3)"),
+        ("0.5,0.5", "权重个数 2 与选项数 3 不符"),
+        ("0.5,0.5,0.5,0.5", "权重个数 4 与选项数 3 不符"),
+        ("0.5,,0.5", "权重个数 2 与选项数 3 不符"),
     ],
 )
 def test_malformed_weight_input_routes_warning_not_crash(
@@ -572,8 +572,8 @@ def test_malformed_weight_input_routes_warning_not_crash(
 
 @pytest.mark.parametrize("raw, fragment", [
     ("-1,2,2", "负数"),
-    ("nan,2,2", "NaN"),
-    ("inf,2,2", "NaN"),
+    ("nan,2,2", "非有限值"),
+    ("inf,2,2", "非有限值"),
 ])
 def test_illegal_weights_are_rejected_at_the_panel(frame, raw, fragment) -> None:
     """负数与非有限值在输入框就该被拦下。
@@ -622,7 +622,7 @@ def test_illegal_matrix_row_weights_are_discarded_wholesale(frame) -> None:
     panel.weight_entries[5].set("1:-0.5,0.5,0.5 | 2:1,1,1")
     cfg = panel.build_weight_config()
     assert "row_weights" not in cfg, "含负数的行权重必须整组弃用"
-    assert logs.levels == ["WARN"] and "非法值" in logs.last[0]
+    assert logs.levels == ["WARN"] and "行权重非法" in logs.last[0]
 
 
 def test_scale_weights_digit_shortcut_and_length_warnings(frame) -> None:
@@ -636,13 +636,16 @@ def test_scale_weights_digit_shortcut_and_length_warnings(frame) -> None:
 
     panel.weight_entries[3].set("1,2")
     assert panel.build_weight_config()[3]["weights"] == [1.0, 2.0, 0.0, 0.0, 0.0]
-    assert "级数(5)" in logs.last[0] and logs.levels[-1] == "WARN"
+    assert "与级数 5 不符" in logs.last[0] and logs.levels[-1] == "WARN"
 
     panel.weight_entries[3].set("1,2,3,4,5,6,7")
     assert panel.build_weight_config()[3]["weights"] == [1.0, 2.0, 3.0, 4.0, 5.0]
 
     panel.weight_entries[3].set("x,y,z,4,5")
-    assert 3 not in panel.build_weight_config()
+    # 格式错也只弃权重、保留量表结构 —— 与"含负数"那条分支同一个取舍：
+    # 整题丢掉会让这道题退化成"连级数都不知道"
+    assert panel.build_weight_config()[3] == {
+        "type": "scale", "scale": 5, "scale_min": 1}
     assert "量表权重格式错误" in logs.last[0]
 
     panel.weight_entries[3].set("")
@@ -665,7 +668,7 @@ def test_text_and_matrix_branches(frame) -> None:
     panel.weight_entries[5].set("1:0.5,0.5,0.5 oops")
     cfg = panel.build_weight_config()
     assert "row_weights" not in cfg[5], "行权重解析失败要弃用编辑值而非崩"
-    assert "矩阵行权重格式错误" in logs.last[0] and logs.levels[-1] == "WARN"
+    assert "整份行权重作废" in logs.last[0] and logs.levels[-1] == "WARN"
 
 
 def test_unknown_question_type_falls_back_to_plain_weights(frame) -> None:
@@ -1236,7 +1239,7 @@ def test_sort_row_exports_order_and_warns_on_unknown_items(frame) -> None:
     panel.weight_entries[13].set("4,9")
     cfg = panel.build_weight_config()[13]
     assert "order" not in cfg, f"含未知项的 order 必须整条弃用: {cfg}"
-    assert logs.levels == ["WARN"] and "不在探测到的" in logs.last[0]
+    assert logs.levels == ["WARN"] and "未探测到的" in logs.last[0]
 
     panel.weight_entries[13].set("")
     assert panel.build_weight_config()[13] == {

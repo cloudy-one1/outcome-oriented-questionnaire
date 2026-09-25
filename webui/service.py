@@ -34,7 +34,7 @@ from src.config_io import apply_weight_config
 from src.dialogs import popup_confirm
 from src.models import RunState, normalize_question_type
 from webui.session import RunSession, ValidationError
-from webui.weights import parse_weights
+from src.weight_text import parse_weight_texts
 
 logger = logging.getLogger("wjx.webui.service")
 
@@ -447,8 +447,8 @@ class WebService:
     # ------------------------------------------------------------ 权重表
 
     def build_weight_config(self) -> dict:
-        cfg, warnings = parse_weights(self.session.questions,
-                                     self.session.weight_texts)
+        cfg, warnings = parse_weight_texts(self.session.questions,
+                                           self.session.weight_texts)
         for w in warnings:
             self._log(w, "WARN")
         return cfg

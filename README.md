@@ -554,9 +554,9 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 
 | 范围 | 离线覆盖率 |
 |---|---|
-| 全部 | **89.0%** |
-| `src/` | 92.0%（4600 条语句剩 370 行） |
-| `gui/` | 83.5%（2437 条语句剩 402 行） |
+| 全部 | **89.1%** |
+| `src/` | 92.2%（4748 条语句剩 370 行） |
+| `gui/` | 82.8%（2303 条语句剩 396 行） |
 
 #### 已补齐的缺口（"补齐前"一列是登记时的实测）
 
@@ -570,7 +570,7 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 | `src/interactions/choices.py` | 58.8% | **100.0%**（剩 0 行） | `tests/test_choices_interaction.py` |
 | `src/interactions/sort.py` | 22.2% | **100.0%**（剩 0 行） | `tests/test_sort_interaction.py` |
 | `src/cli.py` | 74.3% | **84.6%**（剩 81 行，剩余是 run_batch 内的浏览器接线与降级分支） | `tests/test_cli_exit_and_reports.py`、`tests/test_cli_main.py`、`tests/test_cli_batch.py` |
-| `gui/`（11 个文件合计） | 15% | **83.5%**（`log_view`、`motion`、`theme`、`ticker` 已 100%） | `tests/test_gui_panels.py`、`tests/test_gui_proxies.py`、`tests/test_gui_run_loop.py` |
+| `gui/`（11 个文件合计） | 15% | **82.8%**（`log_view`、`motion`、`theme`、`ticker` 已 100%） | `tests/test_gui_panels.py`、`tests/test_gui_proxies.py`、`tests/test_gui_run_loop.py` |
 
 #### 仍然没有防线的地方
 
@@ -590,6 +590,13 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 > 「指纹参数拼装、异常回收、锁必然释放」这些**逻辑**成立；但真实浏览器能否启动、
 > 注入的 JS 在真 DOM 里是否成立，仍然只有那个 E2E job 说了算（v3.1 起它是**阻塞**的，
 > 而"驱动起不来 → 全 skip → 看着也是绿"这条路另有 `scripts/e2e_gate.py` 数 junit 堵住）。
+
+> **一条与覆盖率无关的题型缺口**：探测会输出 `matrix_scale`（量表式矩阵，
+> `src/detection.py`），但它既不在 `models.normalize_question_type` 的别名表里、也不在
+> 权重表的矩阵分支里，于是这类题的**行权重永远填不进去** —— 写 `1:0.2,0.3,0.5` 只会得到
+> 一句"格式错误"然后静默丢弃。桌面版与 Web 控制台同此一致（共用解析器之后对拍更抓不到）。
+> 修它要先验制 `src/answering_v2` 是否真按 `row_weights` 消费这类题 —— 那是答卷分布
+> 而不是界面，本轮刻意不动。
 
 推送会触发 GitHub Actions（`.github/workflows/ci.yml`）：ruff + pyright +
 带覆盖率地板的离线测试，外加一个真实浏览器 E2E job（v3.1 起阻塞，不再是 `continue-on-error`）。

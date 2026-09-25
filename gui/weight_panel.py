@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import logging
-import math
 
 import tkinter as tk
 from tkinter import ttk
@@ -28,8 +27,8 @@ from .theme import COLORS, FONT_PRESETS, GRAD_SUCCESS, _lerp_color
 from .widgets import _make_card as _default_make_card
 # V2.4：题型别名单一真相（models.normalize_question_type 统一归一化）
 from src.models import normalize_question_type  # noqa: E402
-# v3.0：导出配置时带上题干锚点（src/anchoring.py）
-from src import anchoring  # noqa: E402
+# 权重表第 4 列的解析规则在 src/weight_text.py —— 桌面版与 webui 共用同一份
+from src.weight_text import parse_weight_texts  # noqa: E402
 
 # V2.4 整改：别名键（radio/checkbox/rating/input/textarea/fillblank/matrix_single）
 # 收敛到 models.normalize_question_type 统一归一化，本表只保留 6 个存储名的样式
@@ -54,22 +53,6 @@ _FIELD_LABEL_MAP: dict[str, str] = {
 
 # V2.4：静默降级路径（except: pass）统一走 logger.debug 留痕
 logger = logging.getLogger("wjx.gui.weight_panel")
-
-
-def _weights_reject_reason(weights: list[float]) -> str | None:
-    """这组权重该不该在输入阶段就被拒；返回理由，合法则 None。
-
-    此前只校验格式与个数，于是负数与非有限值（nan / inf）能一路通过输入框，
-    到运行期才被 ``src.utils.weights_are_usable`` 静默降级成等权重 —— 用户以为
-    自己设了权重，实际拿到的分布是均匀的，且全程没有任何提示。
-    在表面层就拒掉并把理由走 log_fn 回报，才是"所见即所得"。
-    """
-    for w in weights:
-        if not math.isfinite(w):
-            return "含 NaN/Inf"
-        if w < 0:
-            return "含负数"
-    return None
 
 
 class WeightPanel:
@@ -422,178 +405,16 @@ class WeightPanel:
     # ==================================================================
 
     def build_weight_config(self) -> dict:
-        config: dict = {}
-        for q in self.questions:
-            qi = q["q"]
-            qtype = str(q.get("type", "single")).lower()
-            entry_var = self.weight_entries.get(qi)
-            raw = entry_var.get().strip() if entry_var else ""
+        """把权重表第 4 列导出成 ``WEIGHT_CONFIG`` dict。
 
-            # single / multi / radio / checkbox / dropdown
-            if qtype in ("single", "radio", "multi", "checkbox", "dropdown"):
-                if not raw:
-                    continue
-                try:
-                    weights = [float(x.strip()) for x in raw.split(",") if x.strip()]
-                except ValueError:
-                    self.log(f"Q{qi} 权重格式错误，已跳过：{raw}", "WARN")
-                    continue
-                expected = len(q.get("choices", []))
-                if qtype in ("single", "radio", "dropdown") and expected == 0:
-                    pass
-                elif expected > 0 and len(weights) != expected:
-                    self.log(
-                        f"Q{qi} 权重数({len(weights)}) != 选项数({expected}), 已跳过",
-                        "WARN",
-                    )
-                    continue
-                reason = _weights_reject_reason(weights)
-                if reason:
-                    self.log(f"Q{qi} 权重{reason}，已跳过：{raw}", "WARN")
-                    continue
-                config[qi] = {"type": qtype, "weights": weights}
-                continue
-
-            # scale / rating
-            if qtype in ("scale", "rating"):
-                scale_max = int(q.get("scale", 5))
-                weights = None
-                if raw:
-                    if raw.isdigit():
-                        v = int(raw)
-                        weights = [0.0] * scale_max
-                        if 1 <= v <= scale_max:
-                            weights[v - 1] = 1.0
-                    else:
-                        try:
-                            weights = [float(x.strip()) for x in raw.split(",")
-                                       if x.strip()]
-                        except ValueError:
-                            self.log(f"Q{qi} 量表权重格式错误，已跳过：{raw}", "WARN")
-                            continue
-                        if len(weights) != scale_max:
-                            self.log(
-                                f"Q{qi} 量表权重数({len(weights)}) != 级数({scale_max}), "
-                                "已按现有长度裁剪/补 0",
-                                "WARN",
-                            )
-                            if len(weights) < scale_max:
-                                weights += [0.0] * (scale_max - len(weights))
-                            else:
-                                weights = weights[:scale_max]
-                if weights is not None:
-                    reason = _weights_reject_reason(weights)
-                    if reason:
-                        # 只丢掉这组权重，保留 scale / scale_min 这些结构信息 ——
-                        # 整条 continue 掉会让量表退化成"连级数都不知道"
-                        self.log(f"Q{qi} 量表权重{reason}，已忽略权重：{raw}", "WARN")
-                        weights = None
-                cfg: dict[str, Any] = {"type": qtype, "scale": scale_max}
-                if weights is not None:
-                    cfg["weights"] = weights
-                smin = q.get("scale_min")
-                if smin:
-                    cfg["scale_min"] = int(smin)
-                config[qi] = cfg
-                continue
-
-            # text / input / textarea / fillblank
-            if qtype in ("text", "input", "textarea", "fillblank"):
-                # 显式声明值域：同一份 cfg 之后还要塞 options / rows / cols /
-                # row_weights 这类非字符串值，让 pyright 从字面量推成 dict[str, str]
-                # 会在每个后续赋值处报错。
-                cfg: dict[str, Any] = {"type": qtype}
-                fld = q.get("field")
-                if fld:
-                    cfg["field"] = fld
-                if raw:
-                    options = [s.strip() for s in raw.split(",") if s.strip()]
-                    if options:
-                        cfg["options"] = options
-                config[qi] = cfg
-                continue
-
-            # matrix / matrix_single / matrix_multi
-            if qtype in ("matrix_single", "matrix", "matrix_multi"):
-                cfg: dict[str, Any] = {"type": qtype}
-                rows = q.get("rows", [])
-                cols = q.get("cols", [])
-                if rows:
-                    cfg["rows"] = list(rows)
-                if cols:
-                    cfg["cols"] = list(cols)
-                if raw:
-                    row_weights: dict = {}
-                    ok_rows = True
-                    for seg in raw.split("|"):
-                        seg = seg.strip()
-                        if not seg:
-                            continue
-                        if ":" not in seg:
-                            ok_rows = False
-                            break
-                        rk, rhs = seg.split(":", 1)
-                        rk = rk.strip()
-                        try:
-                            wlst = [float(x.strip()) for x in rhs.split(",")
-                                    if x.strip()]
-                        except ValueError:
-                            ok_rows = False
-                            break
-                        if not rk:
-                            ok_rows = False
-                            break
-                        if _weights_reject_reason(wlst):
-                            ok_rows = False
-                            break
-                        row_weights[rk] = wlst
-                    if not ok_rows:
-                        self.log(
-                            f"Q{qi} 矩阵行权重格式错误或含非法值（负数 / NaN），跳过使用。"
-                            "正确格式: 1:w1,w2,w3 | 2:w1,w2,w3",
-                            "WARN",
-                        )
-                    elif row_weights:
-                        cfg["row_weights"] = row_weights
-                config[qi] = cfg
-                continue
-
-            # sort（v3.0 排序题）
-            if qtype == "sort":
-                cfg = {"type": "sort"}
-                items_str = [str(x) for x in (q.get("items") or [])]
-                if raw:
-                    wanted = [s0.strip() for s0 in raw.split(",") if s0.strip()]
-                    unknown = [x for x in wanted if x not in items_str]
-                    if unknown:
-                        self.log(
-                            f"Q{qi} 排序项 {unknown} 不在探测到的 {items_str} 里，"
-                            "已忽略整个顺序（留空即随机排序）",
-                            "WARN",
-                        )
-                    else:
-                        cfg["order"] = wanted
-                config[qi] = cfg
-                continue
-
-            # 未知类型兜底
-            if raw:
-                try:
-                    weights = [float(x.strip()) for x in raw.split(",") if x.strip()]
-                except ValueError:
-                    self.log(f"Q{qi} 权重格式错误，已跳过：{raw}", "WARN")
-                    continue
-                config[qi] = {"type": qtype, "weights": weights}
-
-        # v3.0：给每条配置附上题干锚点 —— 题号只是"保存时这道题在第几格"的遗迹，
-        # 问卷中间插一题就会让整份预设错位，而错位是静默的（选项数恰好还来得及）。
-        # 探测不到题干的题目（detection 没拿到 title）跳过，行为等同 v2.8。
-        by_num = {q.get("q"): q for q in self.questions}
-        for qi, entry in config.items():
-            anchor = anchoring.make_anchor(by_num.get(qi) or {})
-            if anchor:
-                entry["anchor"] = anchor
-        return config
+        解析规则不在这里 —— 它收进了 ``src/weight_text.py``，与 webui 宿主共用同一份。
+        本方法只剩宿主接线：从 StringVar 取文本、把警告按 WARN 刷进日志面板。
+        """
+        texts = {qi: var.get() for qi, var in self.weight_entries.items()}
+        cfg, warnings = parse_weight_texts(list(self.questions), texts)
+        for msg in warnings:
+            self.log(msg, "WARN")
+        return cfg
 
     # ==================================================================
     #  从配置反向回填（原 _restore_weight_table_from_config）
