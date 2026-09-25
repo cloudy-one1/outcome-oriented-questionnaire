@@ -1,21 +1,28 @@
 """webui 的浏览器自测 E2E（设计稿 §9 前端 gate 的第 ② 条）。
 
 为什么需要它：``node --check`` 只保证 JS 语法合法，离线测试只保证 Python 侧对。
-这一轮抓到的三条 —— ``hidden`` 压不过 ``display: grid``、sticky 控制栏把最后一行
-压成点不到的死区、卡片计数滞后几秒 —— 全都属于"语法合法、Python 全绿、
-而界面上不成立"。本仓库对这一类缺陷的既有答案就是真浏览器（v3.0 那 4 条同理）。
+而这一类缺陷 —— ``hidden`` 压不过 ``display: grid``、sticky 控制栏把最后一行压成
+点不到的死区、卡片计数滞后几秒、**在途 HTTP 响应把更新的 SSE 事件挤掉**、
+批次跑完而历史栏仍停在上一批 —— 全都属于"语法合法、Python 全绿、而界面上不成立"。
+本仓库对这一类缺陷的既有答案就是真浏览器（v3.0 那 4 条同理）。
 
-**这里刻意用替身的只有两处**：``create_driver`` 与 ``detect_questions``。
-真探测与真提交由 ``tests/test_e2e_integration.py`` 和一次性长跑脚本覆盖 ——
-它们要再开一个浏览器（引擎自己开自己的），放进 CI 的必填检查只会换来随机红。
-本文件覆盖的是**宿主这一侧的整条链**：HTTP 路由 → worker 线程 → SSE → 前端渲染，
-一步都不假：点下去的是真按钮，走的是真回环端口与真 ``EventSource``。
+**这里刻意用替身的只有三处**：``create_driver``、``detect_questions``，以及
+``run_batch_fn`` 那一段批次循环。真探测与真提交由 ``tests/test_e2e_integration.py``
+和一次性长跑脚本覆盖 —— 它们要再开一个浏览器（引擎自己开自己的），放进 CI 的必填
+检查只会换来随机红。
+
+替身必须照真引擎的**对外可观察行为**做（更新计数、逐轮回调 ``on_round``、逐题落
+``answers``、在轮边界轮询 ``stop_check``、收尾按 ``RunState.history_status()`` 落库），
+少做一样，界面那一侧就有面板永远没数据可断言 —— 这一轮就是这么发现"停止按钮只测到
+了按钮变灰"的。本文件覆盖的是**宿主这一侧的整条链**：HTTP 路由 → worker 线程 →
+SSE → 前端渲染，一步都不假：点下去的是真按钮，走的是真回环端口与真 ``EventSource``。
 """
 
 from __future__ import annotations
 
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -111,6 +118,7 @@ class Console:
     session: RunSession
     service: WebService
     rounds: list
+    hold: dict
 
 
 @pytest.fixture(scope="module")
@@ -123,6 +131,9 @@ def console():
                                   selenium=True),
     )
     rounds: list = []
+    # 用例往这里塞钩子（``hold["after_round"] = fn``），用来把 worker 停在两轮之间
+    # —— 「停止」的全部语义就是下一轮开始前看到那个 bool，不停住就没机会按。
+    hold: dict = {}
 
     def run_batch(url, total, **kw) -> None:
         """假引擎：真引擎会更新计数并回调 on_round，替身也必须这么做，
@@ -138,6 +149,14 @@ def console():
                                   weight_config=state.weight_config_snapshot)
             state.run_id = run_id
         for index in range(1, int(total) + 1):
+            # 停止只在**轮边界**生效（src/cli.py:724），而且那一行是引擎自己写的，
+            # 不是宿主写的 —— 替身不去轮询 stop_check，浏览器里那颗「停止」按钮
+            # 测到的就只是"按钮变灰了"。
+            stop = kw.get("stop_check")
+            if index > 1 and stop is not None and stop():
+                state.mark_interrupted()
+                kw["log"]("[平台] 已停止运行（已成功份数可下次恢复）")
+                break
             state.mark_success()
             state.current_attempt = index
             if db is not None and run_id is not None:
@@ -158,9 +177,14 @@ def console():
                                    message="提交成功")
             rounds.append(outcome)
             kw["on_round"](outcome)
+            waiter = hold.get("after_round")
+            if waiter is not None:
+                waiter(index)
         if db is not None and run_id is not None:
+            # 状态由 RunState 判：按停止收尾的那批必须是 interrupted，
+            # 否则下次进来问"要不要续传"就永远不会出现
             db.finish_run(run_id, state.success_count, state.fail_count, 1.0,
-                          "finished")
+                          state.history_status())
 
     service = WebService(
         session,
@@ -183,7 +207,7 @@ def console():
     session.log(f"Web 界面已就绪 → {server.url}", "OK")
     driver = _open_browser()
     try:
-        yield Console(server.url, driver, session, service, rounds)
+        yield Console(server.url, driver, session, service, rounds, hold)
     finally:
         driver.quit()
         server.shutdown()
@@ -336,7 +360,11 @@ def test_the_history_view_switch_actually_hides_the_other_one(page) -> None:
 
 
 def _run_a_batch(page, rounds=3):
-    """跑一批（引擎是替身，秒级完成）并等收尾横幅。"""
+    """跑一批（引擎是替身，秒级完成）并等收尾横幅。
+
+    这里只按「开始」—— 停止要停在轮边界上才算测到，另见
+    ``test_pressing_stop_brakes_the_batch_at_a_round_boundary``。
+    """
     page.find_element(By.ID, "btn-run").click()
     WebDriverWait(page, 60).until(
         lambda d: "执行结束" in _text(d, "log-lines"))
@@ -378,3 +406,50 @@ def test_a_purge_preview_reports_and_deletes_nothing(page) -> None:
     assert page.find_element(By.ID, "purge-ask").is_displayed() is False
     assert page.find_elements(By.CSS_SELECTOR, "#runs-body .run-row"), \
         "预览阶段一条都不该少"
+
+
+def test_pressing_stop_brakes_the_batch_at_a_round_boundary(page, console) -> None:
+    """设计稿 §9 要前端 gate 覆盖"点开始/停止" —— 停止是几小时长跑唯一的刹车。
+
+    真引擎的停止生效点只有一个：下一轮开始前读到 ``stop_flag``。所以这里把 worker
+    按在第 1 轮做完之后，人在浏览器里按下停止再放行 —— 测的是那颗按钮真能刹住批次，
+    而不是只让它变灰。收尾状态顺带查一眼：按停止的那批必须落成 ``interrupted``，
+    否则下次进来永远不会问"要不要续传"。
+    """
+    gate = threading.Event()
+    parked = threading.Event()
+
+    def park(_index: int) -> None:
+        parked.set()
+        gate.wait(20)
+
+    console.hold["after_round"] = park
+    try:
+        page.find_element(By.ID, "btn-run").click()
+        WebDriverWait(page, 30).until(
+            lambda d: d.find_element(By.ID, "btn-stop").is_enabled())
+        assert parked.wait(20), "worker 没停在轮边界，后面那一下停止等于没测"
+        page.find_element(By.ID, "btn-stop").click()
+        assert page.find_element(By.ID, "btn-run").is_enabled() is False, \
+            "还在跑的时候不许再按一次开始"
+        gate.set()
+        WebDriverWait(page, 60).until(
+            lambda d: "执行结束" in _text(d, "log-lines"))
+        WebDriverWait(page, 15).until(lambda d: _text(d, "ok-count") == "1")
+    finally:
+        gate.set()
+        console.hold.pop("after_round", None)
+
+    lines = _text(page, "log-lines")
+    assert "用户请求停止" in lines, "宿主那句要说，否则不知道按没按上"
+    assert "已停止运行" in lines, "引擎那句也要看得见（src/cli.py:726 同一条）"
+    assert _text(page, "rounds") == "1 / 3", "剩下两份没交出去，进度不能走到头"
+    assert page.find_element(By.ID, "btn-run").is_enabled() is True
+    assert page.find_element(By.ID, "btn-stop").is_enabled() is False
+    assert _text(page, "status-text") == "就绪"
+    _open_history(page)
+    WebDriverWait(page, 30).until(
+        lambda d: len(d.find_elements(By.CSS_SELECTOR, "#runs-body .run-row")) >= 3)
+    newest = page.find_elements(By.CSS_SELECTOR, "#runs-body .run-row")[0]
+    assert "interrupted" in _of(page, newest), \
+        "按停止收尾的批次标成了 finished 就永远续传不了"

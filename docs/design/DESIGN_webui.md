@@ -199,8 +199,9 @@ POST /api/shutdown           停止 + 收尾 + 退出（等价于 Tk 关窗）
    于是"检测到未完成批次"被**静默答成取消**。
 7. ~~删 `gui/`~~ → **推到赛后**（§11）
 8. ✅ Selenium 自测 E2E 进测试套件 + 对拍测试 + ~~CI 等价环境 `--write`~~ ——
-   2026-09-25 落地：`tests/test_webui_e2e.py` 7 项进 integration（真 HTTP + 真 SSE +
-   真 headless Edge，替身只有 driver 工厂与探测/答题两处），`tests/test_host_parity.py`
+   2026-09-25 落地：`tests/test_webui_e2e.py` 8 项进 integration（真 HTTP + 真 SSE +
+   真 headless Edge，替身只有 driver 工厂与探测/答题与引擎内部的批次循环三处；
+   §9 那句「点开始/停止」由其中两条分头覆盖 —— 停止要在轮边界上才算数），`tests/test_host_parity.py`
    4 项进离线阻塞门禁（同一套表单值 → 两个宿主交给 `run_batch` 的 `RunState` 逐字段）。
    CI 等价环境的 `--write` 是这一条之前先还的账（动效提交欠下的）。
    抓到三条，两条是真缺陷（快照漏号把新事件挤掉、历史栏在批次结束后不作废），
@@ -228,8 +229,8 @@ webui 达到 ① parity 清单逐条有对拍测试 ② 真实长跑连续若干
 CSS/JS 更强，届时是死代码，该删就删）、`gui/qr_utils.py`（§3 说的"先不移"到那时才移），
 以及 `gui/controller.py` 里 webui 尚未覆盖到的残余分支。
 
-2026-09-25（第 8 步之后）对这三条的实测状态：**② 到位**（真浏览器 3 份长跑 + 7 项
-integration 连跑三遍全绿）；**① 只到一小块** —— §4 那 16 行里目前有跨宿主对拍的是
+2026-09-25（第 8 步之后）对这三条的实测状态：**② 到位**（真浏览器 3 份长跑 + 8 项
+webui integration 在 `.venv-ci313` 连跑四遍全绿）；**① 只到一小块** —— §4 那 16 行里目前有跨宿主对拍的是
 「表单五字段 → `RunState`」「权重表 → `weight_config_snapshot`」「交给 `run_batch` 的
 位置参数与关键字」这三条（`tests/test_host_parity.py` 4 项 +
 `tests/test_weight_parser_parity.py`），其余各行仍是"两个宿主各自有测试"而没有同一条
