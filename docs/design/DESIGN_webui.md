@@ -80,7 +80,7 @@ webui/static/      index.html · app.js · styles.css      ← 观感落这里
 | 导入 / 导出 / 另存默认配置 + `config_io` 缺失时三按钮禁用 | `ctl:148-257`、`app:900-908` | `/api/config/*` + `state.config_io_available` |
 | 启动静默自动加载默认配置 | `app:270`、`ctl:259-268` | 服务启动时同一条路径 |
 | 权重表 6 类题型的解析与预填、留空语义、矩阵 `1:w,w \| 2:w,w`、sort 作废规则 | `wp:232-595` | `POST /api/weights`，**解析函数直接复用 `weight_panel.build_weight_config` 的逻辑**（见 §5 末） |
-| 反向回填（未探测时按 cfg 反构最小 questions） | `wp:602-667` | 同一函数 |
+| 反向回填（未探测时按 cfg 反构最小 questions） | `wp:602-667` | **2026-09-26 才真的成立**：规则抽进 `src.weight_text.reconstruct_questions`，两个宿主共用同一份并有对拍（此前 webui 只同步文本、不建行，"已恢复到表格"那句是空的） |
 | 开始 / 停止、`running` 幂等、按钮禁用 | `app:1420-1507` | `POST /api/run` `/api/stop` |
 | 进度与成功/失败/未知计数、`displayed_round` | `app:1300-1318,1605-1611` | SSE `progress` 事件 |
 | 断点续传确认（答"否"仍保留权重恢复） | `app:1347-1418` | SSE `confirm` 事件 → 前端弹 → `POST /api/confirm` |
@@ -245,6 +245,21 @@ webui integration 在 `.venv-ci313` 连跑四遍全绿，且在 GitHub 的 windo
 位置参数与关键字」这三条（`tests/test_host_parity.py` 4 项 +
 `tests/test_weight_parser_parity.py`），其余各行仍是"两个宿主各自有测试"而没有同一条
 命令打到两边的硬证据；**③ 未动**。所以别把"E2E 进套件"读成"可以删 Tk 了"。
+
+**2026-09-26 第 7 步开工，按四段走，每段都停在可用状态**：
+
+- **A 拆耦合**（已做完）：`gui/qr_utils.py` → `src/qr_utils.py`，webui 不再 import 宿主包。
+- **B 补对拍**（进行中）：§4 每行补到"同一条命令打到两边"。已补第一行「反向回填」，
+  顺手抓到一处真差距（不是缺测试）：续传恢复权重时 webui 只写文本不建行，那句
+  "已自动恢复到表格，可检查/修改"没有对象。现在 **4/16** 行有对拍。
+- **C 改文档**：README/CHANGELOG 改成以 webui 为主（③）。
+- **D 删**：`git rm gui/`（10 个文件 4671 行）+ `tests/test_gui_*.py`（3241 行），
+  同时改 `pyproject` 的 `wjx-gui` 与 `packages`、`ci.yml` 的 `--cov=gui`、
+  `readme_coverage.PACKAGES` 与 `coverage_gaps.json` 的 gui 组，并处理
+  `test_webui_entry.py` 那条"拿 `gui/app.py` 当参照物"的用例。
+
+B 段每补一行都可能像今天这样抓出真缺陷 —— 这正是它排在删之前的理由：**删掉参照实现之后，
+同一处差异再没有第二个宿主可以作证**。
 
 ## 12. 不做清单（react-bits 里明确不碰的）
 

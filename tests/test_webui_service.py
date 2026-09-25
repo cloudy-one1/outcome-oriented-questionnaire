@@ -1254,6 +1254,40 @@ def test_resume_declined_restarts_from_one_but_keeps_the_weights(tmp_path):
     assert any("权重恢复仍生效" in x for _, x in logs_of(sess))
 
 
+def test_resume_rebuilds_the_table_when_nothing_was_detected(tmp_path):
+    """没探测过就续传：桌面版按上次的权重反构出表格行，webui 此前只写文本。
+
+    表是按 ``session.questions`` 渲染的，文本因此没有归宿 —— 而确认框那句
+    "✅ 上次权重已自动恢复到表格，可在配置区检查 / 修改后再启动"讲的正是这张表。
+    """
+    restored = {1: {"type": "single", "weights": [0.2, 0.3, 0.5]},
+                2: {"type": "scale", "scale": 5,
+                    "weights": [1, 2, 3, 4, 5]}}
+    sess, svc, _calls, _db = make_runner(
+        tmp_path, prev=resumable(restored=restored))
+    sess.set_field("url", "https://x.test/s")
+    svc.start_run()
+    assert svc.wait_for_run(5)
+    assert [q["q"] for q in sess.questions] == [1, 2], "表上必须真的长出行"
+    assert [r["text"] for r in sess.table_rows()] == [
+        "0.2000,0.3000,0.5000", "1.0000,2.0000,3.0000,4.0000,5.0000"]
+
+
+def test_resume_keeps_a_detected_table_and_only_syncs_the_rows_it_has(tmp_path):
+    """已探测：以探测到的结构为准，只把有行的题号刷上权重（与桌面版同一条判据）。"""
+    restored = {1: {"type": "single", "weights": [0.2, 0.8]},
+                9: {"type": "single", "weights": [0.5, 0.5]}}
+    sess, svc, _calls, _db = make_runner(
+        tmp_path, prev=resumable(restored=restored))
+    sess.set_field("url", "https://x.test/s")
+    sess.set_questions([{"q": 1, "type": "single", "choices": ["a", "b"]}])
+    svc.start_run()
+    assert svc.wait_for_run(5)
+    assert [q["q"] for q in sess.questions] == [1], "不许把探测结果换成反构表"
+    assert sess.weight_texts[1] == "0.2000,0.8000"
+    assert 9 not in sess.weight_texts, "表上没有第 9 题就不该凭空造出一个孤儿键"
+
+
 def test_resume_check_failures_never_block_the_run(tmp_path):
     sess, svc, _calls, _db = make_runner(tmp_path,
                                          find_error=RuntimeError("db is locked"))

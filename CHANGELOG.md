@@ -101,6 +101,31 @@
   **③ README/CHANGELOG 仍以桌面版为主**。这两块不补齐就删，等于把 13 行用户表面
   从"两个宿主可比"降级成"只有 webui 自己说它对"，而且永久不可追回。
 
+### 对拍与修复（第 7 步补的第一行：续传之后表格要真的长出行）
+
+- 清点 §4 那 16 行时抓到一处**真差距**，不是缺测试：断点续传恢复上次权重时，桌面版调
+  `WeightPanel.restore_from_config` 按 cfg 反构出表格行；webui 只写 `session.weight_texts`，
+  而表格是按 `session.questions` 渲染的 —— 没探测过那里就是空的。于是确认框那句
+  "✅ 上次权重已自动恢复到表格，可在配置区检查 / 修改后再启动"在 webui 里是**一个做不到的
+  承诺**：权重本身没错（`weight_config_snapshot` 对，跑批不受影响），但人看不见也改不了。
+- 按第 4 步那条纪律办：规则先抽成共用一份 —— `src.weight_text.reconstruct_questions`，
+  **逐字照桌面版，连两条已知粗糙一起留着**（未知题型给两个占位选项，因此 `sort` 反构出来
+  是"2 选项"、与 weights 的行数不对应）。搬家不改行为，第 7 步才安全；要修就一处修。
+  webui 侧新增 `WebService.restore_table_from_config`：没探测过 → 反构行；已探测过 →
+  以探测结构为准，只刷表上有的题号（同一条判据，不凭空造孤儿键）。
+- 三层测试各归其位：对拍 1 项进 `tests/test_host_parity.py`，比两个宿主恢复出来的行结构与
+  第 4 列文本 —— 那两列文本是**两条不同的代码**算出来的（桌面版 `populate` 从全局
+  `WEIGHT_CONFIG` 取默认，webui 逐行走 `format_weights_for_entry`）；规则本身 8 项拆成
+  `tests/test_weight_reconstruct.py`（纯数据、不碰 tkinter，删掉 Tk 之后还要留下）；
+  webui 行为回归 2 项进 `tests/test_webui_service.py`。
+- **反向验过**：把 `restore_table_from_config` 退化成修之前的静默写法，那条对拍立刻红
+  （webui 0 行 vs 桌面版 4 行）。
+- 顺手关掉测试基座的一条漏：`gui_window` 夹具不关构造期"孤儿批次收尾"懒开的那个 SQLite
+  连接，进程退出时留一条 `ResourceWarning: unclosed database`。现在夹具收尾时关掉它。
+- 数字：离线 1679 → **1690 项**（CI 干净口径 1686 passed + 4 skipped）、integration 仍 33 项；
+  TOTAL 91.11% → **91.13%**，生成块已 `--write` 重生成、`--check` 绿；ruff / pyright 全 0。
+- §11 条件①的进度：16 行里 **4 行**有跨宿主对拍（原 3 行 + 反向回填）。
+
 ## [3.4.0] - 2026-09-25
 
 v3 第三程：**给同一台引擎再添一个宿主，并且先证明它和桌面版给出的是同一份东西**。

@@ -32,6 +32,7 @@ from src.weight_text import (
     MATRIX_LIKE_TYPES,
     SCALE_TYPES,
     parse_weight_texts,
+    reconstruct_questions,
     scale_levels,
 )  # noqa: E402
 
@@ -440,11 +441,8 @@ class WeightPanel:
           - 若已探测过（self.questions 非空）：直接重新 populate 以同步结构
           - 否则按 cfg 反向构造最小化 questions，用于显示题号/类型/默认值
 
-        反向构造规则：
-          - single/multi/dropdown：choices 占位长度 = weights 长度
-          - scale：优先 cfg.scale，否则取 weights 长度或默认 5
-          - text：保留 field；options 作为候选预填
-          - matrix_single/matrix：rows/cols/row_weights 原样保留
+        反构规则**不在这里**：``src.weight_text.reconstruct_questions`` 那一份与 webui
+        宿主共用（webui 此前根本没做这一步，于是续传后"已恢复到表格"那句是空的）。
         """
         if not restored_w:
             return
@@ -453,49 +451,6 @@ class WeightPanel:
             self.populate(list(self.questions))
             return
 
-        reconstructed: list[dict] = []
-        for qi in sorted(restored_w.keys()):
-            cfg = restored_w[qi]
-            if not isinstance(cfg, dict):
-                continue
-            qtype = cfg.get("type", "single")
-            q: dict = {"q": qi, "type": qtype}
-
-            if qtype in ("single", "radio", "multi", "checkbox", "dropdown"):
-                weights = cfg.get("weights") or []
-                q["choices"] = (
-                    list(range(1, len(weights) + 1)) if weights else [1, 2]
-                )
-            elif qtype in ("scale", "rating"):
-                scale = cfg.get("scale")
-                if scale is None:
-                    weights = cfg.get("weights") or []
-                    scale = len(weights) if weights else 5
-                q["scale"] = int(scale)
-                q["scale_min"] = 1
-                q["choices"] = list(range(1, int(scale) + 1))
-            elif qtype in ("text", "input", "textarea", "fillblank"):
-                q["field"] = cfg.get("field")
-                q["choices"] = []
-            elif qtype in ("matrix_single", "matrix", "matrix_multi"):
-                rows = cfg.get("rows") or [1, 2]
-                cols = cfg.get("cols") or [1, 2]
-                row_weights = cfg.get("row_weights") or {}
-                if row_weights:
-                    rows = sorted(int(k) for k in row_weights.keys())
-                    if not cols and row_weights:
-                        first_rw = next(iter(row_weights.values()))
-                        cols = (
-                            list(range(1, len(first_rw) + 1))
-                            if first_rw else [1, 2]
-                        )
-                q["rows"] = rows
-                q["cols"] = cols
-                q["choices"] = cols
-            else:
-                q["choices"] = cfg.get("choices") or [1, 2]
-
-            reconstructed.append(q)
-
+        reconstructed = reconstruct_questions(restored_w)
         if reconstructed:
             self.populate(reconstructed)

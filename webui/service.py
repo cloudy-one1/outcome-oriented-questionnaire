@@ -709,6 +709,32 @@ class WebService:
                       "（按钮已点击但未观察到成功信号），已保守计入失败数。", "WARN")
         self._log("═" * 40, "HEADER")
 
+    def restore_table_from_config(self, restored: dict[int, dict]) -> int:
+        """把一份持久化权重恢复成界面上**看得见改得动**的表；返回同步的行数。
+
+        桌面版在续传那条路上调 ``WeightPanel.restore_from_config``，webui 此前只写
+        ``session.weight_texts``。而表格是按 ``session.questions`` 渲染的 —— 没探测过时
+        那里是空的，于是文本没有归宿，而确认框那句"✅ 上次权重已自动恢复到表格，
+        可在配置区检查 / 修改后再启动"是假的：表上一行都没有。
+        """
+        if not self.session.questions:
+            from src.weight_text import reconstruct_questions
+
+            reconstructed = reconstruct_questions(restored)
+            if reconstructed:
+                self.session.set_questions(reconstructed)
+        known = {int(q["q"]) for q in self.session.questions if "q" in q}
+        texts: dict[int, str] = {}
+        for qi, qcfg in restored.items():
+            if not isinstance(qcfg, dict) or int(qi) not in known:
+                continue        # 只刷表上有的题号，与桌面版同一条判据
+            rendered = format_weights_for_entry(qcfg)
+            if rendered:
+                texts[int(qi)] = rendered
+        if texts:
+            self.session.set_weight_texts(texts)
+        return len(texts)
+
     def _apply_resumable_run(self, state: RunState, url: str, db: Any) -> None:
         """问一次"要不要接着上次中断的批次继续"，结论就地写进 state。
 
@@ -734,9 +760,7 @@ class WebService:
                     restored)
                 self._log(f"[续传] 已自动恢复上次权重配置：{len(restored)} 道题",
                           "OK")
-                self.session.set_weight_texts({
-                    int(qi): format_weights_for_entry(qcfg)
-                    for qi, qcfg in restored.items()})
+                self.restore_table_from_config(restored)
             msg = (f"检测到上次未完成的批次：\n\n"
                    f"  Run #{prev['id']} · 状态 = {prev['status']}\n"
                    f"  已成功 {done} / {planned} 份\n"

@@ -36,6 +36,8 @@ tk = pytest.importorskip("tkinter")
 from gui import app as app_module  # noqa: E402
 from gui.app import SurveyGUI  # noqa: E402
 from src import cli as cli_module  # noqa: E402
+from src.config_io import apply_weight_config  # noqa: E402
+from src.weight_text import reconstruct_questions  # noqa: E402
 from src import config as config_module  # noqa: E402
 from src import dialogs  # noqa: E402
 from webui.session import Availability, RunSession, SessionPaths  # noqa: E402
@@ -95,6 +97,11 @@ def gui_window(tk_root):
                 for job in after_info():
                     app.root.after_cancel(job)
             app.running = False
+            panel = getattr(app, "_history_panel", None)
+            if panel is not None:
+                # 构造期那次"孤儿批次收尾"会懒开一个 SQLite 连接，不关就是一路
+                # 挂到进程退出（ResourceWarning: unclosed database）。
+                panel.close_db()
             try:
                 app.root.destroy()
             except Exception:
@@ -245,6 +252,52 @@ def test_every_keyword_except_the_host_tag_matches(gui_window, tmp_path) -> None
                     "history_db"):
             continue
         assert web_call.kwargs[name] == value, f"{name} 两边不一样"
+
+
+def test_resume_restores_the_same_table_on_both_hosts(gui_window, tmp_path) -> None:
+    """§4 那行「反向回填」：同一份持久化权重喂给两个宿主，表必须长出同一副样子。
+
+    两侧的文本走的是**两条不同的代码**：桌面版的 entry 由 ``populate`` 从全局
+    ``WEIGHT_CONFIG`` 取默认值，webui 由 ``format_weights_for_entry`` 逐行写。
+    共用 ``reconstruct_questions`` 只保证行结构同源，文本对得上才是这条用例的意义 ——
+    续传时用户被告知"权重已恢复到表格，可检查/修改"，两边都得真的能检查。
+    """
+    restored = {
+        1: {"type": "single", "weights": [0.2, 0.3, 0.5]},
+        2: {"type": "scale", "scale": 5, "weights": [1, 2, 3, 4, 5]},
+        3: {"type": "text", "field": "phone", "options": ["13800000000"]},
+        4: {"type": "matrix", "row_weights": {"1": [1, 2], "2": [3, 4]}},
+    }
+    config_module.WEIGHT_CONFIG.clear()
+    apply_weight_config(restored, replace=True)
+
+    gui_window.questions[:] = []
+    gui_window.weight_entries.clear()
+    gui_window._restore_weight_table_from_config(dict(restored))
+    tk_table = {int(q["q"]): q for q in gui_window.questions}
+    tk_texts = {qi: var.get() for qi, var in gui_window.weight_entries.items()}
+
+    session = RunSession(paths=SessionPaths(str(tmp_path / "web")),
+                         availability=Availability(config_io=True, history=True,
+                                                   qr=True, selenium=True))
+    svc = WebService(session, history_db_cls=lambda _p: None)
+    svc.restore_table_from_config(dict(restored))
+    rows = session.table_rows()
+    web_texts = {row["q"]: row["text"] for row in rows}
+    svc.close_db()
+
+    # 桌面版那边的行必须真的来自共用规则（搬家时漏接一行，这条就红）
+    assert tk_table == {int(q["q"]): q for q in reconstruct_questions(restored)}
+    # 两侧的第 4 列是**两条不同的代码**算出来的，这才是这条用例的意义
+    assert web_texts == tk_texts, "同一份权重在两个宿主的第 4 列文本不一样"
+    assert [row["q"] for row in rows] == sorted(restored), "行的题号序要一致"
+    assert sorted(tk_texts) == [1, 2, 3, 4]
+    assert tk_texts[1] == "0.2000,0.3000,0.5000"
+    assert tk_texts[4] == "1:1,2 | 2:3,4"
+    assert tk_texts[1] == "0.2000,0.3000,0.5000"
+    assert tk_texts[4] == "1:1,2 | 2:3,4"
+    gui_window.questions.clear()
+    gui_window.weight_entries.clear()
 
 
 def test_the_weight_table_reaches_the_same_snapshot(gui_window, tmp_path) -> None:

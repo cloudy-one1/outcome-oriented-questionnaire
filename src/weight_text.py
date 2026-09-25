@@ -263,6 +263,64 @@ def parse_weight_texts(questions: list[dict], texts: Mapping[Any, Any]
     return cfg, warnings
 
 
+def reconstruct_questions(restored: Mapping[Any, Any]) -> list[dict[str, Any]]:
+    """从一份持久化 ``weight_config`` 反构出**最小题目表**，给界面显示与编辑用。
+
+    生产路径只有一条：断点续传时把上次那批的权重恢复回表格。两个宿主原本各自实现
+    （桌面版在 ``gui/weight_panel.restore_from_config``，webui 干脆没做 —— 它只写
+    ``weight_texts``，而表格是按 ``questions`` 渲染的，于是那句"已自动恢复到表格，
+    可检查/修改"在没探测过的会话里是假的：表上一行都没有）。
+
+    规则逐字照桌面版，**包括两条已知的粗糙**，第 7 步退役 Tk 时不该由一次搬家顺带改掉：
+      - 单选/多选/下拉：``choices`` 用占位长度 = ``weights`` 长度（没有 weights 给 2 个）
+      - 量表：优先 ``cfg.scale``，否则按 weights 长度，再退到 5；``scale_min`` 恒为 1
+      - 填空：保留 ``field``；``options`` 作为候选文本预填
+      - 矩阵一族：``rows``/``cols``/``row_weights`` 原样保留
+      - **认不出的题型（含 ``sort``）给两个占位选项** —— 排序题因此显示成"2 选项"，
+        行数与 weights 也不对应。这是现状，不是这次引入的。
+    """
+    out: list[dict[str, Any]] = []
+    for qi in sorted(restored.keys()):        # 与桌面版一致：键序即题号序
+        cfg = restored[qi]
+        if not isinstance(cfg, dict):
+            continue
+        qtype = str(cfg.get("type", "single"))
+        q: dict[str, Any] = {"q": qi, "type": qtype}
+
+        if qtype in CHOICE_TYPES:
+            weights = cfg.get("weights") or []
+            q["choices"] = list(range(1, len(weights) + 1)) if weights else [1, 2]
+        elif qtype in SCALE_TYPES:
+            scale = cfg.get("scale")
+            if scale is None:
+                weights = cfg.get("weights") or []
+                scale = len(weights) if weights else 5
+            q["scale"] = int(scale)
+            q["scale_min"] = 1
+            q["choices"] = list(range(1, int(scale) + 1))
+        elif qtype in TEXT_TYPES:
+            q["field"] = cfg.get("field")
+            q["choices"] = []
+        elif qtype in MATRIX_TYPES:
+            rows = cfg.get("rows") or [1, 2]
+            cols = cfg.get("cols") or [1, 2]
+            row_weights = cfg.get("row_weights") or {}
+            if row_weights:
+                rows = sorted(int(k) for k in row_weights.keys())
+                if not cols:
+                    first_rw = next(iter(row_weights.values()))
+                    cols = list(range(1, len(first_rw) + 1)) if first_rw else [1, 2]
+            q["rows"] = rows
+            q["cols"] = cols
+            q["choices"] = cols
+        else:
+            q["choices"] = cfg.get("choices") or [1, 2]
+
+        out.append(q)
+    return out
+
+
 __all__ = ["parse_weight_texts", "weight_text_for", "scale_levels",
+           "reconstruct_questions",
            "CHOICE_TYPES", "SCALE_TYPES", "TEXT_TYPES",
            "MATRIX_TYPES", "MATRIX_LIKE_TYPES", "SORT_TYPES"]
