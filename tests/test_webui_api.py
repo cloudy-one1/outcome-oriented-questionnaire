@@ -32,7 +32,7 @@ from webui.session import Availability, RunSession, SessionPaths
 
 
 class FakeService:
-    """api 与 service 的契约面就这 5 个方法。"""
+    """api 与 service 的契约面就这几个方法。"""
 
     def __init__(self, cfg=None):
         self.calls: list = []
@@ -42,6 +42,12 @@ class FakeService:
 
     def detect_questions(self):
         self.calls.append("detect")
+
+    def start_run(self):
+        self.calls.append("run")
+
+    def request_stop(self):
+        self.calls.append("stop")
 
     def import_qr(self, path):
         self.calls.append("qr")
@@ -422,3 +428,10 @@ def test_content_disposition_is_always_header_safe(name):
     assert header.startswith("attachment; filename=")
     assert "filename*=UTF-8" in header
     assert chr(13) not in header and chr(10) not in header
+
+
+def test_run_and_stop_routes_delegate_to_the_service(api):
+    made, _session, svc = api
+    assert post(made, "/api/run").status == 200
+    assert post(made, "/api/stop").status == 200
+    assert svc.calls == ["run", "stop"]

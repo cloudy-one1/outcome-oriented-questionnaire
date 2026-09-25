@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 
 import pytest
 
@@ -539,10 +540,11 @@ def test_current_config_for_export_is_the_public_seam_for_the_api(session):
     assert empty.current_config_for_export() is None
 
 
-def test_export_without_the_parser_wired_says_which_step_owns_it(session):
+def test_export_without_any_probe_result_warns(session):
+    """解析已接线：没探测过就是空 cfg，走 WARN 而不是报错。"""
     sess, _ = session
     make_service(sess, save=lambda *a, **k: None).export_config("o.json")
-    assert any(t == "FAIL" and "步骤 4" in x for t, x in logs_of(sess))
+    assert ("WARN", "当前没有可导出的权重配置（请先探测题目）") in logs_of(sess)
 
 
 def test_export_writes_meta_and_reports_relative_path(tmp_path, session):
@@ -881,3 +883,362 @@ def test_no_record_text_can_be_turned_off(session):
     assert sess.no_record_text is False
     sess.set_field("no_record_text", 1)
     assert sess.no_record_text is True
+
+
+# ====================================================== 运行循环（步骤 3）
+
+
+class FakeRound:
+    def __init__(self, index, outcome, message):
+        self.index = index
+        self.outcome = outcome
+        self.message = message
+
+
+class FakeHistory:
+    """够用的历史库替身。``deserialize_weight_config`` 必须是类方法 ——
+    被测代码走的是 ``type(db).deserialize_weight_config(prev)``。"""
+
+    def __init__(self, prev=None, find_error=None):
+        self.prev = prev
+        self.find_error = find_error
+        self.closed = False
+
+    def find_resumable_run(self, url):
+        if self.find_error:
+            raise self.find_error
+        return self.prev
+
+    @classmethod
+    def deserialize_weight_config(cls, prev):
+        return dict((prev or {}).get("_restored", {}))
+
+    def close(self):
+        self.closed = True
+
+
+def resumable(done=2, planned=5, restored=None):
+    prev = {"id": 7, "status": "interrupted", "success_count": done,
+            "total_submissions": planned, "started_at": "2026-09-20T10:00:00"}
+    if restored:
+        prev["_restored"] = restored
+    return prev
+
+
+def make_runner(tmp_path, *, rounds=(), run_error=None, prev=None,
+                find_error=None, confirm=True, history=True):
+    sess = RunSession(paths=SessionPaths(str(tmp_path)),
+                      availability=Availability(config_io=True, history=history,
+                                                qr=False, selenium=False))
+    calls: dict = {}
+    db = FakeHistory(prev=prev, find_error=find_error)
+
+    def run_batch(url, total, **kw):
+        calls["url"], calls["total"] = url, total
+        calls.update(kw)
+        state = kw["state"]
+        for r in rounds:
+            # 真引擎会在 run_batch 里更新计数，替身也得更新，否则进度与收尾
+            # 断言测的就不是同一条数据通路
+            if r.outcome == "success":
+                state.mark_success()
+            elif r.outcome in ("failed", "error"):
+                state.mark_failure()
+            elif r.outcome == "unknown":
+                state.mark_unknown()
+            state.current_attempt = r.index
+            kw["on_round"](r)
+        if run_error:
+            raise run_error
+
+    svc = WebService(sess, create_driver=None, detect_questions=None,
+                     decode_qr=None, history_db_cls=lambda path: db,
+                     confirm=lambda title, msg: confirm, run_batch_fn=run_batch)
+    return sess, svc, calls, db
+
+
+def test_start_run_without_a_url_is_rejected_before_any_thread(tmp_path):
+    sess, svc, calls, _db = make_runner(tmp_path)
+    with pytest.raises(ValidationError, match="URL"):
+        svc.start_run()
+    assert calls == {}
+    assert sess.running is False
+
+
+def test_start_run_without_a_probe_result_falls_back_to_equal_weights(tmp_path):
+    sess, svc, calls, _db = make_runner(tmp_path)
+    sess.set_field("url", "https://x.test/s")
+    sess.set_field("count", 3)
+    svc.start_run()
+    assert svc.wait_for_run(5)
+    assert calls["total"] == 3
+    assert any(t == "WARN" and "等权重随机" in x for t, x in logs_of(sess))
+    assert sess.running is False
+
+
+def test_start_run_hands_the_engine_the_same_arguments_tk_does(tmp_path):
+    sess, svc, calls, _db = make_runner(tmp_path)
+    sess.set_field("url", "https://x.test/s")
+    sess.set_field("count", 4)
+    sess.set_field("browser", "chrome")
+    sess.set_field("use_uc", True)
+    sess.set_field("no_record_text", True)
+    svc.start_run()
+    assert svc.wait_for_run(5)
+    state = calls["state"]
+    assert calls["url"] == state.survey_url == "https://x.test/s"
+    assert state.browser == "chrome" and state.use_uc is True
+    assert state.no_record_text is True
+    assert state.total_target == 4 and state.attempts_cap == 4
+    assert state.resume_start_idx == 1
+    assert calls["error_suffix"].startswith("Web ·")
+    assert callable(calls["stop_check"]) and callable(calls["log"])
+
+
+def test_round_callbacks_become_log_lines_and_progress(tmp_path):
+    sess, svc, _calls, _db = make_runner(tmp_path, rounds=[
+        FakeRound(1, "success", "第 1 份已提交"),
+        FakeRound(2, "unknown", "结果未知"),
+        FakeRound(3, "aborted", "已按请求停止"),
+    ])
+    sess.set_field("url", "https://x.test/s")
+    sess.set_field("count", 3)
+    svc.start_run()
+    assert svc.wait_for_run(5)
+    tagged = logs_of(sess)
+    assert any(t == "OK" and "第 1 份已提交" in x for t, x in tagged)
+    assert any(t == "FAIL" and "结果未知" in x for t, x in tagged)
+    assert any(t == "WARN" and "已按请求停止" in x for t, x in tagged)
+    assert sess.status == "就绪"
+
+
+def test_the_finish_banner_counts_success_and_failure(tmp_path):
+    sess, svc, _calls, _db = make_runner(tmp_path, rounds=[
+        FakeRound(1, "success", "ok"), FakeRound(2, "failed", "nope")])
+    sess.set_field("url", "https://x.test/s")
+    svc.start_run()
+    assert svc.wait_for_run(5)
+    texts = [x for _, x in logs_of(sess)]
+    assert any("执行结束 — 成功 1  ·  失败 1" in t for t in texts)
+
+
+def test_unknown_outcomes_get_their_own_statistic_line(tmp_path):
+    def run_batch(url, total, **kw):
+        kw["state"].unknown_count = 2
+
+    sess = RunSession(paths=SessionPaths(str(tmp_path)),
+                      availability=Availability(config_io=True))
+    sess.set_field("url", "https://x.test/s")
+    svc = WebService(sess, create_driver=None, detect_questions=None,
+                     decode_qr=None, history_db_cls=None, run_batch_fn=run_batch)
+    svc.start_run()
+    assert svc.wait_for_run(5)
+    assert any(t == "WARN" and "其中 2 次提交结果未知" in x
+               for t, x in logs_of(sess))
+
+
+def test_request_stop_sets_the_flag_the_engine_polls(tmp_path):
+    sess, svc, calls, _db = make_runner(tmp_path)
+    sess.set_field("url", "https://x.test/s")
+    started = threading.Event()
+    seen: dict = {}
+
+    def blocking(url, total, **kw):
+        seen.update(kw)
+        started.set()
+        while not kw["stop_check"]():
+            threading.Event().wait(0.02)
+
+    svc._run_batch = blocking
+    svc.start_run()
+    assert started.wait(5)
+    svc.request_stop()
+    assert svc.wait_for_run(5)
+    assert seen["state"].stop_flag is True
+    assert any("下一个题目边界" in x for _, x in logs_of(sess))
+
+
+def test_request_stop_while_idle_does_nothing(tmp_path):
+    sess, svc, _calls, _db = make_runner(tmp_path)
+    svc.request_stop()
+    assert logs_of(sess) == []
+    assert sess.status == "就绪"
+
+
+def test_a_second_start_is_ignored_while_a_batch_is_running(tmp_path):
+    sess, svc, calls, _db = make_runner(tmp_path)
+    sess.set_field("url", "https://x.test/s")
+    sess.set_field("count", 6)
+    started = threading.Event()
+    entries = []
+
+    def blocking(url, total, **kw):
+        started.set()
+        entries.append(total)
+        while not kw["stop_check"]():
+            threading.Event().wait(0.02)
+
+    svc._run_batch = blocking
+    svc.start_run()
+    assert started.wait(5)
+    svc.start_run()                       # 幂等：不该起第二个批次
+    svc.request_stop()
+    assert svc.wait_for_run(5)
+    assert entries == [6]                 # 只进过一次 run_batch
+
+
+def test_a_crashing_batch_still_finishes_and_reports(tmp_path):
+    sess, svc, _calls, _db = make_runner(
+        tmp_path, run_error=RuntimeError("driver died"))
+    sess.set_field("url", "https://x.test/s")
+    svc.start_run()
+    assert svc.wait_for_run(5)
+    assert any(t == "FAIL" and "driver died" in x for t, x in logs_of(sess))
+    assert sess.running is False and sess.status == "就绪"
+
+
+def test_resume_accepted_moves_the_counters_the_engine_will_use(tmp_path):
+    sess, svc, calls, _db = make_runner(tmp_path, prev=resumable(done=2, planned=5))
+    sess.set_field("url", "https://x.test/s")
+    sess.set_field("count", 5)
+    svc.start_run()
+    assert svc.wait_for_run(5)
+    state = calls["state"]
+    assert (state.resume_start_idx, state.run_id, state.success_count) == (3, 7, 2)
+    assert state.total_target == 5 and state.attempts_cap == 3
+    assert any(t == "OK" and "恢复 Run #7" in x for t, x in logs_of(sess))
+    assert any("断点续传启动：从第 3 份" in x for _, x in logs_of(sess))
+
+
+def test_resume_declined_restarts_from_one_but_keeps_the_weights(tmp_path):
+    restored = {1: {"type": "single", "weights": [0.2, 0.8]}}
+    sess, svc, calls, _db = make_runner(
+        tmp_path, prev=resumable(restored=restored), confirm=False)
+    sess.set_field("url", "https://x.test/s")
+    sess.set_questions([{"q": 1, "type": "single", "choices": ["a", "b"]}])
+    svc.start_run()
+    assert svc.wait_for_run(5)
+    state = calls["state"]
+    assert state.resume_start_idx == 1 and state.run_id is None
+    assert sess.weight_texts[1] == "0.2000,0.8000"
+    assert any("权重恢复仍生效" in x for _, x in logs_of(sess))
+
+
+def test_resume_check_failures_never_block_the_run(tmp_path):
+    sess, svc, _calls, _db = make_runner(tmp_path,
+                                         find_error=RuntimeError("db is locked"))
+    sess.set_field("url", "https://x.test/s")
+    svc.start_run()
+    assert svc.wait_for_run(5)
+    assert any(t == "WARN" and "检查可恢复批次失败" in x for t, x in logs_of(sess))
+
+
+def test_no_resumable_batch_means_no_question_asked(tmp_path):
+    asked: list = []
+    sess, svc, _calls, _db = make_runner(tmp_path)
+    sess.set_field("url", "https://x.test/s")
+    svc._confirm = lambda title, msg: asked.append(title) or False
+    svc.start_run()
+    assert svc.wait_for_run(5)
+    assert asked == []
+
+
+def test_a_fully_done_or_zero_done_batch_is_not_offered(tmp_path):
+    for prev in (resumable(done=0, planned=5), resumable(done=5, planned=5)):
+        sess, svc, calls, _db = make_runner(tmp_path, prev=prev)
+        sess.set_field("url", "https://x.test/s")
+        asked: list = []
+        svc._confirm = lambda title, msg: asked.append(title) or False
+        svc.start_run()
+        assert svc.wait_for_run(5)
+        assert asked == []
+        assert calls["state"].resume_start_idx == 1
+
+
+def test_the_history_connection_is_cached_and_closed(tmp_path):
+    sess, svc, _calls, db = make_runner(tmp_path)
+    assert svc.get_db() is db
+    assert svc.get_db() is db                 # 第二次不该再构造（迁移含全表扫描）
+    svc.close_db()
+    assert db.closed is True
+    assert svc._db_cached is None
+
+
+def test_a_history_db_that_cannot_open_degrades_to_a_warning(tmp_path):
+    sess, svc, _calls, _db = make_runner(tmp_path)
+
+    def boom(_path):
+        raise OSError("locked")
+
+    svc._history_db_cls = boom
+    assert svc.get_db() is None
+    assert any(t == "WARN" and "数据库打开失败" in x for t, x in logs_of(sess))
+
+
+def test_closing_an_already_closed_db_is_quiet(tmp_path):
+    sess, svc, _calls, _db = make_runner(tmp_path)
+    svc.close_db()
+    assert logs_of(sess) == []
+
+
+def test_history_unavailable_means_no_resume_prompt_at_all(tmp_path):
+    sess, svc, _calls, db = make_runner(tmp_path, prev=resumable(), history=False)
+    sess.set_field("url", "https://x.test/s")
+    svc.start_run()
+    assert svc.wait_for_run(5)
+    assert db.closed is False                 # 根本没打开过
+    assert not any("续传" in x for _, x in logs_of(sess))
+
+
+def test_wait_for_run_without_a_thread_is_already_done(tmp_path):
+    sess, svc, _calls, _db = make_runner(tmp_path)
+    assert svc.wait_for_run(1) is True
+
+
+def test_sync_progress_before_any_run_is_a_noop(tmp_path):
+    sess, svc, _calls, _db = make_runner(tmp_path)
+    svc._sync_progress()
+    assert sess.total_rounds == 0
+
+
+def test_build_weight_config_pushes_parse_warnings_into_the_log(tmp_path):
+    sess, svc, _calls, _db = make_runner(tmp_path)
+    sess.set_questions([{"q": 1, "type": "single", "choices": ["a", "b"]}])
+    sess.set_weight_texts({1: "1,2,3"})
+    assert svc.build_weight_config() == {}
+    assert any(t == "WARN" and "与选项数 2 不符" in x for t, x in logs_of(sess))
+
+
+def test_a_history_db_that_cannot_be_closed_still_says_so(tmp_path):
+    sess, svc, _calls, db = make_runner(tmp_path)
+    assert svc.get_db() is db            # 先真的缓存上，否则 close_db 是空操作
+
+    def boom():
+        raise OSError("still writing")
+
+    db.close = boom
+    svc.close_db()
+    assert any(t == "WARN" and "关闭历史库失败" in x for t, x in logs_of(sess))
+
+
+def test_a_corrupt_weight_snapshot_does_not_swallow_the_resume_question(tmp_path):
+    """反序列化坏了只是"没恢复权重"，不该连"要不要续传"都不问了。"""
+
+    class BrokenHistory(FakeHistory):
+        @classmethod
+        def deserialize_weight_config(cls, prev):
+            raise ValueError("json is corrupt")
+
+    sess = RunSession(paths=SessionPaths(str(tmp_path)),
+                      availability=Availability(config_io=True, history=True))
+    asked: list = []
+    svc = WebService(sess, create_driver=None, detect_questions=None,
+                     decode_qr=None, history_db_cls=lambda p: BrokenHistory(
+                         prev=resumable()),
+                     confirm=lambda title, msg: asked.append(title) or False,
+                     run_batch_fn=lambda *a, **k: None)
+    sess.set_field("url", "https://x.test/s")
+    svc.start_run()
+    assert svc.wait_for_run(5)
+    assert asked == ["断点续传"]
+    assert any("已忽略上次中断批次" in x for _, x in logs_of(sess))

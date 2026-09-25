@@ -272,6 +272,14 @@ class Api:
         self.service.save_default_config()
         return Response.json({"ok": True, "state": self.session.snapshot()})
 
+    def post_run(self, _body: bytes, _query: dict) -> Response:
+        self.service.start_run()
+        return Response.json({"ok": True, "state": self.session.snapshot()})
+
+    def post_stop(self, _body: bytes, _query: dict) -> Response:
+        self.service.request_stop()
+        return Response.json({"ok": True, "state": self.session.snapshot()})
+
     def post_shutdown(self, _body: bytes, _query: dict) -> Response:
         self._request_shutdown()
         return Response.json({"ok": True, "stopping": True})
@@ -303,6 +311,8 @@ class Api:
         ("POST", "/api/config/import"): post_config_import,
         ("POST", "/api/config/export"): post_config_export,
         ("POST", "/api/config/save-default"): post_save_default,
+        ("POST", "/api/run"): post_run,
+        ("POST", "/api/stop"): post_stop,
         ("POST", "/api/shutdown"): post_shutdown,
     }
 
