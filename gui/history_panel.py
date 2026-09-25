@@ -17,12 +17,13 @@
 
 from __future__ import annotations
 
-import csv
 import os
 import tkinter as tk
 from tkinter import ttk
 
 from src.dialogs import pick_save_path  # 文件框走间接层，离线测试可注入替身
+# CSV 的表头/列序/注入防护在 src/history_export.py —— Web 控制台导出的必须是同一份字节
+from src.history_export import answers_csv, runs_csv
 from typing import TYPE_CHECKING, Any, Callable
 
 from collections.abc import Mapping as _FONTS_KIND  # 局部别名：字体参数字典类型
@@ -33,21 +34,6 @@ from .widgets import _make_icon_button as _default_make_icon_btn
 
 if TYPE_CHECKING:  # pragma: no cover - 仅用于类型注解，避免循环 import
     from src.history import SubmissionHistory
-
-
-def _csv_safe(value: Any) -> str:
-    """给可能被 Excel 当公式解析的单元格加前缀单引号（CSV injection）。
-
-    导出的 text_answer / options_selected / survey_url / error_message 里
-    含有**由问卷页面控制**的文本（下拉选项 label、driver 回传的报错信息），
-    以 ``=`` ``+`` ``-`` ``@`` ``TAB`` ``CR`` 开头的值会在 Excel/WPS 里被当作
-    公式求值，可外带数据（如 =CMD|' /C calc'!A0）。csv 模块只管引号转义，
-    不管这个 —— 必须在写入前拦截。
-    """
-    s = "" if value is None else str(value)
-    if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
-        return "'" + s
-    return s
 
 
 class HistoryPanel:
@@ -367,35 +353,9 @@ class HistoryPanel:
             base, ext = os.path.splitext(path)
             ans_path = f"{base}_answers{ext}"
             with open(runs_path, "w", encoding="utf-8-sig", newline="") as f:
-                w = csv.writer(f)
-                w.writerow(["id", "started_at", "finished_at", "status",
-                            "survey_url", "total", "success", "fail",
-                            "error_message"])
-                for r in runs:
-                    w.writerow([r.get("id"), r.get("started_at"),
-                                r.get("finished_at"), r.get("status"),
-                                _csv_safe(r.get("survey_url")),
-                                r.get("total_submissions"),
-                                r.get("success_count"), r.get("fail_count"),
-                                _csv_safe(r.get("error_message"))])
+                f.write(runs_csv(runs))
             with open(ans_path, "w", encoding="utf-8-sig", newline="") as f:
-                w = csv.writer(f)
-                w.writerow(["run_id", "submission_index",
-                            "question_number", "question_type",
-                            "options_selected", "text_answer",
-                            "elapsed_ms", "created_at"])
-                for a in all_answers:
-                    sel_raw = a.get("options_selected")
-                    if isinstance(sel_raw, (list, tuple)):
-                        sel_s = ",".join(str(x) for x in sel_raw)
-                    else:
-                        sel_s = str(sel_raw or "")
-                    w.writerow([a.get("run_id"),
-                                a.get("submission_index"),
-                                a.get("question_number"), a.get("question_type"),
-                                _csv_safe(sel_s), _csv_safe(a.get("text_answer")),
-                                a.get("elapsed_ms"),
-                                a.get("created_at")])
+                f.write(answers_csv(all_answers))
             self.log(f"✓ 已导出 runs → {os.path.basename(runs_path)}", "OK")
             self.log(f"✓ 已导出 answers → {os.path.basename(ans_path)}", "OK")
         except Exception as e:

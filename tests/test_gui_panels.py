@@ -41,7 +41,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 tk = pytest.importorskip("tkinter")
 ttk = pytest.importorskip("tkinter.ttk")
 
-from gui import history_panel as hp  # noqa: E402
 from gui import qr_utils  # noqa: E402
 from gui import theme  # noqa: E402
 from gui import widgets  # noqa: E402
@@ -759,28 +758,9 @@ def test_restore_from_config_is_noop_or_refresh_only(frame) -> None:
 
 
 # ---------------------------------------------------------------------------
-#  7. gui/history_panel.py — _csv_safe（v2.6 CSV 注入防线）
-# ---------------------------------------------------------------------------
-@pytest.mark.parametrize("dangerous", [
-    MALICIOUS, "+1-1", "-2+3", "@SUM(A1)", "\t=tabbed", "\r=carriage",
-])
-def test_csv_safe_prefixes_formula_leading_chars(dangerous: str) -> None:
-    out = hp._csv_safe(dangerous)
-    assert out == "'" + dangerous
-    assert out[0] == "'", "首字符必须被单引号顶掉，Excel 才不会当公式求值"
-
-
-@pytest.mark.parametrize("harmless", [
-    "普通文本", "https://www.wjx.cn/vm/abc.aspx", "13800000000",
-    "张", "[0, 1]", "", None, 42, 0.5,
-])
-def test_csv_safe_leaves_ordinary_values_alone(harmless) -> None:
-    expected = "" if harmless is None else str(harmless)
-    assert hp._csv_safe(harmless) == expected
-
-
-# ---------------------------------------------------------------------------
-#  8. gui/history_panel.py — get_db 缓存 / close_db（v2.6 修复）
+#  7. gui/history_panel.py — get_db 缓存 / close_db（v2.6 修复）
+#     （_csv_safe 的注入防护随导出格式一起搬到 src/history_export.py，
+#      那边的测试在 tests/test_history_export.py）
 # ---------------------------------------------------------------------------
 def _history_panel(tmp_path, *, has_history=True, cls=SubmissionHistory,
                    logs=None):
