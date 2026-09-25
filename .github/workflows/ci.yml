@@ -51,9 +51,13 @@ jobs:
         # 3.10 那条 leg 本机量不到，所以不抬地板（这台机器只有 3.11/3.12/3.13，
         # 抬到 73 也是拿没量过的环境赌门禁）。
         # 用 marker 而不是 --ignore 排除 E2E：该模块本来就会在缺浏览器时自 skip。
+        # --cov 的三个包 = scripts/readme_coverage.py 的 PACKAGES，两边必须一致：
+        # 漏一个的话新代码就静静落在门禁之外，而 README 的"全部"那一行看着挺健康。
+        # webui/ 于 v3.3.1 步骤 3 进来（1214 句，本地量 99%），所以 TOTAL 会往上走 ——
+        # 地板按"只许上调"的规矩仍不动。
         run: >
           pytest tests/ -m "not integration"
-          --cov=src --cov=gui --cov-report=term-missing
+          --cov=src --cov=gui --cov=webui --cov-report=term-missing
           --cov-report=json:coverage.json
           --cov-fail-under=70
 

@@ -493,7 +493,7 @@ python -m pytest tests/ -m integration -q
 |---|---|---|
 | 静态检查 | `python -m ruff check .` | 通过 |
 | 类型检查 | `npx pyright` | `src/` + `gui/` + 入口 **0 error 0 warning**（不设 baseline、不豁免，两种依赖口径下都一样） |
-| 覆盖率 | `pytest --cov=src --cov=gui --cov-fail-under=70` | 实测值见下方「已知缺口（诚实记录）」的生成块（那个数字只能由 `scripts/readme_coverage.py` 写）；地板从本仓库 `ci.yml` 读出并随生成块一起落盘，只许上调——**v3.1 不动它**：`3.10` 那条 leg 本机量不到（这台机器只有 3.11/3.12/3.13），不拿没量过的环境赌门禁 |
+| 覆盖率 | `pytest --cov=src --cov=gui --cov=webui --cov-fail-under=70`（权威名单是 `scripts/readme_coverage.py` 的 `PACKAGES`，`ci.yml` 与它不一致会红） | 实测值见下方「已知缺口（诚实记录）」的生成块（那个数字只能由 `scripts/readme_coverage.py` 写）；地板从本仓库 `ci.yml` 读出并随生成块一起落盘，只许上调——**v3.1 不动它**：`3.10` 那条 leg 本机量不到（这台机器只有 3.11/3.12/3.13），不拿没量过的环境赌门禁 |
 | 文档口径 | `python scripts/readme_coverage.py --check` | README 的覆盖率段落是生成物：数字漂移超过容差、缺口模块改名、低覆盖模块没登记理由，都在这里红 |
 | 类型抑制禁令 | `pytest tests/test_ci_guards.py` | `src/` + `gui/` + 入口里不许出现新的 `# type: ignore` / `# pyright:`；现存 3 处登记在 `BASELINE` 里、只准变小（v3.1 前是零登记，靠 v2.8 那批清零） |
 | E2E 阻塞性 | `pytest -m integration --junitxml=… && python scripts/e2e_gate.py …` | e2e job 从 v3.1 起**阻塞**：浏览器/驱动自身故障由 `tests/conftest.py` 降级成 skip，"全 skip 也算绿"由数 junit 的 `e2e_gate.py` 堵住 |
@@ -550,13 +550,14 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 ### 已知缺口（诚实记录）
 
 <!-- BEGIN AUTO-GENERATED 覆盖率口径 · scripts/readme_coverage.py · 不要手改 -->
-**口径**：`pytest tests/ -m "not integration" --cov=src --cov=gui`，依赖只装 `requirements*.txt`（即 CI 两条 leg 的环境）。地板 `--cov-fail-under=70`（从 `.github/workflows/ci.yml` 读出来，不是手抄的）。
+**口径**：`pytest tests/ -m "not integration" --cov=src --cov=gui --cov=webui`，依赖只装 `requirements*.txt`（即 CI 两条 leg 的环境）。地板 `--cov-fail-under=70`（从 `.github/workflows/ci.yml` 读出来，不是手抄的）。
 
 | 范围 | 离线覆盖率 |
 |---|---|
-| 全部 | **89.1%** |
-| `src/` | 92.2%（4748 条语句剩 370 行） |
+| 全部 | **90.5%** |
+| `src/` | 92.2%（4749 条语句剩 370 行） |
 | `gui/` | 82.8%（2303 条语句剩 396 行） |
+| `webui/` | 99.7%（1085 条语句剩 3 行） |
 
 #### 已补齐的缺口（"补齐前"一列是登记时的实测）
 
@@ -591,12 +592,12 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 > 注入的 JS 在真 DOM 里是否成立，仍然只有那个 E2E job 说了算（v3.1 起它是**阻塞**的，
 > 而"驱动起不来 → 全 skip → 看着也是绿"这条路另有 `scripts/e2e_gate.py` 数 junit 堵住）。
 
-> **一条与覆盖率无关的题型缺口**：探测会输出 `matrix_scale`（量表式矩阵，
-> `src/detection.py`），但它既不在 `models.normalize_question_type` 的别名表里、也不在
-> 权重表的矩阵分支里，于是这类题的**行权重永远填不进去** —— 写 `1:0.2,0.3,0.5` 只会得到
-> 一句"格式错误"然后静默丢弃。桌面版与 Web 控制台同此一致（共用解析器之后对拍更抓不到）。
-> 修它要先验制 `src/answering_v2` 是否真按 `row_weights` 消费这类题 —— 那是答卷分布
-> 而不是界面，本轮刻意不动。
+> **`matrix_scale`（量表式矩阵）不支持逐行权重。** 探测会输出这个类型，它的"行"是提交槽名
+> `fid` 而不是行号，而作答侧（`src/answering_v2` 的 `matrix_scale` 分支）读的是**档位
+> `weights`**、不看 `row_weights`。所以权重表里这类题写 `0.2,0.3,0.3,0.1,0.1`（各档位的
+> 权重）是**有效的**、真的影响分布；写 `1:... | 2:...`（逐行）会被拒。这是能力边界，不是
+> 静默丢数据 —— 把它并进矩阵分支只会得到"界面填得进、分布一动不动"那种更难发现的失效。
+> 要真支持逐行权重，得连作答分支一起改并用真卷验证落库分布。
 
 推送会触发 GitHub Actions（`.github/workflows/ci.yml`）：ruff + pyright +
 带覆盖率地板的离线测试，外加一个真实浏览器 E2E job（v3.1 起阻塞，不再是 `continue-on-error`）。

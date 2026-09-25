@@ -312,6 +312,24 @@ def test_detecting_questions_seeds_weight_texts_and_keeps_edited_ones(session):
         (1, "单选", "2"), (2, "量表", "1~5")]
 
 
+def test_the_web_table_describes_a_row_the_way_the_desktop_does(session):
+    """同一题在两个界面要读出一样的话。
+
+    胶囊文案与"选项/空数"那一列各有两份实现（配色不同、布局不同），所以
+    ``matrix_scale`` 漏登记时桌面版退化成了 "MATR / 0"、webui 会退化成 "其它 / 0" ——
+    这种小表分头演化是最容易出的偏差，而它只让人看不懂这一行，不会报错。
+    """
+    sess, _ = session
+    sess.set_questions([
+        {"q": 1, "type": "matrix_scale", "title": "按行打分",
+         "rows": ["q7_0", "q7_1"], "cols": ["1", "2", "3", "4", "5"]},
+        {"q": 2, "type": "scale", "title": "NPS", "scale": 10, "scale_min": 0},
+    ])
+    assert [(r["label"], r["n"]) for r in sess.table_rows()] == [
+        ("矩量", "2行 × 5列"), ("量表", "0~10")]
+    assert sess.weight_texts[2] == ",".join(["1"] * 11), "0~10 是 11 格，不是 10 格"
+
+
 def test_snapshot_reports_availability_and_limits(session):
     sess, _ = session
     snap = sess.snapshot()

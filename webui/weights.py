@@ -15,7 +15,7 @@ from typing import Any
 from src.models import normalize_question_type
 from src.weight_text import (
     CHOICE_TYPES,
-    MATRIX_TYPES,
+    MATRIX_LIKE_TYPES,
     SCALE_TYPES,
     SORT_TYPES,
     TEXT_TYPES,
@@ -31,6 +31,9 @@ TYPE_LABELS: dict[str, str] = {
     "text": "填空",
     "matrix": "矩阵",
     "matrix_multi": "矩多",
+    # 量表式矩阵：只在显示上归进矩阵一族，解析上它走未知题型兜底（理由见
+    # src/weight_text.MATRIX_LIKE_TYPES 的注释）
+    "matrix_scale": "矩量",
     "sort": "排序",
 }
 
@@ -61,16 +64,28 @@ def default_text_for(q: dict) -> str:
     return ""
 
 
+def _int_or(value: Any, default: int) -> int:
+    """题面没给这个字段时按默认值；给了 **0 就当 0**。
+
+    ``int(q.get("scale_min", 1) or 1)`` 这种写法看着安全，实际把 0 起评的量表
+    显示成 "1~10" —— 而 0~10（NPS）与 2~10 都是探测真会输出的形态。
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def scale_label(q: dict) -> str:
     """第 3 列"选项/空数"该写什么。"""
     storage = normalize_question_type(str(q.get("type", "single")))
     if storage in CHOICE_TYPES:
         return str(len(q.get("choices", [])))
     if storage in SCALE_TYPES:
-        return f"{int(q.get('scale_min', 1) or 1)}~{int(q.get('scale', 5) or 0)}"
+        return f"{_int_or(q.get('scale_min'), 1)}~{_int_or(q.get('scale'), 5)}"
     if storage in TEXT_TYPES:
         return _FIELD_LABELS.get(str(q.get("field") or ""), "自由文本")
-    if storage in MATRIX_TYPES:
+    if storage in MATRIX_LIKE_TYPES:
         return f"{len(q.get('rows', []))}行 × {len(q.get('cols', []))}列"
     if storage in SORT_TYPES:
         return f"{len(q.get('items', []))} 项可排"

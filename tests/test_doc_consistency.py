@@ -80,6 +80,19 @@ def test_floor_is_still_parsed_out_of_ci_yml() -> None:
     assert f"--cov-fail-under={floor}" in (ROOT / "README.md").read_text(encoding="utf-8")
 
 
+def test_the_coverage_scope_is_one_list_not_two() -> None:
+    """ci.yml 的 ``--cov`` 与生成器的 ``PACKAGES`` 必须是同一份名单。
+
+    不一致时**什么都不会红**：新包照样被测试跑着，只是不进 coverage.json，
+    于是 README 的"全部"那一行安静地少算一块 —— 门禁看着是绿的，量的范围却缩了。
+    ``webui/`` 就是这么在门禁之外待了一整轮的。
+    """
+    yml = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    measured = {f"{m}/" for m in re.findall(r"--cov=([\w.]+)", yml)}
+    assert measured == set(rc.PACKAGES), (
+        f"ci.yml 量的是 {sorted(measured)}，生成器写的是 {sorted(rc.PACKAGES)}")
+
+
 def test_no_session_scoped_prose_in_user_facing_docs() -> None:
     """README 与缺口清单里不许出现"本轮整改/待复测/定版时记得"这类只对某一次会话有意义的话。
 

@@ -22,6 +22,9 @@ BEGIN = "<!-- BEGIN AUTO-GENERATED 覆盖率口径 · scripts/readme_coverage.py
 END = "<!-- END AUTO-GENERATED 覆盖率口径 -->"
 FLOOR_RE = re.compile(r"--cov-fail-under=(\d+(?:\.\d+)?)")
 NUM_RE = re.compile(r"\d+(?:\.\d+)?%?")
+# 覆盖率口径覆盖的顶层包。**加一个包要同时改这里与 ci.yml 的 --cov 参数** ——
+# 两边不一致的后果是新代码静静落在门禁之外，而 README 的"全部"那一行看着挺健康。
+PACKAGES = ("src/", "gui/", "webui/")
 
 
 def usage_fail(message: str) -> NoReturn:
@@ -52,7 +55,7 @@ def canon(key: str) -> str:
     if path.startswith(root_posix):
         path = path[len(root_posix):]
     path = re.sub(r"^\.?/+/", "", path)
-    positions = [path.find(pkg) for pkg in ("src/", "gui/") if path.find(pkg) >= 0]
+    positions = [path.find(pkg) for pkg in PACKAGES if path.find(pkg) >= 0]
     return path[min(positions):] if positions else path.lstrip("/")
 
 
@@ -113,17 +116,28 @@ def full_file_note(stats: dict[str, Stat], prefix: str) -> str:
     return f"（{'、'.join(f'`{n}`' for n in names)} 已 100%）" if names else ""
 
 
+def coverage_command() -> str:
+    """口径里那条测量命令，**由 ``PACKAGES`` 生成**。
+
+    手抄一份的话"加一个包"就要同时改 ci.yml、本脚本、README 三处，而漏掉的那处
+    只会让门禁安静地少量一块 —— 没有任何东西会红。
+    """
+    covs = " ".join(f"--cov={p.rstrip('/')}" for p in PACKAGES)
+    return f'pytest tests/ -m "not integration" {covs}'
+
+
 def render(spec: dict[str, Any], stats: dict[str, Stat], floor: str) -> str:
     closed, opens = spec["closed_gaps"], spec["open_gaps"]
     out: list[str] = [
-        f"**口径**：{spec['caliber']}。地板 `--cov-fail-under={floor}`"
+        f"**口径**：`{coverage_command()}`，{spec['caliber']}。"
+        f"地板 `--cov-fail-under={floor}`"
         f"（从 `{CI_YML.relative_to(ROOT).as_posix()}` 读出来，不是手抄的）。",
         "",
         "| 范围 | 离线覆盖率 |",
         "|---|---|",
         f"| 全部 | **{pct(Stat.of(list(stats.values())).percent)}** |",
     ]
-    for prefix in ("src/", "gui/"):
+    for prefix in PACKAGES:
         stat = under(stats, prefix)
         out.append(f"| `{prefix}` | {pct(stat.percent)}（{stat.statements} 条语句剩 {stat.missing} 行） |")
 
@@ -229,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.coverage.exists():
         usage_fail(
             f"FAIL: 找不到 {args.coverage}，先跑：pytest tests/ -m \"not integration\" "
-            f"--cov=src --cov=gui --cov-report=json"
+            f"--cov=src --cov=gui --cov=webui --cov-report=json"
         )
     if args.write and not args.force_env:
         extras = optional_deps_present()

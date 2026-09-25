@@ -27,8 +27,13 @@ from .theme import COLORS, FONT_PRESETS, GRAD_SUCCESS, _lerp_color
 from .widgets import _make_card as _default_make_card
 # V2.4：题型别名单一真相（models.normalize_question_type 统一归一化）
 from src.models import normalize_question_type  # noqa: E402
-# 权重表第 4 列的解析规则在 src/weight_text.py —— 桌面版与 webui 共用同一份
-from src.weight_text import parse_weight_texts  # noqa: E402
+# 权重表第 4 列的解析规则与题型分类都在 src/weight_text.py —— 桌面版与 webui 共用同一份
+from src.weight_text import (
+    MATRIX_LIKE_TYPES,
+    SCALE_TYPES,
+    parse_weight_texts,
+    scale_levels,
+)  # noqa: E402
 
 # V2.4 整改：别名键（radio/checkbox/rating/input/textarea/fillblank/matrix_single）
 # 收敛到 models.normalize_question_type 统一归一化，本表只保留 6 个存储名的样式
@@ -41,6 +46,10 @@ _QTYPE_BADGE_MAP: dict[str, tuple[str, str]] = {
     "matrix":   (COLORS["danger_dim"],  "矩阵"),
     # v3.0 矩阵多选：同色系，靠"矩多"与单选的"矩阵"区分
     "matrix_multi": (COLORS["danger_dim"], "矩多"),
+    # 量表式矩阵：探测真会输出这个类型。它只在显示上归进矩阵一族 ——
+    # 逐行权重引擎不消费（理由见 src/weight_text.MATRIX_LIKE_TYPES 的注释），
+    # 不登记的话这一行的胶囊会退化成 "MATR"、规模列显示 "0"，整行读不出来。
+    "matrix_scale": (COLORS["danger_dim"], "矩量"),
     # v3.0 排序题：权重格里写 "3,1,2" 是固定顺序，留空 = 按权重随机排
     "sort":     (COLORS["primary_2"], "排序"),
 }
@@ -224,10 +233,12 @@ class WeightPanel:
                     if n_opts > 0 else ""
                 )
                 n_label = f"{n_opts}"
-            elif qtype in ("scale", "rating"):
+            elif qtype in SCALE_TYPES:
                 n_opts = int(q.get("scale", 5))
                 smin = int(q.get("scale_min", 1))
-                default_weights = ",".join(["1"] * n_opts)
+                # 等级数 = scale_max - scale_min + 1：把 scale 当个数预填会让 0~10
+                # 这类量表少一格，于是每次另存都触发一条"个数与级数不符"的补齐警告
+                default_weights = ",".join(["1"] * scale_levels(q))
                 n_label = f"{smin}~{n_opts}"
             elif qtype in ("text", "input", "textarea", "fillblank"):
                 opts_hint = q.get("options") or []
@@ -243,7 +254,9 @@ class WeightPanel:
                     # `or ""`：题面没给 field 时 fld 是 None，不是合法的 str 键，
                     # 落到默认值"自由文本"，与原本 None 查不到键的行为一致。
                 }.get(fld or "", "自由文本")
-            elif qtype in ("matrix_single", "matrix", "matrix_multi"):
+            elif qtype in MATRIX_LIKE_TYPES:
+                # 含 matrix_scale：它在解析上不算矩阵（逐行权重引擎不消费），
+                # 但"几行 × 几列"是它唯一有意义的提示
                 rs = q.get("rows", [])
                 cs = q.get("cols", [])
                 default_weights = ""

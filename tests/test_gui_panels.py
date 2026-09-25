@@ -45,6 +45,7 @@ from gui import history_panel as hp  # noqa: E402
 from gui import qr_utils  # noqa: E402
 from gui import theme  # noqa: E402
 from gui import widgets  # noqa: E402
+from gui import weight_panel as wp_module  # noqa: E402
 from gui.history_panel import HistoryPanel  # noqa: E402
 from gui.log_view import _LOG_TAG_PALETTE, LogView  # noqa: E402
 from gui.motion import stagger_delays  # noqa: E402
@@ -487,6 +488,35 @@ def test_populate_seeds_equal_weight_defaults(frame) -> None:
     assert panel.weight_entries[3].get() == "1,1,1,1,1", "量表默认每级 1"
     assert panel.weight_entries[4].get() == "", "填空题没有默认候选"
     assert panel.weight_entries[5].get() == "", "矩阵默认留空"
+
+
+def test_a_zero_based_scale_prefills_every_level(frame) -> None:
+    """0~10 是 11 格。把 ``scale`` 当**个数**预填会少一格，于是每次另存都触发
+    一条"个数与级数不符"的补齐警告 —— 而 2~10 这类量表探测真的会输出。"""
+    panel = _weight_panel(frame, questions=[
+        {"q": 1, "type": "scale", "title": "NPS", "scale": 10, "scale_min": 0},
+        {"q": 2, "type": "scale", "title": "满意度", "scale": 10, "scale_min": 2},
+    ])
+    assert panel.weight_entries[1].get() == ",".join(["1"] * 11)
+    assert panel.weight_entries[2].get() == ",".join(["1"] * 9)
+
+
+def test_a_matrix_scale_row_is_readable(frame) -> None:
+    """量表式矩阵：探测真会输出这个类型，而它既不在量表分支也不在老矩阵分支里。
+
+    不登记的话这一行的胶囊退化成 ``MATR``、规模列显示 "0" —— 整行读不出来，
+    而这道题其实是可以填档位权重的。
+    """
+    panel = _weight_panel(frame, questions=[{
+        "q": 1, "type": "matrix_scale", "title": "按行打分",
+        "rows": ["q7_0", "q7_1"], "cols": ["1", "2", "3", "4", "5"],
+    }])
+    texts = [w.cget("text") for w in _descendants(panel.table_frame)
+             if isinstance(w, tk.Label)]
+    assert "2行 × 5列" in texts, f"规模列没按矩阵显示：{texts}"
+    # 胶囊是画在 Canvas 上的（`test_populate_badge_after_callback_draws_without_error`
+    # 走过绘制），所以这里钉的是查表结果 —— 漏登记时它落到 `str(qtype)[:4].upper()`
+    assert wp_module._QTYPE_BADGE_MAP["matrix_scale"][1] == "矩量"
 
 
 def test_populate_prefills_from_weight_config_global(frame) -> None:

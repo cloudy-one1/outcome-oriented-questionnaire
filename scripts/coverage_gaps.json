@@ -1,6 +1,6 @@
 {
   "_comment": "README 覆盖率口径块的数据源。reason 必填（留空即门禁红），模块名必须能在 coverage.json 里找到。",
-  "caliber": "`pytest tests/ -m \"not integration\" --cov=src --cov=gui`，依赖只装 `requirements*.txt`（即 CI 两条 leg 的环境）",
+  "caliber": "依赖只装 `requirements*.txt`（即 CI 两条 leg 的环境）",
   "closed_gaps": {
     "title": "已补齐的缺口（\"补齐前\"一列是登记时的实测）",
     "baseline_header": "补齐前",

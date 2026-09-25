@@ -30,7 +30,7 @@ pip install -e .                                    # 之后可直接用 wjx-fil
 |---|---|
 | 静态检查 | `python -m ruff check .` |
 | 类型检查 | `npx pyright`（`src/` + `gui/` + `webui/` + 入口 **0 error 0 warning**，不设 baseline、不写 `# type: ignore`） |
-| 离线套件 + 覆盖率地板 | `pytest tests/ -m "not integration" --cov=src --cov=gui --cov-report=json:coverage.json --cov-fail-under=$(grep -oE 'cov-fail-under=[0-9.]+' .github/workflows/ci.yml | cut -d= -f2)` |
+| 离线套件 + 覆盖率地板 | `pytest tests/ -m "not integration" --cov=src --cov=gui --cov=webui --cov-report=json:coverage.json --cov-fail-under=$(grep -oE 'cov-fail-under=[0-9.]+' .github/workflows/ci.yml | cut -d= -f2)`（`--cov` 的权威名单是 `scripts/readme_coverage.py` 的 `PACKAGES`，与 `ci.yml` 不一致会红） |
 | 文档口径 | `python scripts/readme_coverage.py --check` |
 | 浏览器 E2E | `pytest tests/ -m integration -v --junitxml=e2e-junit.xml && python scripts/e2e_gate.py e2e-junit.xml` |
 

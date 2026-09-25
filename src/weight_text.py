@@ -28,11 +28,12 @@
   - 每条配置附题干锚点（``anchoring.make_anchor``）：题号只是"保存时这道题在第几格"
     的遗迹，问卷中间插一题会让整份预设错位，而错位是静默的（选项数恰好还来得及）。
 
-**已知缺口**：探测会输出的 ``matrix_scale``（``src/detection.py``）不在矩阵分支里，
-也不在 ``normalize_question_type`` 的别名表里，于是这类题的行权重**永远填不进去**
-—— 写 ``1:0.2,0.3,0.5`` 只会得到一句"格式错误"然后静默丢弃。两个宿主同此一致，
-所以本模块的对拍抓不到它；登记在 README 已知缺口，修它要先验制作答侧是否消费
-``row_weights``，不属于界面这一轮。
+**能力边界**（不是缺陷，但值得写在这里）：探测会输出的 ``matrix_scale``（量表式矩阵）
+**不支持逐行权重** —— 它的 rows 是提交槽名 fid 而不是行号，而
+``src/answering_v2`` 那条分支读的是档位 ``weights``、不看 ``row_weights``。
+所以本模块刻意不把它并进 ``MATRIX_TYPES``（并进去只会得到"界面填得进、分布不动"的
+静默无效）；它走未知题型兜底，用户写 ``0.2,0.3,0.3,0.1,0.1`` 这样的档位串是**通的**、
+真的影响分布。写 ``1:... | 2:...`` 会被拒 —— 那条警告的措辞因此值得留意。
 """
 
 from __future__ import annotations
@@ -49,6 +50,13 @@ SCALE_TYPES = ("scale", "rating", "nps")
 TEXT_TYPES = ("text", "input", "textarea", "fillblank")
 MATRIX_TYPES = ("matrix_single", "matrix", "matrix_multi")
 SORT_TYPES = ("sort", "ordering", "rank")
+
+# 界面上按"几行 × 几列"显示的题型。**故意不等于 MATRIX_TYPES**：
+# 探测还会输出 matrix_scale（量表式矩阵），它的 rows 是提交槽名 fid 而不是行号，
+# 而 src/answering_v2 的那条分支读的是档位 weights、不看 row_weights ——
+# 把它并进 MATRIX_TYPES 只会得到"界面填得进行权重、分布一动不动"的静默无效。
+# 所以它只在显示上同类，解析上仍走未知题型兜底（用户写逗号串 = 档位权重，那条是通的）。
+MATRIX_LIKE_TYPES = MATRIX_TYPES + ("matrix_scale",)
 
 _MatrixRowWeights = dict[str, list[float]]
 
@@ -257,4 +265,4 @@ def parse_weight_texts(questions: list[dict], texts: Mapping[Any, Any]
 
 __all__ = ["parse_weight_texts", "weight_text_for", "scale_levels",
            "CHOICE_TYPES", "SCALE_TYPES", "TEXT_TYPES",
-           "MATRIX_TYPES", "SORT_TYPES"]
+           "MATRIX_TYPES", "MATRIX_LIKE_TYPES", "SORT_TYPES"]
