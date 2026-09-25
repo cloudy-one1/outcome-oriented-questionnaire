@@ -530,6 +530,15 @@ def test_export_with_nothing_parsed_warns_without_popping(session):
     assert ("WARN", "当前没有可导出的权重配置（请先探测题目）") in logs_of(sess)
 
 
+def test_current_config_for_export_is_the_public_seam_for_the_api(session):
+    """api 层只认这个方法；它没测到就等于导出接口的入口没人看过。"""
+    sess, _ = session
+    svc = make_service(sess, build=lambda: {1: {"type": "single"}})
+    assert svc.current_config_for_export() == {1: {"type": "single"}}
+    empty = make_service(sess, build=lambda: {})
+    assert empty.current_config_for_export() is None
+
+
 def test_export_without_the_parser_wired_says_which_step_owns_it(session):
     sess, _ = session
     make_service(sess, save=lambda *a, **k: None).export_config("o.json")
