@@ -202,7 +202,7 @@ POST /api/shutdown           停止 + 收尾 + 退出（等价于 Tk 关窗）
 - **打包**：`pyproject` 的 `packages` 加 `"webui"`（保留 `"gui"`）、
   `[project.scripts]` 加 `wjx-web`、静态文件进 `package-data`；`tests/test_packaging.py`
   是逐条比对的，同步改。
-- **覆盖率口径**：新增 webui Python 会改 TOTAL，README 缺口表与 `ci.yml:58` 的
+- **覆盖率口径**：新增 webui Python 会改 TOTAL，README 缺口表（该块现已搬到 `docs/coverage.md`）与 `ci.yml:58` 的
   `--cov-fail-under=70` 必须在 CI 等价环境（3.13 + 只装 `requirements*`）`--write` 重生成，
   本机 3.10 口径不落盘。
 

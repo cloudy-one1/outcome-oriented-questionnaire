@@ -156,7 +156,7 @@ Canvas 自绘 —— 那是"重写 `_make_card` + 动到全部卡片与既有 gu
 **D. 覆盖率与门禁**
 
 - 地板是 `.github/workflows/ci.yml:58` 的 `--cov-fail-under=70`，只许往上走。
-- README 缺口表由 `python scripts/readme_coverage.py --write` 从 `coverage.json` 生成，
+- README 缺口表（该块现已搬到 `docs/coverage.md`）由 `python scripts/coverage_doc.py --write` 从 `coverage.json` 生成，
   `--check` 已在 CI 当门禁，手改数字下次推送就红。
 - **口径警告**：该脚本只挡 `opencv-python` 这类可选依赖，**不查 Python 版本**；
   实测只有 3.13 + 只装 `requirements*` 能复现 README 现有数字，本机 `.venv310` 跑

@@ -1,7 +1,9 @@
-"""README 的覆盖率口径段落由本脚本从 coverage.json 生成，`--check` 是门禁。
+"""`docs/coverage.md` 的覆盖率口径段落由本脚本从 coverage.json 生成，`--check` 是门禁。
 
 v2.x~v3.0 期间 README / CHANGELOG / ci.yml 的数字要人手对齐，光 2026-09-22 一天就
 发了两次标题为「口径同步」的提交。派生化之后，改这些数字的唯一合法路径是跑本脚本。
+README 瘦身成标准仓库的形状之后，本块的落点从 README.md 挪到这里 —— 但"README 里不许
+出现手抄的实测数字"那条判据仍然管着 README 本身（见 tests/test_doc_consistency.py）。
 """
 
 from __future__ import annotations
@@ -16,14 +18,14 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 ROOT = Path(__file__).resolve().parents[1]
-README = ROOT / "README.md"
+DOC = ROOT / "docs" / "coverage.md"
 CI_YML = ROOT / ".github" / "workflows" / "ci.yml"
-BEGIN = "<!-- BEGIN AUTO-GENERATED 覆盖率口径 · scripts/readme_coverage.py · 不要手改 -->"
+BEGIN = "<!-- BEGIN AUTO-GENERATED 覆盖率口径 · scripts/coverage_doc.py · 不要手改 -->"
 END = "<!-- END AUTO-GENERATED 覆盖率口径 -->"
 FLOOR_RE = re.compile(r"--cov-fail-under=(\d+(?:\.\d+)?)")
 NUM_RE = re.compile(r"\d+(?:\.\d+)?%?")
 # 覆盖率口径覆盖的顶层包。**加一个包要同时改这里与 ci.yml 的 --cov 参数** ——
-# 两边不一致的后果是新代码静静落在门禁之外，而 README 的"全部"那一行看着挺健康。
+# 两边不一致的后果是新代码静静落在门禁之外，而口径文档的"全部"那一行看着挺健康。
 PACKAGES = ("src/", "webui/")
 
 
@@ -119,7 +121,7 @@ def full_file_note(stats: dict[str, Stat], prefix: str) -> str:
 def coverage_command() -> str:
     """口径里那条测量命令，**由 ``PACKAGES`` 生成**。
 
-    手抄一份的话"加一个包"就要同时改 ci.yml、本脚本、README 三处，而漏掉的那处
+    手抄一份的话"加一个包"就要同时改 ci.yml、本脚本、口径文档三处，而漏掉的那处
     只会让门禁安静地少量一块 —— 没有任何东西会红。
     """
     covs = " ".join(f"--cov={p.rstrip('/')}" for p in PACKAGES)
@@ -179,7 +181,7 @@ def render(spec: dict[str, Any], stats: dict[str, Stat], floor: str) -> str:
         )
     out += [
         "",
-        "> 本块由 `python scripts/readme_coverage.py --write` 从 `coverage.json` 生成，`--check` 已进 CI 当门禁",
+        "> 本块由 `python scripts/coverage_doc.py --write` 从 `coverage.json` 生成，`--check` 已进 CI 当门禁",
         "> —— 手改这里的数字会在下次推送时红掉。`--write` 会拒绝装了 `opencv-python` /",
         "> `undetected-chromedriver` 的解释器，因为本块的口径就是 CI 那个不装可选依赖的环境。",
         "> 模块清单与缺口理由维护在 `scripts/coverage_gaps.json`（reason 留空同样是红）。",
@@ -187,12 +189,12 @@ def render(spec: dict[str, Any], stats: dict[str, Stat], floor: str) -> str:
     return "\n".join(out)
 
 
-def splice(readme: str, block: str) -> str:
-    start, end = readme.find(BEGIN), readme.find(END)
+def splice(doc: str, block: str) -> str:
+    start, end = doc.find(BEGIN), doc.find(END)
     if start < 0 or end <= start:
-        usage_fail("FAIL: README 里找不到生成块哨兵，块被删掉了")
-    head = readme[: start + len(BEGIN)]
-    tail = readme[end:]
+        usage_fail(f"FAIL: {DOC.relative_to(ROOT).as_posix()} 里找不到生成块哨兵，块被删掉了")
+    head = doc[: start + len(BEGIN)]
+    tail = doc[end:]
     newline = "" if head.endswith("\n") else "\n"
     lead = "" if tail.startswith("\n") else "\n"
     return head + newline + block + lead + tail
@@ -213,30 +215,30 @@ def number_delta(old_line: str, new_line: str, spec: dict[str, Any]) -> bool:
     return True
 
 
-def compare(readme: str, block: str, spec: dict[str, Any]) -> list[str]:
-    want = splice(readme, block).split("\n")
-    have = readme.split("\n")
+def compare(doc: str, block: str, spec: dict[str, Any]) -> list[str]:
+    want = splice(doc, block).split("\n")
+    have = doc.split("\n")
     problems: list[str] = []
     for index, (want_line, have_line) in enumerate(zip(want, have), start=1):
         if want_line != have_line and not number_delta(want_line, have_line, spec):
-            problems.append(f"  README:{index}\n    落盘: {have_line}\n    应为: {want_line}")
+            problems.append(f"  {DOC.name}:{index}\n    落盘: {have_line}\n    应为: {want_line}")
     return problems
 
 
 def optional_deps_present() -> list[str]:
-    """当前解释器能不能 import 那两处可选依赖 —— README 的口径是不装它们的环境。"""
+    """当前解释器能不能 import 那两处可选依赖 —— 本块的口径是不装它们的环境。"""
     return [m for m in ("cv2", "undetected_chromedriver") if importlib.util.find_spec(m) is not None]
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="生成 / 校验 README 的覆盖率口径块")
+    parser = argparse.ArgumentParser(description="生成 / 校验 docs/coverage.md 的覆盖率口径块")
     parser.add_argument("--coverage", type=Path, default=ROOT / "coverage.json")
     parser.add_argument("--spec", type=Path, default=ROOT / "scripts" / "coverage_gaps.json")
     parser.add_argument("--force-env", action="store_true",
-                        help="明知当前环境装了两处可选依赖，仍要按它的数字重写 README")
+                        help="明知当前环境装了两处可选依赖，仍要按它的数字重写文档")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--check", action="store_true", help="比对落盘与生成结果，漂移即失败（门禁）")
-    mode.add_argument("--write", action="store_true", help="把生成结果写回 README")
+    mode.add_argument("--write", action="store_true", help="把生成结果写回 docs/coverage.md")
     args = parser.parse_args(argv)
 
     if not args.coverage.exists():
@@ -248,27 +250,27 @@ def main(argv: list[str] | None = None) -> int:
         extras = optional_deps_present()
         if extras:
             usage_fail(
-                f"FAIL: 当前解释器装了 {', '.join(extras)}，而 README 的口径是不装可选依赖的 CI 环境。"
+                f"FAIL: 当前解释器装了 {', '.join(extras)}，而本块的口径是不装可选依赖的 CI 环境。"
                 f"在干净 venv 里跑本脚本（coverage.json 也要是那个环境产出的），确实要写就加 --force-env"
             )
     spec = json.loads(args.spec.read_text(encoding="utf-8"))
     block = render(spec, load_coverage(args.coverage), load_floor())
-    readme = README.read_text(encoding="utf-8")
+    doc = DOC.read_text(encoding="utf-8")
 
     if args.write:
-        updated = splice(readme, block)
-        README.write_text(updated, encoding="utf-8")
-        print("已重写" if updated != readme else "已是最新")
+        updated = splice(doc, block)
+        DOC.write_text(updated, encoding="utf-8")
+        print("已重写" if updated != doc else "已是最新")
         return 0
 
-    problems = compare(readme, block, spec)
+    problems = compare(doc, block, spec)
     if problems:
-        print(f"FAIL: README 的覆盖率口径与 {args.coverage.name} 实测漂移（容忍 "
+        print(f"FAIL: {DOC.relative_to(ROOT).as_posix()} 的覆盖率口径与 {args.coverage.name} 实测漂移（容忍 "
               f"{spec['tolerance_pp']}pp / {spec['tolerance_lines']} 行），修法是跑 "
-              f"`python scripts/readme_coverage.py --write`：")
+              f"`python scripts/coverage_doc.py --write`：")
         print("\n".join(problems))
         return 1
-    print("OK: README 覆盖率口径与实测一致（缺口清单也在覆盖全部低覆盖模块）")
+    print("OK: 覆盖率口径与实测一致（缺口清单也在覆盖全部低覆盖模块）")
     return 0
 
 

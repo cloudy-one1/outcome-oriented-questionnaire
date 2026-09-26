@@ -185,7 +185,7 @@ def test_birth_date_respects_an_unbearable_datelimit() -> None:
     lo = (date.today() - timedelta(days=365 * 22)).strftime("%Y-%m-%d")
     hi = (date.today() - timedelta(days=365 * 19)).strftime("%Y-%m-%d")
     # 出生年钉到区间之外。不钉的话这一条会随画像的随机落点偶尔整条 skip，
-    # 而 README 的测试数按"跑过几项"记 —— 随机 skip 等于口径不可复现。
+    # 而 docs/coverage.md 把 skip 清单当成对外口径记着 —— 随机 skip 等于口径不可复现。
     p = Persona(**{**p.__dict__, "birth_year": int(hi[:4]) - 6})
     persona._local.persona = p
     got = _answer("date", date_min=lo, date_max=hi)

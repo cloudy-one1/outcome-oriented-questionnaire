@@ -28,7 +28,9 @@ from src.platforms import WJX_TYPE_CODES  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SNAPSHOT = json.loads((ROOT / "scripts" / "official_qtypes_0_4_5.json").read_text(encoding="utf-8"))
-README_TEXT = (ROOT / "README.md").read_text(encoding="utf-8")
+# 题型数量的断言不只写在 README 里 —— 细节搬到 docs/ 之后，靶子跟着搬。
+# docs/design 与 docs/reviews 是**当时的**决策记录，冻结不改，所以不在扫描范围内。
+USER_FACING_DOCS = [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]
 
 #: 我们归一化题型 → 官方清单里的中文题型名（一行一个，映射本身就是"我们声称的范围"）
 TO_OFFICIAL_NAME: dict[str, list[str]] = {
@@ -62,12 +64,19 @@ def fixture_type_kinds() -> int:
     return len(set(re.findall(r'type="(\d+)"', html)))
 
 
-def readme_type_claims() -> list[tuple[int, int, str]]:
-    """README 里每一处「N 类题型」断言：(行号, 写的数字, 该行原文)。"""
-    out: list[tuple[int, int, str]] = []
-    for number, line in enumerate(README_TEXT.splitlines(), start=1):
-        for raw in re.findall(r"([一二三四五六七八九十]|\d+)\s*类题型", line):
-            out.append((number, int(raw) if raw.isdigit() else _CN_DIGITS[raw], line.strip()))
+#: 「N 类题型」里的 N 前面不许是疑问/指代词 —— "哪一类题型"不是数量断言，
+#: 但汉字"一"会让它长得像一条， widened 到 docs/ 之后第一个踩到的就是它。
+CLAIM_RE = re.compile(r"(?<![哪这那某每两])([一二三四五六七八九十]|\d+)\s*类题型")
+
+
+def type_claims() -> list[tuple[str, int, int, str]]:
+    """对外文档里每一处「N 类题型」断言：(文件, 行号, 写的数字, 该行原文)。"""
+    out: list[tuple[str, int, int, str]] = []
+    for path in USER_FACING_DOCS:
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            for raw in CLAIM_RE.findall(line):
+                value = int(raw) if raw.isdigit() else _CN_DIGITS[raw]
+                out.append((path.name, number, value, line.strip()))
     return out
 
 
@@ -81,15 +90,15 @@ def test_readme_type_counts_match_what_they_claim_about() -> None:
     两种口径混用是这里最容易犯的错：mock 卷只有 13 题、8 种容器码，
     而工具对外说的是九类。
     """
-    claims = readme_type_claims()
-    assert claims, "README 里找不到题型数量断言 —— 这条测试的靶子没了"
+    claims = type_claims()
+    assert claims, "对外文档里找不到题型数量断言 —— 这条测试的靶子没了"
     wrong = [
-        (line_no, written, text)
-        for line_no, written, text in claims
+        (name, line_no, written, text)
+        for name, line_no, written, text in claims
         if written != (fixture_type_kinds() if "mock" in text.lower() else len(QuestionType))
     ]
-    assert not wrong, "README 的题型数量与事实不符（工具看 QuestionType，mock 卷看 fixture）：\n" + "\n".join(
-        f"  README.md:{n} 写了 {w}：{t[:70]}" for n, w, t in wrong
+    assert not wrong, "题型数量与事实不符（工具看 QuestionType，mock 卷看 fixture）：\n" + "\n".join(
+        f"  {name}:{n} 写了 {w}：{t[:70]}" for name, n, w, t in wrong
     )
 
 

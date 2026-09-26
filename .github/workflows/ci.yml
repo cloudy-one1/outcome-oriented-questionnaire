@@ -45,15 +45,15 @@ jobs:
 
       - name: Run offline test suite + coverage ratchet
         # 覆盖率地板：只允许往上走。地板就是这条命令里的 `--cov-fail-under`，
-        # 它是**手写数字里唯一还留在 CI 的**——README 的实测覆盖率由
-        # scripts/readme_coverage.py 从 coverage.json 生成，并把这里的地板值一起抄进块里。
-        # 抬高地板请只改这一处，README 下一次 --write 自动跟上。
+        # 它是**手写数字里唯一还留在 CI 的**——口径文档的实测覆盖率由
+        # scripts/coverage_doc.py 从 coverage.json 生成，并把这里的地板值一起抄进块里。
+        # 抬高地板请只改这一处，docs/coverage.md 下一次 --write 自动跟上。
         # 3.10 那条 leg 本机量不到，所以不抬地板（这台机器只有 3.11/3.12/3.13，
         # 抬到 73 也是拿没量过的环境赌门禁）。
         # 用 marker 而不是 --ignore 排除 E2E：该模块本来就会在缺浏览器时自 skip。
-        # --cov 的名单 = scripts/readme_coverage.py 的 PACKAGES（现在是 src/ + webui/），
+        # --cov 的名单 = scripts/coverage_doc.py 的 PACKAGES（现在是 src/ + webui/），
         # 两边必须一致：
-        # 漏一个的话新代码就静静落在门禁之外，而 README 的"全部"那一行看着挺健康。
+        # 漏一个的话新代码就静静落在门禁之外，而 docs/coverage.md 的"全部"那一行看着挺健康。
         # webui/ 于 v3.3.1 步骤 3 进来（1214 句，本地量 99%），所以 TOTAL 会往上走 ——
         # 地板按"只许上调"的规矩仍不动。
         run: >
@@ -62,12 +62,12 @@ jobs:
           --cov-report=json:coverage.json
           --cov-fail-under=70
 
-      - name: README 覆盖率口径一致性
-        # 只在 3.13 leg 上比：README 生成块的数字来自某一次真实运行，而两条 leg 的
+      - name: 覆盖率口径一致性（docs/coverage.md）
+        # 只在 3.13 leg 上比：docs/coverage.md 生成块的数字来自某一次真实运行，而两条 leg 的
         # 覆盖率本就允许不同（3.10 分支差异没人量过）。在没量过的 leg 上断言"数字必须
         # 等于 3.13 的实测"，等于把口径差异伪装成缺陷。
         if: matrix.python-version == '3.13'
-        run: python scripts/readme_coverage.py --check
+        run: python scripts/coverage_doc.py --check
 
   # E2E 用真实浏览器跑 mock 问卷，是唯一能验证"生成的 JS 在真 DOM 里成立"的环节
   # —— selector 被误拼进 JS 字符串字面量这类**语法合法、语义非法**的错误，

@@ -37,19 +37,48 @@ pip install -e .                                    # 之后可直接用 wjx-fil
 |---|---|
 | 静态检查 | `python -m ruff check .` |
 | 类型检查 | `npx pyright`（`src/` + `webui/` + 入口 **0 error 0 warning**，不设 baseline、不写 `# type: ignore`） |
-| 离线套件 + 覆盖率地板 | `pytest tests/ -m "not integration" --cov=src --cov=webui --cov-report=json:coverage.json --cov-fail-under=$(grep -oE 'cov-fail-under=[0-9.]+' .github/workflows/ci.yml \| cut -d= -f2)`（`--cov` 的权威名单是 `scripts/readme_coverage.py` 的 `PACKAGES`，与 `ci.yml` 不一致会红） |
-| 文档口径 | `python scripts/readme_coverage.py --check` |
+| 离线套件 + 覆盖率地板 | `pytest tests/ -m "not integration" --cov=src --cov=webui --cov-report=json:coverage.json --cov-fail-under=$(grep -oE 'cov-fail-under=[0-9.]+' .github/workflows/ci.yml \| cut -d= -f2)`（`--cov` 的权威名单是 `scripts/coverage_doc.py` 的 `PACKAGES`，与 `ci.yml` 不一致会红） |
+| 文档口径 | `python scripts/coverage_doc.py --check` |
 | 浏览器 E2E | `pytest tests/ -m integration -v --junitxml=e2e-junit.xml && python scripts/e2e_gate.py e2e-junit.xml --require-file tests/test_e2e_integration.py --require-file tests/test_webui_e2e.py` |
 
+### 门禁背后的几条判据
+
 - **覆盖率地板只许上调**，而且它写在 `ci.yml` 里、是本仓库唯一还手写的门禁数字。
-  README 的实测覆盖率是 `scripts/readme_coverage.py` 从 `coverage.json` 生成的，
-  手改 README 那一块会在 `--check` 处变红。
+  `docs/coverage.md` 的实测覆盖率是 `scripts/coverage_doc.py` 从 `coverage.json` 生成的，
+  手改那一块会在 `--check` 处变红。
 - **E2E 是阻塞的**。`scripts/e2e_gate.py` 会数 junit 里的实际执行条数 —— 驱动没起来
   导致整片 skip 也照样是绿，那条就是堵这个洞的。两个 `--require-file` 堵的是另一半：
   全局计数看得见"作答那批跑了"，看不见"新宿主那批全被吞成 skip"，两边各自点名、缺一即红。
   只跑离线套件不算验过。
 - **`src/` + `webui/` + 入口里不许新增 `# type: ignore` / `# pyright:`**，现存条目登记在
   `tests/test_ci_guards.py` 的 `BASELINE` 里、只准变小。
+- **ruff** 启用 `E9/F63/F7/F82` 加 `F401/F841/F541`。后三条是刻意挑的、零误报的「接线断链」防线：
+  一个真实发出去的缺陷（算好的续传 flag 从没传给 `run_batch`，于是续传静默空转）正好是 `F841`
+  抓的那种形状。
+- **pyright** 覆盖 `src/`、`webui/` 与入口脚本。从已退役的 Tkinter 宿主带过来的判断是：清零时
+  一条 `# type: ignore` 都没用 —— 需要豁免的门禁只是装饰。
+- **JS 生成器做真语法检查**：`tests/test_js_scripts.py` 对每个生成器的输出跑 `node --check`
+  （缺 node 时退化成残缺片段检测）。但它只证明语法 —— `input[name='q' + q + '']` 这类
+  「语法合法、语义非法」的选择器，只有真浏览器 E2E 抓得住。
+- **离线套件永不碰真浏览器**：`tests/test_driver_factory_offline.py` 用 autouse 夹具把
+  `webdriver.Edge/Chrome` 换成一调用就抛 `AssertionError` 的兜底替身。
+- **对话框 / 文件框是可注入的出口**（`src/dialogs.py`）：宿主注册真实现，CLI 与测试拿确定性默认值。
+  这么改是因为被两条模态路径挡住的代码曾停在约 25% 与 14% 覆盖，借口是「模态对话框」。
+- **宿主契约钉成字面量**：`tests/test_webui_host_contract.py` 断言表单 → `RunState`、权重表 →
+  快照、交给 `run_batch` 的每个关键字、进度数字、导出的文档形状 —— 没有第二个宿主可对拍，它的
+  前身是 23 条跨宿主对拍断言。做过变异测试：故意改坏 18 处，17 处让它变红；唯一没红的是快照里
+  `int(k)` → `k`，因为那时 key 早就是整数，属等价变异。
+- **离线 mock 问卷**（`tests/fixtures/mock_wjx.html`）13 题：8 个容器题型码，外加一个非 1 基的
+  2~10 量尺、矩阵多选、排序，和一个自带填空框的多选项。它模拟 wjx 的 AJAX 提交（URL 不变、延迟弹
+  「提交成功」、数提交按钮点击次数）与必填校验（勾「其他____」却不写字 → 原生 `alert`、不给成功
+  文案），这正是填空与接管 `alert` 那两套行为的真浏览器证据，不是替身。`mock_wjx_multipage.html`
+  是两页变体（第 2 页起始 `display:none`）。`mock_wjx_consent_box.html` 给同意框判据用：一个未勾的
+  `#checkxiexi` 配相邻含「同意」/「协议」的文案、一个已勾的同意框，外加一个标签字面就是
+  「我同意接收后续邮件」的选项 —— 那条判据靠的是真实元素关系（`label[for]`、`closest('div[topic]')`），
+  重复计数那个缺陷最早就是在这一层被抓到，而不是离线替身。
+- **Docker**：`.github/workflows/docker-smoke.yml` 每周加手动触发，`docker build` →
+  `wjx-fill --help` → `import src.*`，只构建不发布；它不在必填的 push 检查里，所以 Dockerfile
+  的口径由 `tests/test_packaging.py` 与这条 workflow 双向对齐。
 
 ## 测试怎么写
 
@@ -80,7 +109,7 @@ pip install -e .                                    # 之后可直接用 wjx-fil
    漏改徽章 CI 会红。
 2. CHANGELOG 的 `[未发布]` 块转成 `## [X.Y.Z] - YYYY-MM-DD`，新开一个空的 `[未发布]`。
    版本号没升之前不要把批次写成"已发布的某版"。
-3. `python scripts/readme_coverage.py --write` 重生成 README 的覆盖率口径块。
+3. `python scripts/coverage_doc.py --write` 重生成 `docs/coverage.md` 的覆盖率口径块。
 4. 打 annotated tag（`git tag -a vX.Y.Z -m ...`）并推到 `main`。
 
 ## 提问与讨论

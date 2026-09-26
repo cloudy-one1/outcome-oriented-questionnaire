@@ -55,14 +55,20 @@ htmlcov/
 # docs/ 其余内容仍是本地草稿（一次 git add -A 不该把没写完的稿子带上仓库）。
 # 目录级放行写法：`docs/*` 只匹配 docs/ 的一层条目，被 ! 放行的那两个目录
 # 里面的文件不再受该模式约束。
+# 下面那四份是从 README 搬出来的参考文档，属于**对外门面**而不是草稿：
+# README 链接着它们，漏放行就等于首页指向一个 GitHub 上不存在的文件。
 docs/*
 !docs/design/
 !docs/reviews/
+!docs/cli.md
+!docs/config.md
+!docs/architecture.md
+!docs/coverage.md
 
 # ---------- 运行产物：含 PII，绝不该进版本库 ----------
 # data/history.db 的 answers.text_answer 存填空题原文（姓名/手机/邮箱），
 # configs/*.json 存用户在权重表里写的候选文本池，导出 CSV 同理。
-# 这些路径由工具自身创建（README「运行历史」「GUI 使用」章节），
+# 这些路径由工具自身创建（docs/cli.md「运行历史」与「隐私」两节），
 # 不加进来会让一次 git add -A 直接把敏感数据提交上去。
 data/
 configs/

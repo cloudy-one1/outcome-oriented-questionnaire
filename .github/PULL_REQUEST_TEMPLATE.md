@@ -22,13 +22,13 @@
       `# type: ignore` / `# pyright:`（现存条目登记在 `tests/test_ci_guards.py` 的 `BASELINE`，只准变小）
 - [ ] 离线套件 + 覆盖率地板：`pytest tests/ -m "not integration" --cov=src --cov=webui`
       过 `ci.yml` 里那个 `--cov-fail-under`（地板值只留在那一处，不手抄到别处；
-      `--cov` 的名单以 `scripts/readme_coverage.py` 的 `PACKAGES` 为准）
+      `--cov` 的名单以 `scripts/coverage_doc.py` 的 `PACKAGES` 为准）
 - [ ] 改动碰到生成的 JS、交互链路或宿主页面 →
       `pytest tests/ -m integration --junitxml=e2e-junit.xml && python scripts/e2e_gate.py e2e-junit.xml
       --require-file tests/test_e2e_integration.py --require-file tests/test_webui_e2e.py`
       （离线 mock 抓不住"语法合法、语义非法"的错选择器；两个 `--require-file` 各钉一侧，
       免得只剩全局计数时新宿主整片被吞成 skip 还是绿的）
-- [ ] 改动碰到 `coverage.json` 或 README 的覆盖率块 → `python scripts/readme_coverage.py --check`
+- [ ] 改动碰到 `coverage.json` 或 `docs/coverage.md` 的覆盖率块 → `python scripts/coverage_doc.py --check`
 - [ ] `CHANGELOG.md` 的 `[未发布]` 块记了一行
 - [ ] 定版 PR：版本号三处一起改（`pyproject.toml`、`src/__init__.py` 的 `__version__`、README 顶部徽章）
 
