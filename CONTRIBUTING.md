@@ -79,6 +79,9 @@ pip install -e .                                    # 之后可直接用 wjx-fil
 - **Docker**：`.github/workflows/docker-smoke.yml` 每周加手动触发，`docker build` →
   `wjx-fill --help` → `import src.*`，只构建不发布；它不在必填的 push 检查里，所以 Dockerfile
   的口径由 `tests/test_packaging.py` 与这条 workflow 双向对齐。
+- **文档里的本地链接是查出来的，不是看出来的**（`tests/test_doc_links.py`）：文件在不在磁盘上、
+  锚点按 GitHub 的 slug 规则算不算得出来、目标文件在不在版本库里，三条各挡一种真实失效。
+  最后一条专门对着 `.gitignore` 的 `docs/*` —— 新文档忘了显式放行时本地一切正常，GitHub 上 404。
 
 ## 测试怎么写
 
