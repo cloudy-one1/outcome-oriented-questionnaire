@@ -1,9 +1,10 @@
-"""V2.4 新增：GUI ←→ history schema 契约测试。
+"""宿主 ←→ history schema 契约测试（v2.4 起就有，v4.0 桌面版退役后改名）。
 
-背景：gui/history_panel.py 曾全面引用不存在的列名（ok_count / q_number /
-q_type / recorded_at / note），并把 sqlite3.Row 当 dict 用（Row 没有 .get()），
-历史 Tab 每次刷新/导出/清理都失败且被 ``except Exception`` 吞成一条 WARN。
-本测试锁定 GUI 消费的字段名与 purge_old 签名，schema 一旦漂移立即报警。
+背景：桌面版的历史面板当年全面引用过不存在的列名（ok_count / q_number /
+q_type / recorded_at / note），还把 sqlite3.Row 当 dict 用（Row 没有 .get()），
+于是每次刷新/导出/清理都失败，而被 ``except Exception`` 吞成一条 WARN。
+这一层钉的是**列名与签名本身** —— 谁在消费不重要，漂移了就是界面少一列、
+导出少一栏，而且不会有人报错。
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from src.history import SubmissionHistory
 
 
 class TestHistoryGuiContract(unittest.TestCase):
-    """锁定 gui/history_panel.py 依赖的 schema 字段名。"""
+    """锁定界面侧按名字取用的 schema 列名与签名。"""
 
     def setUp(self) -> None:
         self.db = SubmissionHistory(":memory:")
@@ -33,7 +34,7 @@ class TestHistoryGuiContract(unittest.TestCase):
         self.db.close()
 
     def test_runs_rows_are_dict_convertible_with_expected_columns(self) -> None:
-        """GUI 用 dict(row).get(...) 消费 → Row 必须可转 dict 且包含这些列。"""
+        """界面用 dict(row).get(...) 消费 → Row 必须可转 dict 且包含这些列。"""
         runs = [dict(r) for r in self.db.query_runs()]
         self.assertTrue(runs)
         for r in runs:
@@ -43,7 +44,7 @@ class TestHistoryGuiContract(unittest.TestCase):
                 self.assertIn(col, r)
 
     def test_runs_rows_have_no_legacy_columns(self) -> None:
-        """历史面板曾误用的旧列名不得再出现（防 GUI 侧回退）。"""
+        """当年误用的旧列名不得再出现（防消费侧回退）。"""
         for r in self.db.query_runs():
             keys = set(r.keys())
             self.assertNotIn("ok_count", keys)
@@ -63,7 +64,7 @@ class TestHistoryGuiContract(unittest.TestCase):
         self.assertEqual(answers[1]["question_type"], "text")
 
     def test_purge_old_signature_days_older_than(self) -> None:
-        """GUI 调用 purge_old(days_older_than=7)——锁定关键字签名防回归。"""
+        """界面与 CLI 都按 purge_old(days_older_than=7) 调 —— 锁定关键字签名防回归。"""
         removed = self.db.purge_old(days_older_than=7)
         self.assertEqual(removed, 0)
 

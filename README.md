@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![CI](https://github.com/cloudy-one1/outcome-oriented-questionnaire/actions/workflows/ci.yml/badge.svg)](https://github.com/cloudy-one1/outcome-oriented-questionnaire/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-3.4.0-brightgreen.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-4.0.0-brightgreen.svg)](CHANGELOG.md)
 
 本工具仅供学习与研究 Selenium 浏览器自动化技术使用，请务必遵守问卷星平台使用条款与相关法律法规（详见[免责声明](#免责声明)）。
 

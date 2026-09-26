@@ -2,7 +2,7 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [未发布]（目标 4.0.0）
+## [4.0.0] - 2026-09-26
 
 ### 删除（桌面版 Tkinter 宿主退役 —— 入口从三个变成两个）
 
