@@ -165,7 +165,8 @@ def detect_questions(driver: Any) -> list[dict]:
           # 自己的校验清掉。
           # field="region" 是**地区题**（get_Local / opencitybox / verify 含省市），
           # 只交"省 市"两段；真做成城市选择器那种只读框目前仍按不可填跳过，
-          # 症状会由提交前完整度自检报出来（见「已知缺口」）。
+          # 症状会由提交前完整度自检报出来（这类逐题 DOM 交互为什么没有全离线
+          # 防线，记在 docs/coverage.md「仍然没有防线的地方」那一节）。
           {"q": 5, "type": "text",  "field": "name"}
           {"q": 15, "type": "text", "field": "date", "date_kind": "date"}
           {"q": 16, "type": "text", "field": "region"}

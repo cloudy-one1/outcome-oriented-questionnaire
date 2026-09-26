@@ -207,7 +207,7 @@ class TestWeightsFromConfigApply(unittest.TestCase):
 
     这两条此前是"文档承诺了但代码从不读"：``generate_answer`` 只看
     ``question["options"]`` / ``question["row_weights"]``，而 ``detect_questions``
-    回来的题目永远没有这两个键 —— 于是 README 权重配置表里写的
+    回来的题目永远没有这两个键 —— 于是当年 README 权重配置表里写的
     ``text.options`` 与 ``matrix_single.row_weights`` 一路静默走内置随机。
     GUI 表格敲的候选词/矩阵行权重同理（探测→表格→另存→运行 整条链路看着都对）。
     """

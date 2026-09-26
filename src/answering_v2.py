@@ -394,7 +394,7 @@ def generate_answer(question: dict) -> dict[str, Any]:
         cols = list(question.get("cols", []))
         col_indices = list(range(len(cols)))
         # v3.0：行权重同样要能从权重配置里取到 —— 探测回来的题目没有 row_weights，
-        # 此前矩阵题的权重只能显示、不能生效（README 的 matrix 配置项形同虚设）。
+        # 此前矩阵题的权重只能显示、不能生效（当年 README 的 matrix 配置项形同虚设）。
         row_weights = _row_weight_map(
             question.get("row_weights") or _cfg_entry(question).get("row_weights")
         )

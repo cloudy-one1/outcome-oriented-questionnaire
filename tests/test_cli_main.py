@@ -115,7 +115,7 @@ def test_main_resume_explicit_count_overrides_planned(db_path: str) -> None:
 
 
 def test_main_resume_restores_weight_snapshot(db_path: str) -> None:
-    """续传要恢复批次权重快照（README 承诺的行为）。"""
+    """续传要恢复批次权重快照（docs/cli.md「断点续传」承诺的行为）。"""
     snap = {1: {"type": "single", "weights": [0.7, 0.3]}}
     _seed_interrupted_run(db_path, planned=10, done=4, weight_config=snap)
 

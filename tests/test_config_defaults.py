@@ -9,7 +9,7 @@
 
 覆盖三件事：
   1. 出厂 ``WEIGHT_CONFIG`` 为空 dict（不传 --config 时不会套用别人的分布）；
-  2. 空配置下 ``build_answer_strategy`` 真的走等权（README「方式一」的承诺）；
+  2. 空配置下 ``build_answer_strategy`` 真的走等权（docs/config.md「方式一」的承诺）；
   3. ``examples/weight_config.example.json`` 能被 loader 读、能通过校验
      —— 迁移出去的示例若漂成非法结构，README 里的引用就变成假链接。
 """
@@ -71,7 +71,7 @@ class TestShippedDefaults(unittest.TestCase):
             self.assertNotIn("existing config entries remain unchanged", f.read())
 
     # ------------------------------------------------------------------
-    #  2. 空配置 → 等权（README「方式一」的承诺）
+    #  2. 空配置 → 等权（docs/config.md「方式一」的承诺）
     # ------------------------------------------------------------------
     def test_single_choice_without_config_is_uniform(self) -> None:
         config.WEIGHT_CONFIG.clear()

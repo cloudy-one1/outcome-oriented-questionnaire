@@ -1,4 +1,4 @@
-"""`src/browser/__init__.py` 这层薄门面的离线契约 —— 关掉 README 缺口表里 52.2% 那条。
+"""`src/browser/__init__.py` 这层薄门面的离线契约 —— 关掉当年 README 缺口表里 52.2% 那条。
 
 `driver_factory` 早在 v2.6 就有替身 driver 的契约，但它上面这层门面反而没人走过：
 `create_driver` 是 CLI/GUI 唯一的入口，"edge 走 edge 工厂、chrome 的 `use_uc` 只发给

@@ -1,6 +1,6 @@
 """``src/verification.py`` 的离线契约测试（v2.6 新增）。
 
-背景：README 的「已知缺口」表把这个模块标成 34% 覆盖、备注"人工介入路径难以自动化"。
+背景：当年 README 的「已知缺口」表把这个模块标成 34% 覆盖、备注"人工介入路径难以自动化"。
 这条备注是错的 —— 整个模块只依赖 ``driver.execute_script`` / ``driver.refresh`` /
 ``time.sleep`` / ``ctypes``，用一个假 driver + 替换模块属性就能全部驱动，不需要浏览器。
 

@@ -1,4 +1,4 @@
-"""``src/logging_setup.py`` 的离线契约测试（此前 0%，README「已知缺口」第一条）。
+"""``src/logging_setup.py`` 的离线契约测试（此前 0%，当年 README「已知缺口」第一条）。
 
 为什么值得补：这个模块是全项目「留痕」的唯一入口 —— src/gui 里那批
 ``except Exception: pass`` 降级路径全靠它把日志写进 ``wjx`` 名字空间。

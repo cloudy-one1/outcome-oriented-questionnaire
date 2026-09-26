@@ -1,6 +1,6 @@
 """``_answer_one_question`` 的题型分发契约（v3.0 新增矩阵多选时补）。
 
-README「已知缺口」里 ``src/pipeline_stages/question_stage.py`` 只有 29%，
+当年 README「已知缺口」里 ``src/pipeline_stages/question_stage.py`` 只有 29%，
 备注是"真实点击仍靠 E2E"。但**分发**本身（哪道题该调哪个 js_* 函数、
 落库的 options_selected 是什么形状）是纯 Python 逻辑，不需要浏览器就能钉住 ——
 新增一个题型时，最容易忘的恰好就是这条接线：JS 与生成器各自都对，
