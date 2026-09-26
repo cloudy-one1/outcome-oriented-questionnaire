@@ -1,6 +1,6 @@
 # 问卷星自动填写工具
 
-> 基于 Selenium Stealth 的问卷星批量填写与提交工具：加权随机作答、人类行为模拟、智能验证码检测，提供 CLI 与 GUI 两种使用方式。
+> 基于 Selenium Stealth 的问卷星批量填写与提交工具：加权随机作答、人类行为模拟、智能验证码检测，提供 CLI 与本地 Web 控制台两种使用方式。
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![CI](https://github.com/cloudy-one1/outcome-oriented-questionnaire/actions/workflows/ci.yml/badge.svg)](https://github.com/cloudy-one1/outcome-oriented-questionnaire/actions/workflows/ci.yml)
@@ -41,10 +41,10 @@
 - **人工提交（把最后一下交给人）** — CLI `--manual-submit`（v3.3）：每一份答完之后工具**不点提交**，只把提交按钮滚进视野并停住，人在窗口里核对、必要时改两格，然后**由人自己点**。要的是这个开关而不是"跑一份读日志"：半份问卷一旦交上去就是平台上一条**收不回来**的真实回收记录。没人点 = 这一份没交出去 → 计失败（不是"交了没确认"）；停止/Ctrl+C 取消这一份且不计失败；无头模式与它互斥 —— 那里没有可点的人。程序点击这条路径在该开关打开时**一次都不会执行**（真 DOM 上由 `window.__submitClicks` 计数器钉住）
 - **智能验证码检测** — DOM / URL 文本 / Shadow DOM 三信号并行检测；检出后弹窗提醒人工处理，人工介入锁保证等待期间不被误判为超时；无头模式下直接判本轮失败（没有可介入的人）
 - **随时可停** — 停止/关闭窗口在**逐题边界、每题思考停顿、验证码人工等待**上都以 ≈0.2s 粒度生效，被打断的那一份不提交、不计失败（v3.0）
-- **断点续填与续传** — 重试时自动跳过单次提交内已答的题；跨进程可从上次中断的批次继续（CLI `--resume`；界面里会弹一次确认框，Web 控制台与桌面版同一个问题、同一个默认值），权重配置随批次快照持久化。批次匹配认的是**同一份问卷**而不是 URL 字符串：`/jq/`、`/m/`、`/vm/`、`/vj/` 几种投放形态与微信带进来的渠道参数都归一到同一个键上（v3.0）
-- **运行历史与统计** — SQLite 记录每次批次的元信息与逐题答案明细，界面可视化查询、CSV 导出、过期清理（Web 控制台与桌面版同一批数据树）
+- **断点续填与续传** — 重试时自动跳过单次提交内已答的题；跨进程可从上次中断的批次继续（CLI `--resume`；Web 控制台里会弹一次确认框，无人应答按"取消"处理），权重配置随批次快照持久化。批次匹配认的是**同一份问卷**而不是 URL 字符串：`/jq/`、`/m/`、`/vm/`、`/vj/` 几种投放形态与微信带进来的渠道参数都归一到同一个键上（v3.0）
+- **运行历史与统计** — SQLite 记录每次批次的元信息与逐题答案明细，界面可视化查询、CSV 导出、过期清理（数据树在仓库根，与 CLI 同一份）
 - **可靠的提交语义** — 提交结果三态（成功 / 失败 / 未知），答案明细幂等写入，指数退避重试，异常分层（瞬态 DOM 异常可重试、程序错误直接暴露）；页面的 `alert` 被接管成记录器，**必填校验那句话会变成日志里的失败原因**，而不是把整轮噎成 `UnexpectedAlertPresentException`（v3.0）
-- **CLI / Web 控制台 / 桌面版三入口 + 可部署** — CLI 适合脚本与定时批量运行；Web 控制台适合可视化配置与实时监控（宿主换成浏览器，引擎还是同一份 `run_batch`）；桌面版（Tkinter）是前者的参照实现，后续版本移除；`--url-file` 顺序队列 + `--max-total-time` 时限 + `--profile-dir` 复用浏览器 profile，`pip install -e .` 后可用 `wjx-fill` / `wjx-web` / `wjx-gui`（v3.0 起有桌面版，v3.4 起有 Web 控制台）；`--start-at` 预约开跑（等待期间不启动浏览器，时限从到点算起）+ `--rescue-gaps` 补漏轮（v3.1）
+- **CLI / Web 控制台双入口 + 可部署** — CLI 适合脚本与定时批量运行；Web 控制台适合可视化配置与实时监控（宿主换成浏览器，引擎还是同一份 `run_batch`）。`--url-file` 顺序队列 + `--max-total-time` 时限 + `--profile-dir` 复用浏览器 profile，`pip install -e .` 后可用 `wjx-fill` / `wjx-web`（Tkinter 桌面版已于 v4.0 退役）；`--start-at` 预约开跑（等待期间不启动浏览器，时限从到点算起）+ `--rescue-gaps` 补漏轮（v3.1）
 
 ---
 
@@ -64,13 +64,13 @@ cd automation
 # 核心依赖
 pip install -r requirements.txt
 
-# 可选：装成命令行工具（之后可直接用 wjx-fill / wjx-web / wjx-gui，不必 python run_cli.py）
+# 可选：装成命令行工具（之后可直接用 wjx-fill / wjx-web，不必 python run_cli.py）
 pip install -e .
 
 # 可选：更强的 Chrome 反检测模式
 pip install undetected-chromedriver
 
-# 可选：界面二维码 URL 解析（桌面版与 Web 控制台共用 src/qr_utils.py）
+# 可选：界面二维码 URL 解析（src/qr_utils.py，靠 OpenCV）
 pip install opencv-python
 
 # 可选：真实答卷回放的 .xlsx 读表（`--replay-file`，CSV 不需要它）
@@ -171,7 +171,7 @@ python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 3 --manual-submit
 | `--replay-file PATH` | 无 | **v3.2** 真实答卷回放：第 N 份用第 N 行，**只有提交成功才推进队列**。CSV 零依赖，`.xlsx` 需另装 `openpyxl`。与 `--url-file` 互斥（退出码 2，因为每份问卷的行号都从 1 重新开始）；多选 / 排序 / 矩阵多选不支持 |
 | `--drift-correct` | 关 | **v3.2** 按**已提交成功**的实际份额小幅纠正加权采样（因子夹 ±1/3、前 8 份不纠正），修正结果**不回写**配置。默认关：它改变答题结果，不是防线 |
 | `--report-alpha` | 关 | **v3.2** 批次结束后从历史库按维度打印**实测** Cronbach α（只读不改作答行为；需配合 `--history`） |
-| `--alpha-target 0.60-0.95` | 无 | **v3.2** 用计划矩阵 + 按秩映射把整批的量表结构逼近目标 α。越界直接退出码 2；维度归属取权重配置里的 `dimension` / `reverse`，没声明就不建计划并说明原因；**仅 CLI**，GUI 无此开关 |
+| `--alpha-target 0.60-0.95` | 无 | **v3.2** 用计划矩阵 + 按秩映射把整批的量表结构逼近目标 α。越界直接退出码 2；维度归属取权重配置里的 `dimension` / `reverse`，没声明就不建计划并说明原因；**仅 CLI**，Web 控制台也没有这个开关 |
 
 ### 界面：Web 控制台（主入口）
 
@@ -180,49 +180,31 @@ python run_web.py                 # 装过本仓库后等价于 wjx-web
 # 可选：--port 8765 固定端口（默认由系统分配并打印），--open-browser 自动打开
 ```
 
-终端会打印 `http://127.0.0.1:<端口>/`，浏览器打开它：探测、权重表、开始 / 停止、历史查询
-与桌面版是同一批操作、同一套按钮名（下面那七步在页面上逐条都有对应）。
+终端会打印 `http://127.0.0.1:<端口>/`，浏览器打开它 —— 探测、权重表、开始 / 停止、
+历史查询都在那一页上：
 
-换掉的**只有宿主**：探测、答题、提交、历史落盘走的还是 `src/cli.run_batch`，与 CLI 和
-桌面版同一份实现、同一个 `RunState`，所以"网页与 CLI 跑出不同结果"这类问题在结构上
-不存在。日志与进度由服务端经 SSE 推给页面，**关掉页面不会中断长跑**，重新打开即接上。
+1. 填问卷 URL（或点「导入二维码」选一张图，地址自动解析出来）
+2. 设提交份数与浏览器类型（Edge / Chrome，Chrome 可加 UC 反检测）
+3. 点 **🔍 探测题目** 自动识别问卷结构
+4. 在权重表第 4 列按题型填权重（格式见[权重配置](#权重配置)）
+5. 可选：**⭐ 另存默认** 存成 `configs/default_weight_config.json`，下次启动自动载入
+6. 可选：取消 **🔒 不记录填空文本** 才会把填空题原文写进历史库（默认勾选 = 默认不写）
+7. 点 **▶ 开始运行**；跑起来后随时能切到 **📜 历史记录** 看批次与逐题明细，**⏹ 停止** 会在下一题边界收尾
+
+引擎侧一行都没重写：探测、答题、提交、历史落盘走的还是 `src/cli.run_batch`，与 CLI
+是同一份实现、同一个 `RunState`，所以"网页与 CLI 跑出不同结果"这类问题在结构上
+不存在。日志与进度由服务端经 SSE 推给页面，**关掉页面不会中断长跑**，重新打开即接上；
+收住整个进程的是终端里的 `Ctrl-C`（请求停止 → 等当前轮次收尾 → 关浏览器 → 闭合历史库）。
 
 - 只监听 `127.0.0.1`，且每个请求校验 `Host` 与 `Origin` 是本机回环（挡 DNS rebinding）。
   **没有登录与鉴权**，所以不要把它转发到局域网或公网 —— 那等于把"驱动一个浏览器自动
   提交问卷"的开关交给同网段的任何人。
-- 数据树与桌面版同源：`configs/` 与 `data/` 都在项目根，`WJX_USER_DATA_DIR` 可整棵挪走。
-- 退出：终端 `Ctrl-C`（请求停止 → 等当前轮次收尾 → 关浏览器 → 闭合历史库）。
+- 数据树在仓库根：`configs/` 与 `data/`，`WJX_USER_DATA_DIR` 可以把整棵挪走。
 - 「📜 历史记录」页签里有批次列表、逐题明细、两个 CSV 导出与「清理 7 天前」；
   清理是两步式的 —— 先报"会删几条"，你确认了才真删。
-- 检测到上次未完成的批次时，会在浏览器里弹确认框问"要不要接着继续"（与桌面版同一个
-  问题、同一个默认值）。**超过两分钟没答，问题自动撤下并按"取消"处理** ——
+- 检测到上次未完成的批次时，会在浏览器里弹确认框问"要不要接着继续"。
+  **超过两分钟没答，问题自动撤下并按"取消"处理** ——
   也就是从第 1 份重新开始，宁可不续传也不会把同一份问卷交两遍。
-
-### 界面：桌面版 GUI（参照实现，后续版本移除）
-
-桌面版仍然完整可用，而且是 Web 控制台逐项比对的参照物 —— 两个宿主的等价性由
-`tests/test_host_parity.py` 与 `tests/test_weight_parser_parity.py` 钉着。它退场的条件写在 `docs/design/DESIGN_webui.md` §11（逐条可对拍、文档以 webui 为主、
-真实长跑无回归），所以新用法优先看上一节。
-
-```bash
-python run_gui.py
-```
-
-1. 输入问卷 URL（或导入二维码图片自动解析）
-2. 设置提交份数与浏览器类型
-3. 点击 **🔍 探测题目** 自动识别问卷结构
-4. 在权重表格中按题型填写权重（格式见[权重配置](#权重配置)）
-5. 可选：点 **⭐ 另存默认** 存为 `configs/default_weight_config.json`，下次启动自动加载
-6. 可选：取消 **🔒 不记录填空文本** 才会把填空题原文写入历史库（默认勾选，即默认不写）
-7. 点 **▶ 开始运行**；运行中可随时切到 **📜 历史记录** Tab 查看批次列表与答题明细，**⏹ 停止** 可随时优雅中断
-
-> 「⚙ 基本设置」的标题条可以点，点一下整张卡卷起来给下面的权重表腾地方。
-
-> 界面动效（状态字溶解、计数滚动、进度追赶、卡片折叠）都是事件驱动的，空闲时不占重绘；
-> 想彻底关掉用 `WJX_MOTION=0 python run_gui.py` —— 关掉后界面直接落终值，功能一项不少。
-
-> 关闭窗口会先请求停止并等待当前轮次收尾（上限 30s），再关闭浏览器并闭合历史记录 ——
-> 直接强杀进程会让 `runs` 表停在中途状态并残留浏览器进程。
 
 ---
 
@@ -234,12 +216,12 @@ python run_gui.py
 
 **跨进程（续传）** — 每个批次在 SQLite 中有一条状态记录（`running / finished / failed / interrupted`）：
 
-- 用户主动停止（GUI 停止按钮 / CLI Ctrl+C / `--max-total-time` 到点）→ 状态记为 `interrupted`，已成功份数保留
+- 用户主动停止（界面里的「⏹ 停止」/ CLI Ctrl+C / `--max-total-time` 到点）→ 状态记为 `interrupted`，已成功份数保留
   - **v3.0**：停止在轮内也生效 —— 逐题边界、每题思考停顿、等题轮询、验证码人工等待都以 ≈0.2s 粒度问一次。
     被打断的那一份**从未被提交**，所以既不计成功也不计失败，下一份的位置就是它（`--resume` 会重做这一份）
 - 下次对**同一份问卷**启动时（v3.0 起按归一化键匹配，不再是 URL 字符串相等）：
   - **CLI**：加 `--resume` 自动查找 24 小时内最近的未完成批次，复用其批次号与计数、接续答案编号，从第 K+1 份继续
-  - **GUI**：自动弹出对话框「Run #N · 已成功 K/M 份 · 是否从第 K+1 份继续？」
+  - **Web 控制台**：页面上弹确认框「Run #N · 已成功 K/M 份 · 是否从第 K+1 份继续？」，两分钟无人应答按"取消"
 - 续传同时会从该批次的权重快照（`weight_config_json`）自动恢复上次使用的权重配置，确保「最后使用的权重就是用户设置的」
 - 续传默认**沿用上次的计划总份数**（不是 `-n` 的默认 17）；显式给 `-n` 时以你输入的为准
 - 显式给了 `--config` 时以文件为准，不再从快照恢复权重
@@ -267,7 +249,7 @@ python run_gui.py
 ## 工作原理
 
 ```
-用户配置 URL + 份数 + 权重（CLI 参数 / JSON / GUI 表格）
+用户配置 URL + 份数 + 权重（CLI 参数 / JSON / Web 控制台的权重表）
         ↓
 启动 Stealth 浏览器（指纹随机化 + 反检测 JS 注入）
         ↓
@@ -334,7 +316,7 @@ WEIGHT_CONFIG = {
 
 ### 方式二：JSON 配置文件（推荐）
 
-通过 GUI「💾 导出配置 / ⭐ 另存默认」或 CLI `--save-config` 生成，支持导入导出与版本管理：
+通过界面里的「💾 导出配置 / ⭐ 另存默认」或 CLI `--save-config` 生成，支持导入导出与版本管理：
 
 ```json
 {
@@ -370,7 +352,7 @@ WEIGHT_CONFIG = {
 
 题号只是"保存时这道题在第几格"的遗迹：问卷中间插一道题，整份预设就会**向后错位一格**，
 而只要选项数恰好还对得上，校验一律放行 —— 跑完 17 份才发现分布全落在别人的题上。
-所以 GUI「探测题目 → 另存」会给每条配置附上锚点：
+所以「探测题目 → 另存」会给每条配置附上锚点：
 
 ```json
 "3": { "type": "single", "weights": [0.1, 0.3, 0.6],
@@ -399,7 +381,7 @@ WEIGHT_CONFIG = {
 
 所有题型都可选 `anchor`（见上）。
 
-### 权重表第 4 列的编辑格式（桌面版与 Web 控制台同一套规则）
+### 权重表第 4 列的编辑格式（Web 控制台）
 
 - 单选 / 多选 / 下拉：`0.2, 0.5, 0.3`
 - 量表：`0,0,0.1,0.4,0.5`，或直接写 `5`（强制打 5 分）
@@ -412,14 +394,14 @@ WEIGHT_CONFIG = {
 
 ## 运行历史
 
-启用 `--history`（GUI 默认启用）后，每次运行写入 `data/history.db`：
+启用 `--history`（界面默认启用）后，每次运行写入 `data/history.db`：
 
 - **runs 表** — 批次元信息：`id, survey_url, survey_key, total_submissions, browser, use_uc, status(running/finished/failed/interrupted), success_count, fail_count, total_elapsed_seconds, error_message, weight_config_json, started_at, finished_at`
 - **answers 表** — 逐题明细：`run_id, submission_index, question_number, question_type, options_selected(JSON), text_answer, elapsed_ms, created_at`，`(run_id, submission_index, question_number)` 唯一，重试不会产生重复行
 
 三种使用方式：
 
-1. **Web 控制台 / 桌面版** — 「📜 历史记录」页签：批次列表 → 点击查看答题明细 → 导出 CSV → 清理 7 天前数据（清理在 Web 控制台里是两步确认）
+1. **Web 控制台** — 「📜 历史记录」页签：批次列表 → 点击查看答题明细 → 导出 CSV → 清理 7 天前数据（清理在 Web 控制台里是两步确认）
 2. **CLI** — `--stats` 在运行结束后打印累计成功率等汇总
 3. **导出分析** — 界面里的「📤 导出 CSV」生成 `history_runs.csv` + `history_runs_answers.csv`，可直接用 Pandas 分析
 
@@ -467,16 +449,16 @@ pip install -r requirements-dev.txt
 # 全量测试（含依赖真实浏览器驱动的 E2E）
 python -m pytest tests/ -v
 
-# 离线套件（无浏览器环境 / CI，1735 项；只装 requirements*.txt 的口径下会有若干 skip）
+# 离线套件（无浏览器环境 / CI，1454 项；只装 requirements*.txt 的口径下会有若干 skip）
 python -m pytest tests/ -m "not integration" -q
 
 # 仅浏览器 E2E（需本机 Edge / Chrome + WebDriver，34 项：25 项作答链路 + 9 项 webui 控制台）
 python -m pytest tests/ -m integration -q
 ```
 
-当前测试全部通过：**1769 项**（离线 1735 + 浏览器 34）。
+当前测试全部通过：**1488 项**（离线 1454 + 浏览器 34）。
 
-> **类型门禁不随环境变**：`src/` + `gui/` + 入口在两种环境下都是 **0 error
+> **类型门禁不随环境变**：`src/` + `webui/` + 入口在两种环境下都是 **0 error
 > 0 warning**。三处可选依赖（`opencv-python`、`undetected_chromedriver`、`openpyxl`）
 > 的动态导入改用 `importlib` + `Any` 声明 —— `try: import x` 配 `# type: ignore` 那个
 > 写法必然两类环境各留一条 warning：装了包时 ignore 被判"冗余"（本仓库把
@@ -487,8 +469,8 @@ python -m pytest tests/ -m integration -q
 >
 > | 门禁 | 装齐可选依赖（开发机） | 未装（CI / 干净 venv） |
 > |---|---|---|
-> | 离线套件 | 1735 passed | 1731 passed + 4 skipped（二维码解析 2 项、`.xlsx` 真读 1 项，外加全新检出时 `coverage.json` 还不存在 —— 文档口径比对那一项也 skip，它是同一次运行**末尾**才产出的） |
-> | 覆盖率 | 总口径比 CI 高约 0.2pp（`src/` +0.1、`gui/` +0.5、`webui/` 不变）—— 三个可选项各自改变一侧的分支走向 | 见下方「已知缺口（诚实记录）」的生成块，那是门禁认的唯一口径 |
+> | 离线套件 | 1454 passed | 1450 passed + 4 skipped（二维码解析 2 项、`.xlsx` 真读 1 项，外加全新检出时 `coverage.json` 还不存在 —— 文档口径比对那一项也 skip，它是同一次运行**末尾**才产出的） |
+> | 覆盖率 | 总口径比 CI 高约 0.2pp（`src/` +0.3pp、`webui/` 不变） —— 三个可选项各自改变一侧的分支走向 | 见下方「已知缺口（诚实记录）」的生成块，那是门禁认的唯一口径 |
 >
 > 覆盖率数字现在只有一个来源：`scripts/readme_coverage.py` 从 `coverage.json` 生成，
 > `ci.yml` 里 `--cov-fail-under=` 那个地板值是手写的另一边。写一位小数是因为
@@ -501,38 +483,34 @@ python -m pytest tests/ -m integration -q
 | 门禁 | 命令 | 当前状态 |
 |---|---|---|
 | 静态检查 | `python -m ruff check .` | 通过 |
-| 类型检查 | `npx pyright` | `src/` + `gui/` + 入口 **0 error 0 warning**（不设 baseline、不豁免，两种依赖口径下都一样） |
-| 覆盖率 | `pytest --cov=src --cov=gui --cov=webui --cov-fail-under=70`（权威名单是 `scripts/readme_coverage.py` 的 `PACKAGES`，`ci.yml` 与它不一致会红） | 实测值见下方「已知缺口（诚实记录）」的生成块（那个数字只能由 `scripts/readme_coverage.py` 写）；地板从本仓库 `ci.yml` 读出并随生成块一起落盘，只许上调——**v3.1 不动它**：`3.10` 那条 leg 本机量不到（这台机器只有 3.11/3.12/3.13），不拿没量过的环境赌门禁 |
+| 类型检查 | `npx pyright` | `src/` + `webui/` + 入口 **0 error 0 warning**（不设 baseline、不豁免，两种依赖口径下都一样） |
+| 覆盖率 | `pytest --cov=src --cov=webui --cov-fail-under=70`（权威名单是 `scripts/readme_coverage.py` 的 `PACKAGES`，`ci.yml` 与它不一致会红） | 实测值见下方「已知缺口（诚实记录）」的生成块（那个数字只能由 `scripts/readme_coverage.py` 写）；地板从本仓库 `ci.yml` 读出并随生成块一起落盘，只许上调——**v3.1 不动它**：`3.10` 那条 leg 本机量不到（这台机器只有 3.11/3.12/3.13），不拿没量过的环境赌门禁 |
 | 文档口径 | `python scripts/readme_coverage.py --check` | README 的覆盖率段落是生成物：数字漂移超过容差、缺口模块改名、低覆盖模块没登记理由，都在这里红 |
-| 类型抑制禁令 | `pytest tests/test_ci_guards.py` | `src/` + `gui/` + 入口里不许出现新的 `# type: ignore` / `# pyright:`；现存 3 处登记在 `BASELINE` 里、只准变小（v3.1 前是零登记，靠 v2.8 那批清零） |
+| 类型抑制禁令 | `pytest tests/test_ci_guards.py` | `src/` + `webui/` + 入口里不许出现新的 `# type: ignore` / `# pyright:`；现存 3 处登记在 `BASELINE` 里、只准变小（v3.1 前是零登记，靠 v2.8 那批清零） |
 | E2E 阻塞性 | `pytest -m integration --junitxml=… && python scripts/e2e_gate.py … --require-file tests/test_e2e_integration.py --require-file tests/test_webui_e2e.py` | e2e job 从 v3.1 起**阻塞**：浏览器/驱动自身故障由 `tests/conftest.py` 降级成 skip，"全 skip 也算绿"由数 junit 的 `e2e_gate.py` 堵住。**堵的是整片**——"作答那 25 项跑了、webui 那 9 项全被吞成 skip"全局计数依然好看，所以两个测试文件各点一次名，缺一个就红（2026-09-25 补） |
 | 镜像构建 | `.github/workflows/docker-smoke.yml`（每周一 + 手动） | `docker build` → `wjx-fill --help` → `import src.*`，只构建不发布；**不在** push 的必填检查里，所以 Dockerfile 的口径写在它自己头上、由 `tests/test_packaging.py` 与 workflow 双向对齐 |
 
 - **`ruff.toml`** 启用 `E9/F63/F7/F82` + `F401/F841/F541`。后三条是刻意加的零误报
   「接线断链」防线：v2.4 的 `--resume` 静默失效（`main()` 算出 `resume_fail`
   却没传给 `run_batch`）正是 `F841` 一条规则就能在 CI 拦住的真实缺陷。
-- **`pyrightconfig.json`** 纳入 `src/`、`gui/` 与入口脚本。`gui/` 是 v2.8 才进来的：
-  此前挂着 45 条诊断（30 error + 14~15 warning），清零靠三类改造 —— Tkinter 上
-  动态挂的属性改成类级声明（`SurveyGUI.FONT_*`、`widgets.CardFrame`）、可选导入的
-  `Callable | None` 在闭包内重新收窄、`weight_panel` 的 `cfg` 显式声明 `dict[str, Any]`。
-  一条 `# type: ignore` 都没用 —— 需要豁免的门禁只是装饰。
+- **`pyrightconfig.json`** 纳入 `src/`、`webui/` 与入口脚本。`gui/` 曾在 v2.8 一起进来，
+  当时靠三类改造把 45 条诊断清零（Tkinter 动态挂的属性改成类级声明、可选导入的
+  `Callable | None` 在闭包内重新收窄、`cfg` 显式声明 `dict[str, Any]`）；宿主本体已在
+  v4.0 退役，留在这儿的是那条判据：一条 `# type: ignore` 都没用 —— 需要豁免的门禁只是装饰。
 - **JS 生成器有真语法校验**：`tests/test_js_scripts.py` 会用 `node --check`
   实际解析每个脚本生成器的输出（本机无 node 时降级为退化片段检测）。
   但它只能保证**语法**合法 —— `input[name='q' + q + '']` 这类
   "语法合法、语义非法"的错选择器只有真浏览器 E2E 抓得住，v2.6 就抓到过一次。
-- **浏览器与 Tkinter 都有专用基座**：`tests/test_driver_factory_offline.py` 用
-  autouse 夹具把 `webdriver.Edge/Chrome` 换成会 `AssertionError` 的兜底替身，
-  所以离线套件绝无可能开出真实浏览器窗口。Tkinter 侧根窗口由 `conftest.py` 的
-  会话级 `tk_root` 提供，**全会话只建一个**：Windows 上第二个 `tk.Tk()` 会抛
-  "Can't find a usable tk.tcl"，此前各 GUI 模块各自建销，症状是后面的模块整片
-  **静默 skip**（比红难发现）。需要"整个窗口"的用例（`tests/test_gui_user_data.py`
-  构造真的 `SurveyGUI`）挂在这棵根窗口的 `Toplevel` 上；根窗口建不出来就 skip，
-  无显示的 runner 上保持绿。
-- **弹窗与文件框是可注入的出口**（v3.1，`src/dialogs.py`）：GUI 启动时注册真
-  `messagebox` / `filedialog`，CLI 与测试不注册即拿到确定性默认值（提示无操作、
-  确认与选文件都是"否/取消"）。此前 `gui/` 里 13 处模态框直调就是那两行缺口
-  （`app.py` 25%、`controller.py` 14%）写着"模态对话框"的直接原因；换出口之后
-  断点续传那 5 个字段的自洽性、配置导出导入的往返都有离线契约。
+- **浏览器有专用基座**：`tests/test_driver_factory_offline.py` 用 autouse 夹具把
+  `webdriver.Edge/Chrome` 换成会 `AssertionError` 的兜底替身，所以离线套件绝无可能
+  开出真实浏览器窗口。（Tkinter 侧原本还有一个会话级 `tk_root` 基座 —— Windows 上
+  一个进程只能可靠地建**一个** `tk.Tk()`，各模块自建自销会把后面的模块打成整片**静默
+  skip**；随桌面版退役，那个夹具与它服务的用例一起在 v4.0 删掉了。）
+- **弹窗与文件框是可注入的出口**（v3.1，`src/dialogs.py`）：宿主注册真实现，CLI 与
+  测试不注册即拿到确定性默认值（提示无操作、确认与选文件都是"否/取消"）。当年把
+  Tkinter 宿主里 13 处模态框直调换出口，是因为那两块代码的覆盖率长期停在 25% / 14%，
+  理由就写着"模态对话框"；换出口之后断点续传那 5 个字段的自洽性、配置导出导入的
+  往返都有离线契约 —— 桌面版退役了，这些契约连同 webui 一起留着。
 - **webui 自己那份宿主契约**：`tests/test_webui_host_contract.py` 把"表单 → `RunState`、
   权重表 → 快照、交给 `run_batch` 的每个关键字、进度那几个数、导出文档的形状"钉成
   **字面量**，断言右边不出现另一个宿主。它的前身是 `tests/test_host_parity.py` 那 23 条
@@ -566,13 +544,12 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 ### 已知缺口（诚实记录）
 
 <!-- BEGIN AUTO-GENERATED 覆盖率口径 · scripts/readme_coverage.py · 不要手改 -->
-**口径**：`pytest tests/ -m "not integration" --cov=src --cov=gui --cov=webui`，依赖只装 `requirements*.txt`（即 CI 两条 leg 的环境）。地板 `--cov-fail-under=70`（从 `.github/workflows/ci.yml` 读出来，不是手抄的）。
+**口径**：`pytest tests/ -m "not integration" --cov=src --cov=webui`，依赖只装 `requirements*.txt`（即 CI 两条 leg 的环境）。地板 `--cov-fail-under=70`（从 `.github/workflows/ci.yml` 读出来，不是手抄的）。
 
 | 范围 | 离线覆盖率 |
 |---|---|
-| 全部 | **92.5%** |
-| `src/` | 92.1%（4864 条语句剩 386 行） |
-| `gui/` | 89.5%（2222 条语句剩 233 行） |
+| 全部 | **93.2%** |
+| `src/` | 91.7%（4864 条语句剩 405 行） |
 | `webui/` | 99.1%（1294 条语句剩 12 行） |
 
 #### 已补齐的缺口（"补齐前"一列是登记时的实测）
@@ -586,17 +563,14 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 | `src/browser/__init__.py` | 52.2% | **100.0%**（剩 0 行） | `tests/test_browser_facade_offline.py` |
 | `src/interactions/choices.py` | 58.8% | **100.0%**（剩 0 行） | `tests/test_choices_interaction.py` |
 | `src/interactions/sort.py` | 22.2% | **100.0%**（剩 0 行） | `tests/test_sort_interaction.py` |
-| `src/cli.py` | 74.3% | **84.6%**（剩 81 行，剩余是 run_batch 内的浏览器接线与降级分支） | `tests/test_cli_exit_and_reports.py`、`tests/test_cli_main.py`、`tests/test_cli_batch.py` |
-| `gui/`（10 个文件合计） | 15% | **89.5%**（`log_view`、`motion`、`theme`、`ticker` 已 100%） | `tests/test_gui_panels.py`、`tests/test_gui_proxies.py`、`tests/test_gui_run_loop.py` |
+| `src/cli.py` | 74.3% | **81.9%**（剩 95 行，剩余是 run_batch 内的浏览器接线与降级分支） | `tests/test_cli_exit_and_reports.py`、`tests/test_cli_main.py`、`tests/test_cli_batch.py` |
 
 #### 仍然没有防线的地方
 
 | 模块 | 离线覆盖率 | 为什么还留着 |
 |---|---|---|
-| `gui/controller.py` | 79.5% | 配置导出/导入与二维码选文件已可注入替身文件框（`tests/test_gui_user_data.py`），剩 37% 的坎是探测题目那条 worker —— 它要真实 driver（`on_detect_questions` 整段 300-403 行） |
-| `gui/app.py` | 82.4% | `WJX_USER_DATA_DIR` 把 `configs/` + `data/` 整棵挪走之后，整窗已能在测试里构造（`tests/test_gui_user_data.py`：构造、输入校验、续传决策、历史库接线；`tests/test_host_parity.py` 又把 `_on_start` 这条跑批路径接上了真窗口）。剩 156 行是 canvas 重绘与 resize/关窗回调，要真实 paint 事件与 mainloop 才走得到 |
 | `src/pipeline_stages/question_stage.py` | 63.3% | 逐题 DOM 交互主干：等待、「哪道题调哪个填充器」的分发、带框选项只勾不填的降级都已有离线测试（`tests/test_question_stage_dispatch.py`），真实点击仍靠 E2E |
-| `src/qr_utils.py` | 51.5% | 缺口全在「真的解一张图」那 16 行：要 OpenCV，而 CI 口径不装可选依赖，`tests/test_qr_utils.py` 里两条真读图用例因此 skip。缺依赖时的降级顺序、失败路径提示几次与是哪一类、解不出必给 None 都已有契约。该模块 v3.4 从 `gui/` 移到 `src/`（Tk 与 webui 共用），因此不再是 gui 组豁免的一员 |
+| `src/qr_utils.py` | 51.5% | 缺口全在「真的解一张图」那 16 行：要 OpenCV，而 CI 口径不装可选依赖，`tests/test_qr_utils.py` 里两条真读图用例因此 skip。缺依赖时的降级顺序、失败路径提示几次与是哪一类、解不出必给 None 都已有契约。该模块 v3.4 从 `gui/` 移到 `src/`，v4.0 桌面版退役后它是 webui 独占的可选依赖路径 |
 
 > 本块由 `python scripts/readme_coverage.py --write` 从 `coverage.json` 生成，`--check` 已进 CI 当门禁
 > —— 手改这里的数字会在下次推送时红掉。`--write` 会拒绝装了 `opencv-python` /
@@ -625,14 +599,14 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 
 ## 隐私保护建议
 
-`--no-record-text`（CLI）/「🔒 不记录填空文本」（GUI）仅控制 SQLite `answers.text_answer` 列的写入；DOM 仍需填入真实文本（否则提交会失败）。
+`--no-record-text`（CLI）/「🔒 不记录填空文本」（界面）仅控制 SQLite `answers.text_answer` 列的写入；DOM 仍需填入真实文本（否则提交会失败）。
 
-**默认值不同**：CLI 默认 `关`（会记录），GUI 默认 `开`（不记录）——因为 GUI 会无条件把历史库写到 `data/history.db`，默认不落地原文是更安全的取舍。想保留填空原文供分析的话，在 GUI 里取消勾选即可。
+**默认值不同**：CLI 默认 `关`（会记录），界面默认 `开`（不记录）——因为界面会无条件把历史库写到 `data/history.db`，默认不落地原文是更安全的取舍。想保留填空原文供分析的话，在界面上取消勾选即可。
 
 如担心本地历史库包含敏感内容：
 
-1. 长期开启 `--no-record-text` / GUI 勾选锁，仅记录选项索引与题型
-2. 定期使用 GUI「🗑 清理 7 天前」或 `purge_old(days_older_than=7)` 清理
+1. 长期开启 `--no-record-text` / 界面上的勾选锁，仅记录选项索引与题型
+2. 定期使用「🗑 清理 7 天前」或 `purge_old(days_older_than=7)` 清理
 3. 敏感问卷跑完后直接删除 `data/history.db`
 4. `data/`、`configs/`、`*.db`、`*.csv` 已列入 `.gitignore` —— 历史库和权重预设里都有可识别文本，别靠手动留意来防一次 `git add -A`
 
@@ -649,7 +623,7 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 | 自动识别验证码 | 只检测、只请人帮忙。绕过验证码不是本项目要解决的问题 |
 | 大模型代答 / "人设化"答案 | 两个同类项目都做了这件事（`woshicainiao6/autoQuestionnaire` 的填空题、`kelryry/wjx-auto-sniper` 干脆把它写进标题），我们仍然不做：它把「答案是谁写的」这个问题整体移出了工具 —— 内置文本池生成的是一眼假的占位文本，至少不伪装成被调查者的真实意见，而语义连贯的陈述会让工具从「验证自动化流程」滑向「造问卷数据」。代价还不止语义：多一类网络往返与计费、多一份密钥运维（同类脚本是让用户把 `API_KEY` 明文写进脚本、还把 key 挂在 URL 上），以及**题干原文直接拼进 prompt 的注入面** —— 卷面上写一句"忽略上面的要求"，模型照做、脚本照填照提交 |
 | 移动端投放形态的作答 | 判据与注入要换一整套（jQuery-Mobile 的 `.field` / `.ui-radio` / `.ui-input-text` 语义），而 **PC 版链接是现成的替代品** —— 给作答路径加第二套选择器，等于把"本工具只跑 PC 形态"这条写在 README 里的边界悄悄挪掉。现在只诊断并说清「换链接」（`detection.mobile_layout_notice`），一行代码都不往注入侧加 |
-| GUI 的无头 / 队列 / 时限 / 预约开关 | GUI 是"看着窗口跑"的入口；无头对它没有意义，队列、时限与 `--start-at` 要的是无人值守，那是 CLI 的场景 |
+| Web 控制台的无头 / 队列 / 时限 / 预约开关 | 控制台是"看着页面跑"的入口；无头对它没有意义，队列、时限与 `--start-at` 要的是无人值守，那是 CLI 的场景 |
 
 第二个平台（腾讯问卷 / 金数据 / Google Forms）也**没有**支持：`src/platforms.py` 只是把
 问卷星专属的选择器收成了一张表，题型识别与作答注入的 JS 仍是问卷星的 DOM 约定。
@@ -670,14 +644,13 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 
 | 位置 | 是什么 |
 |---|---|
-| `README.md` | 这一份：能力边界、安装、CLI / GUI 用法、门禁与已知缺口 |
+| `README.md` | 这一份：能力边界、安装、CLI / Web 控制台用法、门禁与已知缺口 |
 | `CHANGELOG.md` | 按版本记的变更，每条带当时的取舍理由 |
 | `docs/design/` | 设计稿 —— `DESIGN_reliability_alpha.md` 写失信度那条链的数学与边界 |
 | `docs/reviews/` | 历史评估报告的归档：查出过什么缺陷、按哪条落地 |
 | `CONTRIBUTING.md` | 环境、提交前必过的门禁、测试基座的两个坑、定版步骤 |
 | `SECURITY.md` | 哪些落盘位置含个人信息、什么算安全问题、私有报告入口 |
 | `src/` | 引擎：探测 → 作答 → 提交；`src/interactions/` 一种题型一个模块 |
-| `gui/` | Tkinter 界面，与 CLI 共用同一条 pipeline |
 | `webui/` | 本地 Web 控制台的宿主（stdlib HTTP + SSE），同样只调 `src/cli.run_batch` |
 | `scripts/` | 门禁工具本身（README 覆盖率口径的生成脚本、E2E 计数闸门） |
 | `tests/` | 离线套件与浏览器 E2E；mock 问卷在 `tests/fixtures/` |

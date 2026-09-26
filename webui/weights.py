@@ -22,7 +22,7 @@ from src.weight_text import (
     scale_levels,
 )
 
-# 存储名 → 展示标签，与 gui/weight_panel 的胶囊文案对齐
+# 存储名 → 展示标签：界面胶囊上写的就是这些两个字（v2.x 起沿用，别改成长名）
 TYPE_LABELS: dict[str, str] = {
     "single": "单选",
     "multi": "多选",

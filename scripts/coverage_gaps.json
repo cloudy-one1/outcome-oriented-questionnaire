@@ -66,15 +66,6 @@
           "tests/test_cli_main.py",
           "tests/test_cli_batch.py"
         ]
-      },
-      {
-        "group": "gui/",
-        "baseline": "15%",
-        "covered_by": [
-          "tests/test_gui_panels.py",
-          "tests/test_gui_proxies.py",
-          "tests/test_gui_run_loop.py"
-        ]
       }
     ]
   },
@@ -82,25 +73,16 @@
     "title": "仍然没有防线的地方",
     "rows": [
       {
-        "module": "gui/controller.py",
-        "reason": "配置导出/导入与二维码选文件已可注入替身文件框（`tests/test_gui_user_data.py`），剩 37% 的坎是探测题目那条 worker —— 它要真实 driver（`on_detect_questions` 整段 300-403 行）"
-      },
-      {
-        "module": "gui/app.py",
-        "reason": "`WJX_USER_DATA_DIR` 把 `configs/` + `data/` 整棵挪走之后，整窗已能在测试里构造（`tests/test_gui_user_data.py`：构造、输入校验、续传决策、历史库接线；`tests/test_host_parity.py` 又把 `_on_start` 这条跑批路径接上了真窗口）。剩 156 行是 canvas 重绘与 resize/关窗回调，要真实 paint 事件与 mainloop 才走得到"
-      },
-      {
         "module": "src/pipeline_stages/question_stage.py",
         "reason": "逐题 DOM 交互主干：等待、「哪道题调哪个填充器」的分发、带框选项只勾不填的降级都已有离线测试（`tests/test_question_stage_dispatch.py`），真实点击仍靠 E2E"
       },
       {
         "module": "src/qr_utils.py",
-        "reason": "缺口全在「真的解一张图」那 16 行：要 OpenCV，而 CI 口径不装可选依赖，`tests/test_qr_utils.py` 里两条真读图用例因此 skip。缺依赖时的降级顺序、失败路径提示几次与是哪一类、解不出必给 None 都已有契约。该模块 v3.4 从 `gui/` 移到 `src/`（Tk 与 webui 共用），因此不再是 gui 组豁免的一员"
+        "reason": "缺口全在「真的解一张图」那 16 行：要 OpenCV，而 CI 口径不装可选依赖，`tests/test_qr_utils.py` 里两条真读图用例因此 skip。缺依赖时的降级顺序、失败路径提示几次与是哪一类、解不出必给 None 都已有契约。该模块 v3.4 从 `gui/` 移到 `src/`，v4.0 桌面版退役后它是 webui 独占的可选依赖路径"
       }
     ]
   },
   "declare_below_pct": 60.0,
-  "group_exempt_prefix": "gui/",
   "tolerance_pp": 0.2,
   "tolerance_lines": 6
 }

@@ -39,7 +39,7 @@ from webui.session import RunSession, ValidationError
 
 logger = logging.getLogger("wjx.webui.service")
 
-#: 「清理 N 天前」的 N。桌面版 ``gui/history_panel.purge_old`` 用的是同一个数，
+#: 「清理 N 天前」的 N。与 CLI 侧 ``purge_old`` 的默认口径同一个数，
 #: 两个界面按同一个期限删数据才谈得上"同一份历史库"。
 PURGE_DAYS = 7
 
@@ -445,7 +445,7 @@ class WebService:
     def get_db(self) -> Any | None:
         """进程内唯一的 ``SubmissionHistory``（懒构造 + 缓存）。
 
-        与 ``gui/history_panel.get_db`` 同一套理由：每个实例构造都要跑一遍含全表
+        理由与它当初在桌面版里成立过的同一条：每个实例构造都要跑一遍含全表
         去重扫描的迁移，句柄不关就泄漏，而库里那把"串行化所有 DB 操作"的锁跨不了连接。
         """
         if self._db_cached is not None:

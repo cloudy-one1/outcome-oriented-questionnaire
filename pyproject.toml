@@ -7,7 +7,7 @@
 #
 #  安装（可编辑模式，源码目录保持不动）：
 #      pip install -r requirements.txt -e .
-#  之后可直接用 `wjx-fill -u <url>` / `wjx-gui`，不必再 python run_cli.py。
+#  之后可直接用 `wjx-fill -u <url>` / `wjx-web`，不必再 python run_cli.py。
 # ============================================================================
 
 [build-system]
@@ -17,7 +17,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "wjx-autofill"
 version = "3.4.0"
-description = "基于 Selenium Stealth 的问卷星批量填写工具（加权随机作答 + 人类行为模拟 + CLI / Web 控制台 / 桌面版三入口）"
+description = "基于 Selenium Stealth 的问卷星批量填写工具（加权随机作答 + 人类行为模拟 + CLI / Web 控制台双入口）"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -38,7 +38,7 @@ dependencies = [
 [project.optional-dependencies]
 # 更强的 Chrome 反检测（仅 --uc 需要）
 uc = ["undetected-chromedriver==3.5.5"]
-# GUI 二维码 URL 解析（体积大，装不上时 GUI 只是不给二维码按钮）
+# 二维码 URL 解析（体积大，装不上时界面只是不给二维码按钮）
 qr = ["opencv-python==4.10.0.84"]
 dev = [
   "pytest==9.1.1",
@@ -48,7 +48,6 @@ dev = [
 
 [project.scripts]
 wjx-fill = "src.cli:main"
-wjx-gui = "gui.app:main"
 wjx-web = "webui.__main__:main"
 
 [tool.setuptools.package-data]
@@ -57,6 +56,6 @@ wjx-web = "webui.__main__:main"
 webui = ["static/index.html", "static/app.js", "static/styles.css"]
 
 [tool.setuptools]
-# 仓库现有布局就是顶层 src/ 与 gui/（run_cli.py 直接 from src.cli import main）；
+# 仓库现有布局就是顶层 src/ 与 webui/（run_cli.py 直接 from src.cli import main）；
 # 改成 src-layout 会牵动全部 import，收益只有"名字好看"，不在 v3.0 范围内。
-packages = ["src", "src.browser", "src.interactions", "src.pipeline_stages", "gui", "webui"]
+packages = ["src", "src.browser", "src.interactions", "src.pipeline_stages", "webui"]

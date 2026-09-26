@@ -153,11 +153,21 @@ def test_shutdown_wakes_waiters_instead_of_making_them_time_out() -> None:
 
 
 def test_the_pending_cap_refuses_instead_of_piling_up() -> None:
-    chan, _ = _channel(timeout=0.2)
-    waiters = [_ask_later(chan) for _ in range(MAX_PENDING)]
-    assert _wait_until(lambda: len(chan.pending()) == MAX_PENDING)
+    """槽位挂满之后再来一条：按「取消」办，不排队、也不留半个坑。
+
+    超时给默认的 5 秒而不是几百毫秒 —— 这条要的是「槽位满了」这件事，不是
+    「恰好赶上过期」。起线程本身在跑满覆盖率的机器上就要几十毫秒一轮，短超时
+    会先把槽清空，于是断言悄悄变成在测线程调度（整条套件里它就这么红过一次）。
+    收尾走 ``cancel_all``，不靠超时把线程放掉。
+    """
+    chan, _ = _channel()
+    waiters = [_ask_later(chan, title=f"断点续传{i}") for i in range(MAX_PENDING)]
+    filled = _wait_until(lambda: len(chan.pending()) == MAX_PENDING)
+    assert filled, f"槽位没填满：只挂上 {len(chan.pending())} 条"
 
     assert chan.ask("溢出", "第 9 条") is False, "超上限直接按取消办，不排队"
+    assert len(chan.pending()) == MAX_PENDING, "被拒的那一条不该在槽位里留下痕迹"
+    chan.cancel_all()
     for _out, worker in waiters:
         worker.join(5)
     assert chan.pending() == []

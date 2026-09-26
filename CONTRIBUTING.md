@@ -16,7 +16,7 @@
 ```bash
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt -r requirements-dev.txt
-pip install -e .                                    # 之后可直接用 wjx-fill / wjx-gui
+pip install -e .                                    # 之后可直接用 wjx-fill / wjx-web
 ```
 
 依赖一律钉版本。运行时依赖的单一真相是 `requirements.txt`，`pyproject.toml` 由
@@ -29,7 +29,7 @@ pip install -e .                                    # 之后可直接用 wjx-fil
 | 门禁 | 命令 |
 |---|---|
 | 静态检查 | `python -m ruff check .` |
-| 类型检查 | `npx pyright`（`src/` + `gui/` + `webui/` + 入口 **0 error 0 warning**，不设 baseline、不写 `# type: ignore`） |
+| 类型检查 | `npx pyright`（`src/` + `webui/` + 入口 **0 error 0 warning**，不设 baseline、不写 `# type: ignore`） |
 | 离线套件 + 覆盖率地板 | `pytest tests/ -m "not integration" --cov=src --cov=gui --cov=webui --cov-report=json:coverage.json --cov-fail-under=$(grep -oE 'cov-fail-under=[0-9.]+' .github/workflows/ci.yml | cut -d= -f2)`（`--cov` 的权威名单是 `scripts/readme_coverage.py` 的 `PACKAGES`，与 `ci.yml` 不一致会红） |
 | 文档口径 | `python scripts/readme_coverage.py --check` |
 | 浏览器 E2E | `pytest tests/ -m integration -v --junitxml=e2e-junit.xml && python scripts/e2e_gate.py e2e-junit.xml` |
@@ -39,7 +39,7 @@ pip install -e .                                    # 之后可直接用 wjx-fil
   手改 README 那一块会在 `--check` 处变红。
 - **E2E 是阻塞的**。`scripts/e2e_gate.py` 会数 junit 里的实际执行条数 —— 驱动没起来
   导致整片 skip 也照样是绿，那条就是堵这个洞的。只跑离线套件不算验过。
-- **`src/` + `gui/` + `webui/` + 入口里不许新增 `# type: ignore` / `# pyright:`**，现存条目登记在
+- **`src/` + `webui/` + 入口里不许新增 `# type: ignore` / `# pyright:`**，现存条目登记在
   `tests/test_ci_guards.py` 的 `BASELINE` 里、只准变小。
 
 ## 测试怎么写
@@ -49,9 +49,9 @@ pip install -e .                                    # 之后可直接用 wjx-fil
   错选择器只有真浏览器抓得住。
 - 不要在离线套件里开真浏览器：`tests/test_driver_factory_offline.py` 用 autouse 夹具
   把 `webdriver.Edge/Chrome` 换成一调用就 `AssertionError` 的兜底替身。
-- Tkinter 的根窗口由 `conftest.py` 的会话级 `tk_root` 提供，全会话只建一个：Windows 上
-  第二个 `tk.Tk()` 会抛 "Can't find a usable tk.tcl"，症状是后面整片测试**静默 skip**。
-  要"整个窗口"的用例挂在它的 `Toplevel` 上。
+- 界面只有一个宿主：Tkinter 时代 `conftest.py` 里那个会话级 `tk_root`（全会话只建一个根
+  窗口，否则 Windows 上第二个 `tk.Tk()` 会抛 "Can't find a usable tk.tcl"，症状是后面整片
+  测试**静默 skip**）已随桌面版在 v4.0 一起退役，新宿主用例不要再找它。
 - 新增 mock 问卷放 `tests/fixtures/`，脱敏后再交 —— `*.csv` / `*.db` / `data/` /
   `configs/` 已在 `.gitignore` 里，因为 `data/history.db` 存着填空题原文（姓名、手机、邮箱）。
 

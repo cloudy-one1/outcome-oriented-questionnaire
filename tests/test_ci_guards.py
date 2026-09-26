@@ -26,8 +26,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 # 与 pyrightconfig.json 的 include 保持一致（下面第二条用例就是钉这个的）
-SCOPED_PATHS = ("src", "gui", "webui",
-                "run_cli.py", "run_gui.py", "run_web.py", "conftest.py")
+SCOPED_PATHS = ("src", "webui",
+                "run_cli.py", "run_web.py", "conftest.py")
 
 _SUPPRESSION = re.compile(r"^#\s*(type:\s*ignore|pyright:)")
 

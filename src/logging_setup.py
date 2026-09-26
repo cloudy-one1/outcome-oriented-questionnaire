@@ -6,7 +6,7 @@
     - 大量 ``except Exception: pass`` 静默吞异常，事后无法复盘
 
 约定：
-    - 日志名字空间：src 侧 ``wjx.*``，GUI 侧 ``wjx.gui.*``
+    - 日志名字空间：一律挂在 ``wjx`` 下，按模块起名（``wjx.cli``、``wjx.webui.service``）
     - CLI 通过 ``--log-file PATH`` 启用文件落盘（logs/ 目录建议）
     - 未调用 setup_logging 时，logging 走默认 lastResort
       （WARNING+ 输出 stderr），对库代码零侵入
@@ -77,7 +77,7 @@ def setup_logging(log_file: str | None = None, *, level: int = logging.INFO) -> 
 
 
 def get_logger(name: str = _LOGGER_NAMESPACE) -> logging.Logger:
-    """取 ``wjx`` 名字空间下的 logger（``get_logger("wjx.gui.app")`` 等）。"""
+    """取 ``wjx`` 名字空间下的 logger（``get_logger("wjx.webui.service")`` 等）。"""
     if not name.startswith(_LOGGER_NAMESPACE):
         name = f"{_LOGGER_NAMESPACE}.{name}"
     return logging.getLogger(name)

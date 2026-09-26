@@ -22,7 +22,7 @@
 | `configs/*.json` | 你在权重表里手写的候选文本池（可能含真实姓名/地址池） | 已在 `.gitignore` 里 |
 | CSV 导出、运行日志 | 同上 | 已在 `.gitignore` 里 |
 
-Python 侧不向任何第三方发请求：`src/` 与 `gui/` 里没有 `requests` / `urllib` 调用，
+Python 侧不向任何第三方发请求：`src/` 与 `webui/` 里没有 `requests` / `urllib` 调用，
 唯一的网络出口是浏览器按你给的那个问卷地址打开问卷星页面。注入页面的 JS 全部由
 `src/interactions/_scripts.py` 在本仓库内生成，不引外部脚本。
 

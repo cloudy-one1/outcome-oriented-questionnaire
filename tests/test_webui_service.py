@@ -1041,10 +1041,12 @@ class FakeHistory:
         self.prev = prev
         self.find_error = find_error
         self.closed = False
+        self.queries: list[str] = []
 
     def find_resumable_run(self, url):
         if self.find_error:
             raise self.find_error
+        self.queries.append(url)
         return self.prev
 
     @classmethod
@@ -1244,8 +1246,56 @@ def test_resume_accepted_moves_the_counters_the_engine_will_use(tmp_path):
     state = calls["state"]
     assert (state.resume_start_idx, state.run_id, state.success_count) == (3, 7, 2)
     assert state.total_target == 5 and state.attempts_cap == 3
+    # 这五个字段散在 if 分支里，历史上正是"漏改一个"就重复提交的地方 ——
+    # 光看每个数各自对不够，要把它们之间的等式也钉住。
+    assert state.resume_start_idx + state.attempts_cap - 1 == state.total_target
+    assert state.total_target - state.success_count == state.attempts_cap
     assert any(t == "OK" and "恢复 Run #7" in x for t, x in logs_of(sess))
     assert any("断点续传启动：从第 3 份" in x for _, x in logs_of(sess))
+
+
+def test_the_resume_question_names_the_run_and_the_number_it_offers(tmp_path):
+    """确认框上那三行是用户唯一的决策依据：批次号、已成交数、要继续的是第几份。
+
+    说错一个数，人点"是"就是在重复提交（"已成功 2 / 5"却从第 2 份继续）。
+    """
+    sess, svc, _calls, _db = make_runner(
+        tmp_path, prev=resumable(done=5, planned=17))
+    sess.set_field("url", "https://x.test/s")
+    asked: list[tuple[str, str]] = []
+    svc._confirm = lambda title, msg: asked.append((title, msg)) or True
+    svc.start_run()
+    assert svc.wait_for_run(5)
+    assert [t for t, _m in asked] == ["断点续传"], "只问一次，问两遍就能给出矛盾答案"
+    message = asked[0][1]
+    assert "Run #7" in message
+    assert "已成功 5 / 17 份" in message
+    assert "是否从第 6 份继续" in message
+
+
+def test_the_resume_query_uses_the_same_500_char_key_the_table_stores(tmp_path):
+    """runs 表那列是截断到 500 存的，查询侧不跟着截 = 长 URL 的批次永远查不到，
+    症状是**静默不续传**（比报错难发现得多）。"""
+    long_url = "https://x.test/s" + "?k" * 600
+    sess, svc, _calls, db = make_runner(tmp_path, prev=resumable(done=2, planned=5))
+    sess.set_field("url", long_url)
+    svc.start_run()
+    assert svc.wait_for_run(5)
+    assert db.queries == [long_url[:500]], db.queries
+
+
+def test_restoring_weights_at_resume_replaces_instead_of_merging(tmp_path):
+    """续传恢复的是**另一份问卷**的权重：残留旧题号等于让上一份静默生效。"""
+    cfg_module.WEIGHT_CONFIG[99] = {"type": "single", "weights": [1]}
+    sess, svc, _calls, _db = make_runner(
+        tmp_path,
+        prev=resumable(done=2, planned=5,
+                       restored={2: {"type": "single", "weights": [1, 3]}}))
+    sess.set_field("url", "https://x.test/s")
+    svc.start_run()
+    assert svc.wait_for_run(5)
+    assert set(cfg_module.WEIGHT_CONFIG) == {2}
+    assert sess.weight_texts.get(2) == "1.0000,3.0000"
 
 
 def test_resume_declined_restarts_from_one_but_keeps_the_weights(tmp_path):
@@ -1316,7 +1366,8 @@ def test_no_resumable_batch_means_no_question_asked(tmp_path):
 
 
 def test_a_fully_done_or_zero_done_batch_is_not_offered(tmp_path):
-    for prev in (resumable(done=0, planned=5), resumable(done=5, planned=5)):
+    for prev in (resumable(done=0, planned=5), resumable(done=5, planned=5),
+                 resumable(done=6, planned=5)):
         sess, svc, calls, _db = make_runner(tmp_path, prev=prev)
         sess.set_field("url", "https://x.test/s")
         asked: list = []
@@ -1379,6 +1430,51 @@ def test_build_weight_config_pushes_parse_warnings_into_the_log(tmp_path):
     sess.set_weight_texts({1: "1,2,3"})
     assert svc.build_weight_config() == {}
     assert any(t == "WARN" and "与选项数 2 不符" in x for t, x in logs_of(sess))
+
+
+def test_a_whole_survey_reaches_the_parser_with_every_row_it_should(tmp_path):
+    """13 题混排走一遍权重表：逐题的规则由 ``tests/test_weight_text.py`` 钉，
+    这一条钉的是**接线** —— 题号、顺序、锚点、以及"留空的那题不进 cfg"。
+
+    来历：这条原来是桌面版与 webui 的整卷对拍（``test_weight_parser_parity.py``）。
+    桌面版退役后对岸没有了，但"Q3 留空所以只有 12 题进引擎"这类结论必须继续有人钉 ——
+    少一题不会报错，只会让那题从此等权重随机。
+    """
+    questions = [
+        {"q": 1, "type": "single", "title": "浏览器", "choices": ["Edge", "Chrome"]},
+        {"q": 2, "type": "multi", "title": "功能", "choices": ["a", "b", "c"]},
+        {"q": 3, "type": "dropdown", "title": "城市", "choices": ["北京", "上海", "广州"]},
+        {"q": 4, "type": "scale", "title": "满意度", "scale": 5},
+        {"q": 5, "type": "text", "title": "姓名", "field": "name"},
+        {"q": 6, "type": "text", "title": "手机", "field": "phone"},
+        {"q": 7, "type": "text", "title": "邮箱", "field": "email"},
+        {"q": 8, "type": "matrix", "title": "频率", "rows": ["1", "2"],
+         "cols": ["a", "b", "c"]},
+        {"q": 9, "type": "matrix_multi", "title": "关注点", "rows": ["1", "2"],
+         "cols": ["a", "b"]},
+        {"q": 10, "type": "scale", "title": "推荐度", "scale": 10, "scale_min": 0},
+        {"q": 11, "type": "text", "title": "公司"},
+        {"q": 12, "type": "single", "title": "性别", "choices": ["男", "女"]},
+        {"q": 13, "type": "sort", "title": "排序", "items": ["3", "1", "2"]},
+    ]
+    texts = {1: "0.5,0.5", 2: "0.2,0.3,0.5", 3: "", 4: "5", 5: "张三,李四",
+             6: "13800000000", 7: "", 8: "1:0.2,0.3,0.5", 9: "",
+             10: ",".join(["1"] * 11), 11: "", 12: "0.9,0.1", 13: "3,1,2"}
+    sess, svc, _calls, _db = make_runner(tmp_path)
+    sess.set_questions(questions)
+    sess.set_weight_texts(texts)
+
+    cfg = svc.build_weight_config()
+    assert sorted(cfg) == [1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13], \
+        "留空的 Q3 不进 cfg（交等权重分支），其余 12 题一个都不能少"
+    assert all("anchor" in entry for entry in cfg.values()), "每题都该带锚点"
+    assert cfg[1]["weights"] == [0.5, 0.5]
+    assert cfg[10]["weights"] == [1.0] * 11, "0~10 是 11 格"
+    assert cfg[13]["order"] == ["3", "1", "2"], "排序存的是选项标签，不是题号"
+    # 矩阵存的是**写下来的那些行**：Q8 只写了第 1 行，第 2 行留给引擎的等权重分支；
+    # Q9 整题留空，于是只有结构（rows/cols）没有行权重。
+    assert set(cfg[8]["row_weights"]) == {"1"}
+    assert not cfg[9].get("row_weights")
 
 
 def test_a_history_db_that_cannot_be_closed_still_says_so(tmp_path):

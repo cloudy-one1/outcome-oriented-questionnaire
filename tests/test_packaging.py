@@ -48,8 +48,8 @@ def _requirement_pins(name: str) -> list[str]:
 def test_project_version_matches_package_version(pyproject: dict) -> None:
     assert pyproject["project"]["version"] == __version__, (
         "pyproject 与 src.__version__ 漂了：装出来的包元数据，与 CLI --help 那行"
-        " `v{__version__}` 和 GUI 窗口标题报的不是一个版本"
-        "（本工具没有 --version 参数，版本号只出现在这两处）"
+        " `v{__version__}` 报的不是一个版本（本工具没有 --version 参数，README 徽章"
+        " 与静态文件另有两条用例各自钉住）"
     )
 
 
@@ -83,15 +83,17 @@ def test_optional_extras_are_pinned_to_the_documented_versions(pyproject: dict) 
 
 
 def test_console_scripts_point_at_real_entry_functions(pyproject: dict) -> None:
-    from gui.app import main as gui_main
     from src.cli import main as cli_main
     from webui.__main__ import main as web_main
 
     scripts = pyproject["project"]["scripts"]
+    assert set(scripts) == {"wjx-fill", "wjx-web"}, (
+        "入口名单就是用户在终端里要打的那几个字：多一个是死入口，少一个是断链"
+        "（v4.0 退役桌面版时 `wjx-gui` 就是被这样划掉的）"
+    )
     assert scripts["wjx-fill"] == "src.cli:main"
-    assert scripts["wjx-gui"] == "gui.app:main"
     assert scripts["wjx-web"] == "webui.__main__:main"
-    assert callable(cli_main) and callable(gui_main) and callable(web_main)
+    assert callable(cli_main) and callable(web_main)
 
 
 def test_declared_packages_cover_every_imported_module(pyproject: dict) -> None:
@@ -101,7 +103,7 @@ def test_declared_packages_cover_every_imported_module(pyproject: dict) -> None:
     """
     declared = set(pyproject["tool"]["setuptools"]["packages"])
     on_disk = set()
-    for base in ("src", "gui", "webui"):
+    for base in ("src", "webui"):
         for dirpath, dirnames, filenames in os.walk(os.path.join(ROOT, base)):
             dirnames[:] = [d for d in dirnames if d != "__pycache__"]
             if "__init__.py" in filenames:

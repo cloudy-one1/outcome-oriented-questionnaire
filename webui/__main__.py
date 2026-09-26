@@ -2,10 +2,11 @@
 
 设计稿：``docs/design/DESIGN_webui.md`` §8。
 
-数据根目录的解析在这里**自己写了一份**（5 行），而不是 import ``gui.app``：
-那边模块级就 import tkinter，为了三个 join 把整个 Tk 拉进 webui 不划算。
-两份解析的一致性由 ``tests/test_webui_entry.py`` 逐条比对钉住 ——
-``WJX_USER_DATA_DIR`` 指错地方会让历史库与配置指向两棵不同的树。
+数据根目录的解析在这里**自己写了一份**（5 行）。它曾是 ``gui.app`` 那份的第二份抄本，
+对岸退役之后这里是唯一一处 —— 三条路径的落点、覆盖值相对 **cwd** 解析、以及
+空白值判真这种粗笨行为，全部由 ``tests/test_webui_entry.py`` 按字面量钉着：
+``WJX_USER_DATA_DIR`` 指错地方会让历史库与配置分到两棵不同的树，而那只在
+长跑结束回头找批次时才看得见。
 """
 
 from __future__ import annotations

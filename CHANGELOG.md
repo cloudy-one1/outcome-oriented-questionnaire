@@ -2,7 +2,49 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [未发布]（目标 3.4.1）
+## [未发布]（目标 4.0.0）
+
+### 删除（桌面版 Tkinter 宿主退役 —— 入口从三个变成两个）
+
+- 删掉的：``gui/``（10 个文件 4631 行）、``tests/test_gui_*.py``（7 个文件 3241 行 / 190 项）、
+  ``run_gui.py``、控制台脚本 ``wjx-gui``、``conftest.py`` 的会话级 ``tk_root`` 基座。
+- 同批删掉的是**跨宿主对拍本身**：``tests/test_host_parity.py``（23 个函数 / 30 个用例）与
+  ``tests/test_weight_parser_parity.py``。它们的期望值在上一节（D-1）已经降级成 webui 单侧
+  字面量 —— 先转换再落刀，就是为了这一刀下去"这些数该是多少"仍然有人钉。
+- 跟着搬家的判据：续传确认框那 11 条（原 ``tests/test_dialogs.py`` 第 2 节，靠未绑定方法
+  调 ``SurveyGUI._apply_resumable_run``）改写成 webui 侧的 5 条（含五个字段之间的**等式**、
+  确认文案里的 Run 号与份数、续传查询按 500 字符截断键、恢复权重用整体替换）；
+  整卷 13 题的解析接线改成一条字面量用例；数据根与三条路径从"和桌面版逐条比对"
+  改成写死路径。入口 ``tests/test_webui_entry.py`` 15 → 16 项。
+- 保留的：``src/`` 全套引擎与 ``src/weight_text.py``、``src/qr_utils.py``（这两块当年就是为了
+  给两个宿主共用才从 ``gui/`` 里抽出来的）、``docs/design/DESIGN_webui.md``、以及
+  ``tests/test_history_schema_contract.py``（原 ``test_history_gui_contract.py``，改名是因为
+  它钉的是 schema 列名，与哪个宿主在消费无关）。
+
+### 迁移（从 3.x 升上来要动的三处）
+
+1. ``wjx-gui`` 与 ``python run_gui.py`` 都没了：要么 ``wjx-web`` / ``python run_web.py``
+   （浏览器里的控制台，操作一项不少），要么 CLI。数据树、``configs/`` 与 ``data/history.db``
+   的**位置与格式都没变**，老库直接接着用。
+2. ``WJX_MOTION=0`` 这个开关随桌面版一起走了 —— Web 控制台的动效由 CSS
+   ``prefers-reduced-motion`` 统一决定（系统级开关，页面兜底样式里也有一份）。
+3. 装过旧版本的话，``pip install -e .`` 重装一次才会把 ``wjx-gui`` 这个入口从脚本目录里摘掉。
+
+### 门禁与口径
+
+- 覆盖率范围从 ``--cov=src --cov=gui --cov=webui`` 收成两包；``scripts/readme_coverage.py`` 的
+  ``PACKAGES`` 是权威名单，``ci.yml`` 与它不一致会红。
+- **缺口清单不再允许"整组豁免"**：``coverage_gaps.json`` 里那条 ``group_exempt_prefix: "gui/"``
+  删掉了，于是"某个包整体低于门槛却一条理由都没登记"这种形状从此无处藏 —— 原先它
+  恰好被 gui/ 用着，那 2222 条语句的 89.5% 是靠豁免而不是靠理由过关的。
+- 测试数：离线 1735 → **1454 项**（CI 干净口径 1450 passed + 4 skipped）、浏览器 **34 项**、
+  合计 **1488 项**。删掉的大头是 190 项 GUI 用例、30 项跨宿主对拍、49 项解析器对拍
+  （其值已在别处）、13 项桌面版续传用例；这一轮补回的是 6 项 webui 侧字面量用例
+  （续传 4 + 整卷接线 1 + 入口路径 1）。
+- 覆盖率：TOTAL **93.2%**（CI 口径，两包），``src/`` 91.7%、``webui/`` 99.1%。
+  删掉低覆盖的那一整块之后总口径涨了 0.8pp —— 这不是"质量变好"，只是**分母换了**，
+  所以两口径的差（开发机比 CI 高约 0.2pp：``src/`` +0.3pp、``webui/`` 不变）与缺口清单
+  才是该盯的东西。
 
 ### 门禁（CI 红了而本地按 CI 口径全绿 —— 给这种情况装一个能读的出口）
 

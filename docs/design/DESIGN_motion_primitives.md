@@ -1,6 +1,7 @@
 # GUI 动效层（motion primitives）—— 设计稿，不含实现
 
-> 状态：**设计已逐节确认（2026-09-24），未开始实现**。
+> 状态：**已实现并已随桌面版退役（v4.0 删掉 `gui/motion.py` / `gui/ticker.py`）**。
+> 下面记的是当时那四个动效的取参与验收手法，Web 控制台里等价物由 CSS 承担。
 > 对标来源：第七个对标源 [`ibelick/motion-primitives`](https://github.com/ibelick/motion-primitives)
 > （MIT，33 个 `components/core/*.tsx` 动效原语，React + [motion](https://motion.dev/) + Tailwind CSS）。
 > **只借设计语言，不借代码** —— 它是网页组件库，本项目是 Tkinter 桌面端，没有可移植的实现。

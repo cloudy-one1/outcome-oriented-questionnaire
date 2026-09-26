@@ -18,7 +18,7 @@
 本地跑绿再交。哪一条跑不动，就在后面写清为什么，不要留空。
 
 - [ ] `python -m ruff check .`
-- [ ] `npx pyright` —— `src/` + `gui/` + 入口 0 error 0 warning，且没有新增
+- [ ] `npx pyright` —— `src/` + `webui/` + 入口 0 error 0 warning，且没有新增
       `# type: ignore` / `# pyright:`（现存条目登记在 `tests/test_ci_guards.py` 的 `BASELINE`，只准变小）
 - [ ] 离线套件 + 覆盖率地板：`pytest tests/ -m "not integration" --cov=src --cov=gui`
       过 `ci.yml` 里那个 `--cov-fail-under`（地板值只留在那一处，不手抄到别处）

@@ -66,7 +66,7 @@ VERIFICATION_TIMEOUT: int = 120
 RESTART_BROWSER_EVERY: int = 30
 
 # 说明：旧 ROUND_INTERVAL_MIN/MAX（均匀随机轮间停顿）已于 V2.4 移除——
-# CLI/GUI 现统一使用下方 ROUND_WAIT_* 高斯参数（见 gui/app.py 与 src/cli.py）。
+# CLI 与界面现统一使用下方 ROUND_WAIT_* 高斯参数（走的是 src/cli.py 那一处）。
 
 
 # ============================================================================

@@ -34,11 +34,11 @@ jobs:
         run: ruff check .
 
       - name: Type check (pyright)
-        # src/ + gui/ 都是 0 error 0 warning（v2.8 起 gui 纳入门禁、45 条清零），
-        # 所以这里直接严格失败、不设 baseline。可选依赖的动态导入已改成
-        # importlib + Any，未装 opencv / undetected-chromedriver 时也不会多出
-        # import warning —— 这条 job 的结果不再依赖装了什么额外包。
-        # 需要 Node 只为跑 pyright；GitHub runner 自带。
+        # src/ + webui/ 都是 0 error 0 warning，所以这里直接严格失败、不设 baseline
+        # （gui/ 曾于 v2.8 纳入并清零 45 条，宿主本体已在 v4.0 退役）—— 需要豁免的
+        # 门禁只是装饰。可选依赖的动态导入已改成 importlib + Any，未装 opencv /
+        # undetected-chromedriver 时也不会多出 import warning —— 这条 job 的结果
+        # 不再依赖装了什么额外包。需要 Node 只为跑 pyright；GitHub runner 自带。
         uses: jakebailey/pyright-action@v2
         with:
           project: ./pyrightconfig.json
@@ -57,7 +57,7 @@ jobs:
         # 地板按"只许上调"的规矩仍不动。
         run: >
           pytest tests/ -m "not integration"
-          --cov=src --cov=gui --cov=webui --cov-report=term-missing
+          --cov=src --cov=webui --cov-report=term-missing
           --cov-report=json:coverage.json
           --cov-fail-under=70
 

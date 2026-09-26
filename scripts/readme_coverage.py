@@ -24,7 +24,7 @@ FLOOR_RE = re.compile(r"--cov-fail-under=(\d+(?:\.\d+)?)")
 NUM_RE = re.compile(r"\d+(?:\.\d+)?%?")
 # 覆盖率口径覆盖的顶层包。**加一个包要同时改这里与 ci.yml 的 --cov 参数** ——
 # 两边不一致的后果是新代码静静落在门禁之外，而 README 的"全部"那一行看着挺健康。
-PACKAGES = ("src/", "gui/", "webui/")
+PACKAGES = ("src/", "webui/")
 
 
 def usage_fail(message: str) -> NoReturn:
@@ -170,7 +170,6 @@ def render(spec: dict[str, Any], stats: dict[str, Stat], floor: str) -> str:
     undeclared = sorted(
         name for name, stat in stats.items()
         if name not in declared
-        and not name.startswith(spec["group_exempt_prefix"])
         and stat.percent < threshold
     )
     if undeclared:
@@ -243,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.coverage.exists():
         usage_fail(
             f"FAIL: 找不到 {args.coverage}，先跑：pytest tests/ -m \"not integration\" "
-            f"--cov=src --cov=gui --cov=webui --cov-report=json"
+            f"--cov=src --cov=webui --cov-report=json"
         )
     if args.write and not args.force_env:
         extras = optional_deps_present()

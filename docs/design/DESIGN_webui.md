@@ -218,7 +218,7 @@ POST /api/shutdown           停止 + 收尾 + 退出（等价于 Tk 关窗）
    **超时之后到达的答案作废**、收尾 `cancel_all()` 叫醒等待者而不是让它干等。
    这一条修掉的实际缺陷是：纯 webui 进程里默认确认是 `popup_confirm`，它恒为 `False`，
    于是"检测到未完成批次"被**静默答成取消**。
-7. ~~删 `gui/`~~ → **推到赛后**（§11）
+7. 删 `gui/` —— **2026-09-26 做完**（用户当场推翻「推到赛后」，按 §11 的 A/B/C/D 四段走）
 8. ✅ Selenium 自测 E2E 进测试套件 + 对拍测试 + ~~CI 等价环境 `--write`~~ ——
    2026-09-25 落地：`tests/test_webui_e2e.py` 8 项进 integration（真 HTTP + 真 SSE +
    真 headless Edge，替身只有 driver 工厂与探测/答题与引擎内部的批次循环三处；
@@ -286,11 +286,22 @@ webui integration 在 `.venv-ci313` 连跑四遍全绿，且在 GitHub 的 windo
     两条顺手补出来的判据是**删 Tk 才会露出的洞**：`_QUESTION_COUNT_JS` 少一家选择器时
     只有对拍红（`test_webui_service.py` 132 项 + E2E 8 项全绿，替身返回的是写死的题数），
     而"两份抄本一致"这条判据本身随对拍一起走。
-  - **D-2 落刀**（未做）：`git rm gui/`（10 个文件 4631 行）+ `tests/test_gui_*.py`
-    （7 个文件 3241 行）+ `run_gui.py` + `tk_root` 基座，同时改 `pyproject` 的 `wjx-gui`
-    与 `packages`、`ci.yml` 的 `--cov=gui`、`readme_coverage.PACKAGES`
-    与 `coverage_gaps.json` 的 gui 组，并处理 `test_webui_entry.py` 那条
-    "拿 `gui/app.py` 当参照物"的用例。删之后是 **v4.0.0**（入口少了一个是破坏性变更）。
+  - **D-2 落刀**（已做完，2026-09-26）：`git rm gui/`（10 个文件 4631 行）+
+    `tests/test_gui_*.py`（7 个文件 3241 行 / 190 项）+ `run_gui.py` + `wjx-gui` 入口 +
+    `conftest.py` 的 `tk_root` 基座；`pyproject` 的 `packages` 与 description、`ci.yml` 与
+    `readme_coverage.PACKAGES` 的 `--cov=gui` 一起收成两包。
+    随宿主一起走的还有两份对拍：`test_host_parity.py`（30 项）与
+    `test_weight_parser_parity.py`（49 项，其规则由 `test_weight_text.py` 的字面量用例接管）。
+    落刀前先搬的判据：桌面版续传那 13 项（`test_dialogs.py` 第 2 节，靠未绑定方法调
+    `SurveyGUI._apply_resumable_run`）改写成 webui 侧 5 项 —— 含五个字段之间的**等式**、
+    确认文案里的 Run 号与份数、续传查询按 500 字符截断键、恢复权重用整体替换；
+    整卷 13 题的接线改成一条字面量用例；`test_webui_entry.py` 的「两份解析一致性」改成
+    写死路径（15 → 16 项）；`test_history_gui_contract.py` 改名
+    `test_history_schema_contract.py`（它钉的是 schema 列名，与谁在消费无关）。
+    顺手拆掉的一条机制：`coverage_gaps.json` 的 `group_exempt_prefix: "gui/"` —— 那 2222 条
+    语句的 89.5% 原本靠**整组豁免**过关而不是靠登记理由，豁免口随宿主一起删。
+    定版 **v4.0.0**（`wjx-gui` 消失是破坏性变更）；README 的桌面版一节删掉，七步用法并进
+    Web 控制台那一节。
 
 三条前提到 C 段结束时的状态：**① 按条有结论**（12 行对拍 + 4 行写明为什么不对拍）、
 **② 到位**、**③ 已改写**。所以 D 可以动 —— 但它是这一整程里唯一不可逆的一步，

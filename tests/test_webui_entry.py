@@ -1,9 +1,10 @@
-"""``wjx-web`` 入口：数据根解析与 Tk 宿主的一致性，以及启动收尾。
+"""``wjx-web`` 入口：数据根解析、路径快照与启动收尾。
 
-``webui/__main__.py`` 里的 ``user_data_root`` 是 ``gui/app.py`` 同名函数的**第二份
-实现**（5 行，但为了三个 join 去 import 一个模块级就拉起 tkinter 的宿主不划算）。
-两份实现各写一遍的代价是：指错地方时 ``configs/`` 与 ``data/`` 会分到两棵不同的树，
-而这件事只在长跑结束、去看历史库的时候才暴露。所以这里逐条比对钉住。
+``WJX_USER_DATA_DIR`` 指错地方，历史库与 ``configs/`` 就会分到两棵不同的树，
+而这件事只在长跑结束、回头去找那个批次的时候才暴露。桌面版在时这些路径靠
+"两边逐条比对"钉住（``tests/test_history_gui_contract.py`` 那个年代的同一条思路）；
+v4.0 宿主退役后，期望值改成本文件里的字面量 —— 数据树的位置从此只有一个宿主
+可以说错，说错了要能立刻读出来。
 
 另外钉住 ``_reap_orphans``：它决定了下次启动会不会提示"从早已死掉的批次继续"，
 而续传可能把同一份问卷交两遍。
@@ -18,52 +19,54 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-tk = pytest.importorskip("tkinter")  # 与 gui.app 同一道门槛：无显示 runner 上整模块跳过
-
-from gui import app as app_module  # noqa: E402
 from webui import __main__ as entry  # noqa: E402
 from webui.session import SessionPaths  # noqa: E402
 
 
-# ---------------------------------------------------------- 两份解析的一致性
+# ---------------------------------------------------------- 数据根与三条路径
 
-@pytest.mark.parametrize(
-    "case",
-    ["unset", "absolute", "relative", "empty", "whitespace"],
-)
-def test_the_two_resolvers_agree_for_every_env_shape(
-    monkeypatch, tmp_path, case
-) -> None:
-    """环境变量怎么给，两份实现都必须给出同一个绝对路径。"""
-    if case == "unset":
-        monkeypatch.delenv(entry.USER_DATA_DIR_ENV, raising=False)
-    elif case == "absolute":
+@pytest.mark.parametrize("case", ["absolute", "relative", "empty", "whitespace"])
+def test_the_env_override_is_resolved_against_the_cwd(monkeypatch, tmp_path,
+                                                     case) -> None:
+    """覆盖值一律按**当前工作目录**绝对化，而不是按包目录 —— 相对路径的含义。"""
+    default_root = entry.user_data_root()          # 还没设置环境变量：拿到默认根
+    monkeypatch.delenv(entry.USER_DATA_DIR_ENV, raising=False)
+    if case == "absolute":
         monkeypatch.setenv(entry.USER_DATA_DIR_ENV, str(tmp_path))
+        expected = str(tmp_path)
     elif case == "relative":
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv(entry.USER_DATA_DIR_ENV, "nested/deeper")
+        expected = os.path.join(str(tmp_path), "nested", "deeper")
     elif case == "empty":
         monkeypatch.setenv(entry.USER_DATA_DIR_ENV, "")
+        expected = default_root                    # 空串判假，落回默认根
     else:
         # 只含空白：``if override:`` 判真，于是绝对化成一个尾随空格的怪路径。
-        # 两份实现都得一样地"怪"，否则这里就是下一条静默分叉。
+        # 这不是"修好的行为"，是原样保留的粗笨 —— 钉住是为了它别在不知不觉中被改。
         monkeypatch.setenv(entry.USER_DATA_DIR_ENV, " ")
+        expected = os.path.abspath(" ")
+    assert entry.user_data_root() == expected
 
-    assert entry.user_data_root() == app_module.user_data_root()
+
+def test_the_default_data_root_is_the_project_tree(monkeypatch) -> None:
+    """不设环境变量时，数据根就是仓库自己那一棵树 —— 历史库与配置从此同根。"""
+    monkeypatch.delenv(entry.USER_DATA_DIR_ENV, raising=False)
+    root = entry.user_data_root()
+    assert os.path.isfile(os.path.join(root, "pyproject.toml")), root
+    assert os.path.isdir(os.path.join(root, "src")) and os.path.isdir(os.path.join(root, "webui"))
 
 
-def test_session_paths_land_on_the_same_three_files_as_the_desktop(
-    monkeypatch, tmp_path
-) -> None:
-    """配置目录 / 默认配置 / 历史库：三条路径逐条对齐 Tk 宿主。"""
+def test_session_paths_are_exactly_these_three_files(monkeypatch, tmp_path) -> None:
+    """配置目录 / 默认配置 / 历史库：三个名字写死在这儿，改了要连带迁移。"""
     monkeypatch.setenv(entry.USER_DATA_DIR_ENV, str(tmp_path))
     root = entry.user_data_root()
     paths = SessionPaths(root)
 
-    assert paths.config_dir == app_module.default_config_dir()
-    assert paths.default_config_path == app_module.default_weight_config_path()
-    assert paths.history_db_path == app_module.default_history_db_path()
-
+    assert paths.config_dir == os.path.join(root, "configs")
+    assert paths.default_config_path == os.path.join(
+        root, "configs", "default_weight_config.json")
+    assert paths.history_db_path == os.path.join(root, "data", "history.db")
 
 def test_build_session_snapshots_the_temp_tree(monkeypatch, tmp_path) -> None:
     """会话构造时读一次环境变量 —— 之后改环境变量不该挪走已开的数据树。"""
