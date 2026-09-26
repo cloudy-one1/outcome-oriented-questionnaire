@@ -135,7 +135,7 @@ class _InlineThread:
         return False
 
 
-def _tk_call(gui: SurveyGUI, form: Form) -> Call:
+def _tk_call(gui: SurveyGUI, form: Form, *, accept_resume: bool = False) -> Call:
     config_module.WEIGHT_CONFIG.clear()
     # _on_start 开头就是 `if self.running: return`，而窗口是 module 作用域复用的：
     # 上一次对拍留下的 running 会让这一次静默什么都不做（_on_run_finished 是
@@ -156,7 +156,7 @@ def _tk_call(gui: SurveyGUI, form: Form) -> Call:
         return (0, 0)
 
     def no_popup(*_a):
-        return False
+        return accept_resume
 
     dialogs.register_popup_handler(no_popup)
     original = cli_module.run_batch
@@ -554,6 +554,97 @@ def test_a_stale_running_batch_is_rejudged_the_same_way(gui_window, tmp_path,
     tk_db.close()
     web_db.close()
     svc.close_db()
+
+
+@pytest.mark.parametrize("accept", (False, True))
+def test_resume_answers_produce_the_same_state_on_both_hosts(gui_window, tmp_path,
+                                                             monkeypatch,
+                                                             accept) -> None:
+    """§4 第 10 行：续传弹窗答"是"与答"否"，两个宿主交给引擎的 state 要逐字段相同。
+
+    这两格最容易写坏，而且坏法相反：把"不续传"实现成"什么都不恢复"，用户看到的是
+    "我明明存过权重，第二次跑却像没存过"；把"续传"实现成从第 K 份（而不是 K+1）开始，
+    平台上就多出一条**收不回来**的重复回收记录。所以两个方向都要钉，且各配一条绝对值
+    断言 —— 只比"两边相等"的话，两个宿主一起错也照样绿。
+    """
+    from src.history import SubmissionHistory
+
+    form = Form()
+    restored = {1: {"type": "single", "weights": [0.2, 0.8]},
+                2: {"type": "scale", "scale": 5, "scale_min": 1,
+                    "weights": [1, 2, 3, 4, 5]}}
+    done_before = 3
+
+    def seed(path):
+        db = SubmissionHistory(path)
+        run_id = db.start_run(form.url, form.count, form.browser, form.use_uc,
+                              weight_config={k: dict(v) for k, v in restored.items()})
+        db.mark_interrupted(run_id, done_before, 0)
+        return db, run_id
+
+    tk_db, tk_prev = seed(str(tmp_path / "tk" / "history.db"))
+    web_db, _web_prev = seed(str(tmp_path / "web" / "history.db"))
+
+    tk_logs: list[tuple[str, str]] = []
+    monkeypatch.setattr(gui_window, "_log",
+                        lambda msg, tag="INFO": tk_logs.append((tag, msg)))
+    monkeypatch.setattr(gui_window, "_history_get_db", lambda: tk_db)
+    gui_window.questions[:] = []
+    gui_window.weight_entries.clear()
+    tk_call = _tk_call(gui_window, form, accept_resume=accept)
+    tk_state = tk_call.kwargs["state"]
+    tk_texts = {qi: var.get() for qi, var in gui_window.weight_entries.items()}
+
+    session = RunSession(paths=SessionPaths(str(tmp_path / "web")),
+                         availability=Availability(config_io=True, history=True,
+                                                   qr=True, selenium=True))
+    web_logs_start = len(session.log_lines)
+    seen: list[Call] = []
+    svc = WebService(session, run_batch_fn=lambda *a, **k: seen.append(Call(a, k)),
+                     history_db_cls=lambda _p: web_db,
+                     confirm=lambda _title, _message: accept, **CONFIG_IO)
+    config_module.WEIGHT_CONFIG.clear()
+    for name in ("url", "count", "browser", "use_uc", "no_record_text"):
+        session.set_field(name, getattr(form, name))
+    svc.start_run()
+    assert svc.wait_for_run(5)
+    web_state = seen[0].kwargs["state"]
+    web_texts = {int(r["q"]): r["text"] for r in session.table_rows()}
+    web_logs = [(row["tag"], row["text"])
+                for row in list(session.log_lines)[web_logs_start:]]
+    svc.close_db()
+
+    marker = "断点续传启动" if accept else "已忽略上次中断批次"
+
+    def _marked(lines):
+        return [t for tag, t in lines if marker in t]
+
+    if accept:
+        # 从"已成功 3 份"的下一份继续，只补剩下的 4 份
+        assert (tk_state.resume_start_idx, tk_state.attempts_cap) == (4, 4)
+        assert tk_state.run_id == tk_prev, "认领的必须是刚查到的那条批次"
+        assert tk_state.success_count == done_before
+    else:
+        assert (tk_state.resume_start_idx, tk_state.attempts_cap) == (1, form.count)
+        assert tk_state.run_id is None, "拒绝了续传还认领旧 run_id = 会写回同一行"
+        assert tk_state.success_count == 0
+        assert _marked(tk_logs), "没说不续传 = 用户不知道为什么又从第 1 份开始"
+
+    assert web_state.resume_start_idx == tk_state.resume_start_idx
+    assert web_state.attempts_cap == tk_state.attempts_cap
+    assert web_state.total_target == tk_state.total_target
+    assert web_state.success_count == tk_state.success_count
+    assert (web_state.run_id is None) == (tk_state.run_id is None)
+    assert web_state.weight_config_snapshot == tk_state.weight_config_snapshot, (
+        "两边交给引擎的权重快照不一样 —— 同一个配置文件在两个界面跑出两副分布")
+    assert web_texts == tk_texts, "续传恢复出来的表格文本不一样"
+    assert tk_texts[1] == "0.2000,0.8000" and sorted(tk_texts) == [1, 2]
+    assert _marked(web_logs) == _marked(tk_logs), (
+        f"webui={web_logs} 桌面版={tk_logs}")
+    tk_db.close()
+    web_db.close()
+    gui_window.questions.clear()
+    gui_window.weight_entries.clear()
 
 
 def test_the_weight_table_reaches_the_same_snapshot(gui_window, tmp_path) -> None:
