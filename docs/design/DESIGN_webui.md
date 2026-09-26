@@ -95,8 +95,9 @@ webui/static/      index.html · app.js · styles.css      ← 观感落这里
 
 - **有跨宿主对拍：12 行** —— 1 表单五字段、2 探测、3 扫码、4 配置导入导出、5 自动载入、
   6 权重解析、7 反向回填、8 开始/停止、9 进度与计数、10 续传两个答案、11 孤儿批次、
-  12 日志。都在 `tests/test_host_parity.py`（含 `test_weight_parser_parity.py`）。
-  **D-1 之后期望值另有 single 落点**：`tests/test_webui_host_contract.py` 用字面量钉住其中
+  12 日志。当时都在 `tests/test_host_parity.py`（含 `test_weight_parser_parity.py`），
+  这两份随桌面版一起在 D-2 删掉了。
+  **D-1 之后期望值有一处独立落点**：`tests/test_webui_host_contract.py` 用字面量钉住其中
   14 个对拍函数（右边不出现 `gui`），其余 9 个在 `test_webui_service.py` 早就是单侧断言 ——
   对拍那条"和那边一样"的判据随桌面版一起走，删之前必须先有这份能独立活着的记录。
   这一趟抓出三条真缺陷（`running` 没有推送通道不算在内，那是 runner 红出来的）：
@@ -184,8 +185,8 @@ POST /api/shutdown           停止 + 收尾 + 退出（等价于 Tk 关窗）
 
 ## 9. 测试与门禁
 
-- **后端**（session/service/api）纯 Python，沿用 `test_gui_run_loop.py` 的 stub driver +
-  `RecordingRoot` 那类打法，不需要浏览器。目标 ≥ Tk `app.py` 的 76%。
+- **后端**（session/service/api）纯 Python，沿用「假 driver + 记录型事件出口」那类打法
+  （stub driver、`RecordingRoot` 那一族），不需要浏览器。目标 ≥ Tk `app.py` 的 76%。
 - **对拍测试**（本轮因保留 Tk 才可能）：同一条命令分别打到 Tk 宿主与 webui 宿主，
   断言 `run_batch` 收到的 `RunState` 与回调参数一致。这是 parity 的唯一硬证据。
 - **前端**不进 Python 覆盖率，两道 gate：① `node --check` 语法门禁（先例：
