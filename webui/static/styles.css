@@ -22,7 +22,7 @@
   --term-bg: #0b0f14;
   --term-ink: #e6edf3;
 
-  /* 时长与缓动集中一处，别散进 JS —— 与桌面版 gui/motion.py 的 token 表同一个意思 */
+  /* 时长与缓动集中一处，别散进 JS —— 散开的字面量迟早会互相不一致 */
   --dur-fast: 120ms;
   --dur-base: 220ms;
   --ease-out: cubic-bezier(.22, .61, .36, 1);
@@ -470,7 +470,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: 
   .field > label { flex-basis: 96px; }
 }
 
-/* 系统要求减少动效时，一切直接落终值 —— 与桌面版 WJX_MOTION=0 同一个语义 */
+/* 系统要求减少动效时，一切直接落终值 —— 这是唯一开关（app.js 里读的是同一条） */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: .001ms !important;
