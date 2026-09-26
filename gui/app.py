@@ -150,6 +150,18 @@ def default_history_db_path() -> str:
 
 # V2.4：版本号单一真相来自 src.__version__（模块顶部 import 处已 as APP_VERSION）
 
+# 每轮结果 → 日志级别。``webui/service.py:_ROUND_LEVELS`` 是同一张表的另一份抄本
+# （宿主各留一份是刻意的，与 _QUESTION_COUNT_JS 同理）；两份会不会漂由
+# ``tests/test_host_parity.py`` 直接比字典。认不出的结果两边都退回 INFO。
+_ROUND_LEVELS: dict[str, str] = {
+    "success": "OK",
+    "failed": "FAIL",
+    "unknown": "FAIL",
+    "error": "FAIL",
+    "browser_dead": "WARN",
+    "aborted": "WARN",
+}
+
 
 # ============================================================================
 #  主题常量 + 颜色/渐变工具（7A 拆分 → gui.theme）
@@ -1524,14 +1536,7 @@ class SurveyGUI:
 
         def on_round(res) -> None:
             """每轮结束刷 UI。计数器镜像留在本线程读，Tk 控件经 after 回主线程。"""
-            level = {
-                "success": "OK",
-                "failed": "FAIL",
-                "unknown": "FAIL",
-                "error": "FAIL",
-                "browser_dead": "WARN",
-                "aborted": "WARN",
-            }.get(res.outcome, "INFO")
+            level = _ROUND_LEVELS.get(res.outcome, "INFO")
             self._log(
                 f"[{res.index}/{state.total_target}] {res.message}"
                 f"  (✓{state.success_count} ✕{state.fail_count})",

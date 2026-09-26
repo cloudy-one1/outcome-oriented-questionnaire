@@ -462,14 +462,14 @@ pip install -r requirements-dev.txt
 # 全量测试（含依赖真实浏览器驱动的 E2E）
 python -m pytest tests/ -v
 
-# 离线套件（无浏览器环境 / CI，1707 项；只装 requirements*.txt 的口径下会有若干 skip）
+# 离线套件（无浏览器环境 / CI，1709 项；只装 requirements*.txt 的口径下会有若干 skip）
 python -m pytest tests/ -m "not integration" -q
 
 # 仅浏览器 E2E（需本机 Edge / Chrome + WebDriver，33 项：25 项作答链路 + 8 项 webui 控制台）
 python -m pytest tests/ -m integration -q
 ```
 
-当前测试全部通过：**1740 项**（离线 1707 + 浏览器 33）。
+当前测试全部通过：**1742 项**（离线 1709 + 浏览器 33）。
 
 > **类型门禁不随环境变**：`src/` + `gui/` + 入口在两种环境下都是 **0 error
 > 0 warning**。三处可选依赖（`opencv-python`、`undetected_chromedriver`、`openpyxl`）
@@ -482,7 +482,7 @@ python -m pytest tests/ -m integration -q
 >
 > | 门禁 | 装齐可选依赖（开发机） | 未装（CI / 干净 venv） |
 > |---|---|---|
-> | 离线套件 | 1707 passed | 1703 passed + 4 skipped（二维码解析 2 项、`.xlsx` 真读 1 项，外加全新检出时 `coverage.json` 还不存在 —— 文档口径比对那一项也 skip，它是同一次运行**末尾**才产出的） |
+> | 离线套件 | 1709 passed | 1705 passed + 4 skipped（二维码解析 2 项、`.xlsx` 真读 1 项，外加全新检出时 `coverage.json` 还不存在 —— 文档口径比对那一项也 skip，它是同一次运行**末尾**才产出的） |
 > | 覆盖率 | 总口径比 CI 高约 0.2pp（`src/` +0.1、`gui/` +0.5、`webui/` 不变）—— 三个可选项各自改变一侧的分支走向 | 见下方「已知缺口（诚实记录）」的生成块，那是门禁认的唯一口径 |
 >
 > 覆盖率数字现在只有一个来源：`scripts/readme_coverage.py` 从 `coverage.json` 生成，
@@ -560,7 +560,7 @@ v3.0 的 4 个缺陷全是在这一层抓到的（见 CHANGELOG），离线 mock
 |---|---|
 | 全部 | **92.5%** |
 | `src/` | 92.1%（4864 条语句剩 386 行） |
-| `gui/` | 89.5%（2221 条语句剩 233 行） |
+| `gui/` | 89.5%（2222 条语句剩 233 行） |
 | `webui/` | 99.1%（1294 条语句剩 12 行） |
 
 #### 已补齐的缺口（"补齐前"一列是登记时的实测）

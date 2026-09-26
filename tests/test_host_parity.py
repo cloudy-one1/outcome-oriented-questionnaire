@@ -1021,6 +1021,67 @@ def _web_log_pairs(session) -> list[tuple[str, str]]:
     return [(row["tag"], row["text"]) for row in session.log_lines]
 
 
+ROUND_OUTCOMES = ("success", "failed", "unknown", "error", "browser_dead",
+                  "aborted", "还没定义过的结果")
+
+
+def test_the_round_outcome_tag_table_is_checked_against_the_other_copy() -> None:
+    """每轮结果用什么级别写日志，是两个宿主各抄一份的表 —— 所以必须逐键比。
+
+    抄本漂了的样子不是报错，是"同一轮失败在网页版是绿的、在桌面版是红的"，
+    而长跑几小时的人就是靠这一列颜色判断要不要停下来看的。
+    """
+    assert set(app_module._ROUND_LEVELS) == set(service_module._ROUND_LEVELS)
+    assert set(ROUND_OUTCOMES) - {"还没定义过的结果"} <= set(
+        service_module._ROUND_LEVELS), "引擎会报的结果种类没被表覆盖全"
+    assert app_module._ROUND_LEVELS == service_module._ROUND_LEVELS
+    # 认不出的结果两边都退回 INFO（谁都不许把未知当成失败）
+    assert app_module._ROUND_LEVELS.get("啥也不是", "INFO") == \
+        service_module._ROUND_LEVELS.get("啥也不是", "INFO") == "INFO"
+
+
+def test_the_same_log_stream_numbers_and_degrades_the_same_way(gui_window,
+                                                               tmp_path) -> None:
+    """§4 第 12 行：同一条消息流，两边的行号序列、时间戳形状与"不认识的 tag"处理一致。
+
+    时间戳两边都是 ``HH:MM:SS``；不认识的 tag 谁都不许丢字 —— 桌面版退成 INFO，
+    webui 保留原样交给 CSS，没有规则就落回默认色。
+    """
+    stream = [("开跑", "HEADER"), ("第 1 份成功", "OK"), ("第 2 份失败", "FAIL"),
+              ("警告", "WARN"), ("没见过的级别", "BOGUS")]
+
+    view = gui_window._log_view
+    assert view is not None, "前置：整窗构造时日志面板就该在"
+    for message, tag in stream:
+        gui_window._log(message, tag)
+    gui_window._drain_log_queue()
+    tk_text = view.log_text.get("1.0", tk.END)
+    tk_gutter = view.log_lineno.get("1.0", tk.END)
+
+    session = RunSession(paths=SessionPaths(str(tmp_path / "web")),
+                         availability=Availability(config_io=True, history=True,
+                                                   qr=True, selenium=True))
+    web_rows = [session.log(msg, tag) for msg, tag in stream]
+
+    # 队列里可能还压着构造期与前面用例留下的行，所以只比"这一段"的形状
+    cells = [c for c in tk_gutter.split("\n") if c]
+    tail = cells[-len(stream):]
+    assert [int(c) for c in tail] == list(
+        range(int(tail[0]), int(tail[0]) + len(stream))), "行号断号或重号"
+    assert all(len(c) == 4 for c in tail), f"行号列不再右对齐 4 位：{tail!r}"
+    assert len(cells) == view._lineno_count, "行号计数器和 gutter 对不上"
+    assert [r["n"] for r in web_rows] == list(range(1, 6)), "webui 的行号得从 1 连号"
+    assert (int(tail[-1]) - int(tail[0])) == (web_rows[-1]["n"] - web_rows[0]["n"]) == 4
+    for row in web_rows:
+        ts = row["ts"]
+        assert len(ts) == 8 and ts[2] == ts[5] == ":", f"时间戳形状变了：{ts!r}"
+    for message, _tag in stream:
+        assert message in tk_text, f"桌面版把 {message!r} 弄丢了"
+    assert "没见过的级别" in tk_text and "BOGUS" not in tk_text
+    assert view.log_text.tag_names(), "Tk 侧的 tag 命名表空了 = 全部退回默认色"
+    assert "BOGUS" not in view.log_text.tag_names(), "未知 tag 不该被注册成一个没配色的标签"
+
+
 def test_the_weight_table_reaches_the_same_snapshot(gui_window, tmp_path) -> None:
     """权重表 → ``weight_config_snapshot`` 这一整条，两个宿主必须给出同一份。
 

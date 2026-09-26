@@ -298,10 +298,20 @@ def _of(driver, element):
 def test_the_console_boots_and_the_sse_hello_arrives(page) -> None:
     """首帧必须带全量状态：断线重连靠它收敛，缺了就是一段永远看不到的空白。"""
     assert "本机服务已连接" in _text(page, "conn")
-    assert "Web 界面已就绪" in _text(page, "log-lines"), \
+    startup = _text(page, "log-lines")
+    assert "Web 界面已就绪" in startup, \
         "启动日志要经 SSE 落到终端，而不是只有服务端知道自己起来了"
     assert _text(page, "status-text") == "就绪"
     assert page.find_element(By.ID, "btn-stop").is_enabled() is False
+    # 终端那三件套的形状：4 位右对齐行号 + ❯ 前缀 + HH:MM:SS（桌面版 log_view 同形）
+    first_line = page.find_element(By.CSS_SELECTOR, "#log-lines .log-line")
+    assert first_line.find_element(By.CLASS_NAME, "prompt").text == "❯"
+    assert len(first_line.find_element(By.CLASS_NAME, "ts").text) == 8
+    gutter_cells = page.find_elements(By.CSS_SELECTOR, "#log-gutter div")
+    # 用 textContent 而不是 .text：gutter 的 4 位对齐是**空格**撑出来的，
+    # 而 .log-gutter 没设 white-space: pre，Selenium 的 .text 会把前导空格缩掉
+    assert gutter_cells and all(len(_of(page, c)) == 4 for c in gutter_cells), \
+        f"行号列不再右对齐 4 位：{[_of(page, c) for c in gutter_cells]!r}"
 
 
 def test_an_invalid_count_is_rejected_and_said_in_plain_words(page) -> None:

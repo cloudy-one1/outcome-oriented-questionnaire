@@ -85,7 +85,7 @@ webui/static/      index.html · app.js · styles.css      ← 观感落这里
 | 进度与成功/失败/未知计数、`displayed_round` | `app:1300-1318,1605-1611` | SSE `progress` 事件 |
 | 断点续传确认（答"否"仍保留权重恢复） | `app:1347-1418` | SSE `confirm` 事件 → 前端弹 → `POST /api/confirm` —— **对拍已钉两个方向**（答"是"= 第 K+1 份起、`attempts_cap = planned - done`；答"否"= 从第 1 份但权重照恢复），各配一条绝对值断言 |
 | 孤儿批次收尾（>60min `running` 改判 failed） | `app:272-289` | 服务启动时同一步 —— **对拍已钉**（同一份"90 分钟前的 running"，改判后的 `status` 与那句 WARN 逐字相同） |
-| 日志：8 种 tag、行号、`HH:MM:SS`、`❯` 前缀、吸底、`N lines` | `lv:28-37,191-209` | SSE `log` 事件 + 前端渲染 |
+| 日志：8 种 tag、行号、`HH:MM:SS`、`❯` 前缀、吸底、`N lines` | `lv:28-37,191-209` | SSE `log` 事件 + 前端渲染 —— **对拍已钉**（轮次结果→级别的两份表逐键比、行号连续且 4 位右对齐、时间戳形状、不认识的 tag 都不丢字） |
 | 历史 runs 8 列 / 明细 6 列 / 200 条上限 | `hp:184-234,256` | `GET /api/history/*` |
 | 导出 CSV = **两个文件**、`_answers` 后缀、`utf-8-sig`、公式注入前缀拦截 | `hp:348-402`、`hp:38-50` | `/api/history/export` 打包两个下载 |
 | 清理 7 天前（Tk 里**无确认**） | `hp:408-417` | `POST /api/history/purge` + 一次性 confirm token（§5 安全类） |
@@ -249,10 +249,10 @@ webui integration 在 `.venv-ci313` 连跑四遍全绿，且在 GitHub 的 windo
 **2026-09-26 第 7 步开工，按四段走，每段都停在可用状态**：
 
 - **A 拆耦合**（已做完）：`gui/qr_utils.py` → `src/qr_utils.py`，webui 不再 import 宿主包。
-- **B 补对拍**（进行中）：§4 每行补到"同一条命令打到两边"。已补 7 行，每补一行都在查
+- **B 补对拍**（进行中）：§4 每行补到"同一条命令打到两边"。已补 8 行，每补一行都在查
   有没有真差距 —— 只有「反向回填」那行查出**一处真缺陷**（续传时 webui 只写文本不建行，
   "已恢复到表格"那句是空的），另外三行（配置工件、开机自动载入、孤儿批次）查下来
-  两边等价，同样值得钉着。现在 **10/16** 行有对拍。
+  两边等价，同样值得钉着。现在 **11/16** 行有对拍。
 - **C 改文档**：README/CHANGELOG 改成以 webui 为主（③）。
 - **D 删**：`git rm gui/`（10 个文件 4671 行）+ `tests/test_gui_*.py`（3241 行），
   同时改 `pyproject` 的 `wjx-gui` 与 `packages`、`ci.yml` 的 `--cov=gui`、
