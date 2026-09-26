@@ -6,10 +6,12 @@
 批次跑完而历史栏仍停在上一批 —— 全都属于"语法合法、Python 全绿、而界面上不成立"。
 本仓库对这一类缺陷的既有答案就是真浏览器（v3.0 那 4 条同理）。
 
-**这里刻意用替身的只有三处**：``create_driver``、``detect_questions``，以及
-``run_batch_fn`` 那一段批次循环。真探测与真提交由 ``tests/test_e2e_integration.py``
+**这里刻意用替身的只有四处**：``create_driver``、``detect_questions``、``decode_qr``，
+以及 ``run_batch_fn`` 那一段批次循环。真探测与真提交由 ``tests/test_e2e_integration.py``
 和一次性长跑脚本覆盖 —— 它们要再开一个浏览器（引擎自己开自己的），放进 CI 的必填
-检查只会换来随机红。
+检查只会换来随机红。``decode_qr`` 换替身是因为 CI 那条 leg 不装 opencv，而扫码这条用例
+要验的是**页面上那条上传链**（选文件 → dataURL 剥前缀 → base64 → 临时文件 → URL 落进
+输入框）；真解码由 ``tests/test_qr_utils.py`` 覆盖（那里有两条真读图的用例）。
 
 替身必须照真引擎的**对外可观察行为**做（更新计数、逐轮回调 ``on_round``、逐题落
 ``answers``、在轮边界轮询 ``stop_check``、收尾按 ``RunState.history_status()`` 落库），
@@ -62,6 +64,10 @@ from webui.session import Availability, RunSession, SessionPaths  # noqa: E402
 from webui.service import WebService  # noqa: E402
 
 SURVEY_URL = "https://www.wjx.cn/vm/parity.aspx"
+
+#: 与 SURVEY_URL 刻意不同：URL 输入框最后停在哪个值上，就说明是哪个动作填的
+QR_URL = "https://www.wjx.cn/vm/qrscan.aspx"
+QR_IMAGE = ROOT / "tests" / "fixtures" / "qr_sample.png"
 
 #: 与 tests/fixtures/mock_wjx.html 同构的 13 题（真探测的覆盖在 test_e2e_integration）
 QUESTIONS: list[dict] = [
@@ -119,6 +125,7 @@ class Console:
     service: WebService
     rounds: list
     hold: dict
+    qr_seen: dict
 
 
 @pytest.fixture(scope="module")
@@ -134,6 +141,8 @@ def console():
     # 用例往这里塞钩子（``hold["after_round"] = fn``），用来把 worker 停在两轮之间
     # —— 「停止」的全部语义就是下一轮开始前看到那个 bool，不停住就没机会按。
     hold: dict = {}
+    # 扫码替身解码器往这里记它收到了什么（见下面的 decode_qr）
+    qr_seen: dict = {}
 
     def run_batch(url, total, **kw) -> None:
         """假引擎：真引擎会更新计数并回调 on_round，替身也必须这么做，
@@ -186,6 +195,18 @@ def console():
             db.finish_run(run_id, state.success_count, state.fail_count, 1.0,
                           state.history_status())
 
+    def decode_qr(path: str) -> str:
+        """替身解码器：把上传链的产物记下来，好让用例断言"字节真的原样到了"。
+
+        上传的字节要经 base64 往返，前端若没把 ``data:image/png;base64,`` 前缀剥掉，
+        这里读到的就不是 PNG 头 —— 而界面照样会显示"解析成功"，因为替身照抄返回值。
+        """
+        blob = Path(path).read_bytes()
+        qr_seen["name"] = Path(path).name
+        qr_seen["magic"] = blob[:8]
+        qr_seen["bytes"] = len(blob)
+        return QR_URL
+
     service = WebService(
         session,
         create_driver=lambda *a, **k: FakeDriver(),
@@ -194,6 +215,7 @@ def console():
         # "验证码出现了"，然后卡在等人工滑块上 —— 症状是探测永远不返回。
         is_smart_verification_showing=lambda _d: False,
         wait_for_manual_verification=lambda _d, **_k: True,
+        decode_qr=decode_qr,
         run_batch_fn=run_batch,
         settle_seconds=0.0,
         page_ready_timeout=1,
@@ -207,7 +229,7 @@ def console():
     session.log(f"Web 界面已就绪 → {server.url}", "OK")
     driver = _open_browser()
     try:
-        yield Console(server.url, driver, session, service, rounds, hold)
+        yield Console(server.url, driver, session, service, rounds, hold, qr_seen)
     finally:
         driver.quit()
         server.shutdown()
@@ -368,6 +390,35 @@ def test_an_unrelated_state_event_leaves_the_table_alone(page) -> None:
     same = page.find_element(By.CSS_SELECTOR, "#table-body input[data-q='1']")
     assert same.get_attribute("data-marker") == "kept", \
         "一条不带表变化的 state 事件把整张表重建了"
+
+
+def test_a_qr_image_picked_in_the_page_fills_the_url_field(page, console) -> None:
+    """扫码这条链，页面上曾经**根本没有入口**。
+
+    ``service.import_qr`` 与 ``POST /api/qr`` 都有测试，而 ``app.js`` 里连 "qr"
+    这个词都没出现过 —— 浏览器用例只会点页面上**存在**的按钮，所以"没有按钮"这件事
+    对离线套件与 E2E 都是隐形的。这里让真浏览器真的选一张图，一次验完四件事：
+    控件在、字节原样到了替身手里（PNG 头 + 长度）、URL 落进输入框、busy 收回去。
+
+    fixture 是一张**真能解出 QR_URL** 的二维码（不是占位图），所以人在真浏览器里
+    点同一个按钮、选同一个文件，走的是一条能真解码的路径。
+    """
+    assert QR_IMAGE.exists(), f"缺 fixture：{QR_IMAGE}"
+    box = page.find_element(By.ID, "url")
+    assert box.get_attribute("value") == SURVEY_URL, "page 夹具把 URL 预填成对照值"
+
+    page.find_element(By.ID, "file-qr").send_keys(str(QR_IMAGE))
+    WebDriverWait(page, 30).until(
+        lambda d: d.find_element(By.ID, "url").get_attribute("value") == QR_URL)
+
+    assert console.qr_seen["magic"] == b"\x89PNG\r\n\x1a\n", (
+        f"到的字节不是 PNG 头：{console.qr_seen['magic']!r} —— dataURL 的前缀没剥掉？")
+    assert console.qr_seen["bytes"] == QR_IMAGE.stat().st_size, "上传途中字节被截断"
+    assert console.qr_seen["name"] == "qr.png", "api 按原扩展名重建临时文件名"
+    lines = [row["text"] for row in console.session.log_lines]
+    assert any("正在解析二维码: qr.png" in t for t in lines), lines
+    assert any("二维码解析成功" in t for t in lines), lines
+    assert console.session.is_busy("qr") is False, "busy 没收回 = 按钮永久灰着"
 
 
 def test_a_run_drives_log_progress_and_counters_over_sse(page) -> None:

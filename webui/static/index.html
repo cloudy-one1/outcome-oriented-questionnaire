@@ -74,6 +74,11 @@
             <label class="btn btn-ghost file-btn" for="file-import">📂 导入配置
               <input type="file" id="file-import" accept=".json,application/json">
             </label>
+            <!-- 缺 opencv 时这个按钮照样能点：选好图之后由后端说"二维码模块未加载"，
+                 与设计稿 §4 第 3 行钉过的降级顺序一致（先让你选，再说缺什么）。 -->
+            <label class="btn btn-ghost file-btn" for="file-qr">📷 二维码导入
+              <input type="file" id="file-qr" accept="image/*">
+            </label>
           </div>
           <p class="field-note" id="settings-note"></p>
         </div>

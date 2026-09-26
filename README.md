@@ -183,7 +183,7 @@ python run_web.py                 # 装过本仓库后等价于 wjx-web
 终端会打印 `http://127.0.0.1:<端口>/`，浏览器打开它 —— 探测、权重表、开始 / 停止、
 历史查询都在那一页上：
 
-1. 填问卷 URL（或点「导入二维码」选一张图，地址自动解析出来）
+1. 填问卷 URL（或点 **📷 二维码导入** 选一张二维码图，地址自动解析出来）
 2. 设提交份数与浏览器类型（Edge / Chrome，Chrome 可加 UC 反检测）
 3. 点 **🔍 探测题目** 自动识别问卷结构
 4. 在权重表第 4 列按题型填权重（格式见[权重配置](#权重配置)）
@@ -452,11 +452,11 @@ python -m pytest tests/ -v
 # 离线套件（无浏览器环境 / CI，1454 项；只装 requirements*.txt 的口径下会有若干 skip）
 python -m pytest tests/ -m "not integration" -q
 
-# 仅浏览器 E2E（需本机 Edge / Chrome + WebDriver，34 项：25 项作答链路 + 9 项 webui 控制台）
+# 仅浏览器 E2E（需本机 Edge / Chrome + WebDriver，35 项：25 项作答链路 + 10 项 webui 控制台）
 python -m pytest tests/ -m integration -q
 ```
 
-当前测试全部通过：**1488 项**（离线 1454 + 浏览器 34）。
+当前测试全部通过：**1489 项**（离线 1454 + 浏览器 35）。
 
 > **类型门禁不随环境变**：`src/` + `webui/` + 入口在两种环境下都是 **0 error
 > 0 warning**。三处可选依赖（`opencv-python`、`undetected_chromedriver`、`openpyxl`）
@@ -487,7 +487,7 @@ python -m pytest tests/ -m integration -q
 | 覆盖率 | `pytest --cov=src --cov=webui --cov-fail-under=70`（权威名单是 `scripts/readme_coverage.py` 的 `PACKAGES`，`ci.yml` 与它不一致会红） | 实测值见下方「已知缺口（诚实记录）」的生成块（那个数字只能由 `scripts/readme_coverage.py` 写）；地板从本仓库 `ci.yml` 读出并随生成块一起落盘，只许上调——**v3.1 不动它**：`3.10` 那条 leg 本机量不到（这台机器只有 3.11/3.12/3.13），不拿没量过的环境赌门禁 |
 | 文档口径 | `python scripts/readme_coverage.py --check` | README 的覆盖率段落是生成物：数字漂移超过容差、缺口模块改名、低覆盖模块没登记理由，都在这里红 |
 | 类型抑制禁令 | `pytest tests/test_ci_guards.py` | `src/` + `webui/` + 入口里不许出现新的 `# type: ignore` / `# pyright:`；现存 3 处登记在 `BASELINE` 里、只准变小（v3.1 前是零登记，靠 v2.8 那批清零） |
-| E2E 阻塞性 | `pytest -m integration --junitxml=… && python scripts/e2e_gate.py … --require-file tests/test_e2e_integration.py --require-file tests/test_webui_e2e.py` | e2e job 从 v3.1 起**阻塞**：浏览器/驱动自身故障由 `tests/conftest.py` 降级成 skip，"全 skip 也算绿"由数 junit 的 `e2e_gate.py` 堵住。**堵的是整片**——"作答那 25 项跑了、webui 那 9 项全被吞成 skip"全局计数依然好看，所以两个测试文件各点一次名，缺一个就红（2026-09-25 补） |
+| E2E 阻塞性 | `pytest -m integration --junitxml=… && python scripts/e2e_gate.py … --require-file tests/test_e2e_integration.py --require-file tests/test_webui_e2e.py` | e2e job 从 v3.1 起**阻塞**：浏览器/驱动自身故障由 `tests/conftest.py` 降级成 skip，"全 skip 也算绿"由数 junit 的 `e2e_gate.py` 堵住。**堵的是整片**——"作答那 25 项跑了、webui 那 10 项全被吞成 skip"全局计数依然好看，所以两个测试文件各点一次名，缺一个就红（2026-09-25 补） |
 | 镜像构建 | `.github/workflows/docker-smoke.yml`（每周一 + 手动） | `docker build` → `wjx-fill --help` → `import src.*`，只构建不发布；**不在** push 的必填检查里，所以 Dockerfile 的口径写在它自己头上、由 `tests/test_packaging.py` 与 workflow 双向对齐 |
 
 - **`ruff.toml`** 启用 `E9/F63/F7/F82` + `F401/F841/F541`。后三条是刻意加的零误报

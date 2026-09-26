@@ -17,6 +17,31 @@
   可驱动**、清空历史要 `purge_preview` 认范围再带一次性凭据 `purge_confirm`。
   据此把"端口挪出回环"定性为配置风险而不是实现漏洞。
 
+### 修复（Web 控制台里根本没有「扫码」这个入口）
+
+- 用户看着界面问出来的：「为什么没有扫码的选项」。查下来后端整条链都在 ——
+  ``POST /api/qr``（base64 收图、写进自己建的临时目录、用完删）、
+  ``WebService.import_qr``（缺 opencv 给"二维码模块未加载"、解不出来不动你已填的 URL）、
+  ``src/qr_utils.py`` —— 唯独 ``webui/static/`` 里连 ``qr`` 这个词都没出现过，
+  页面上只有一个 ``accept=".json"`` 的导入配置输入框。
+- 为什么一层门禁都没拦住：§4 第 3 行那条对拍打到的是 service 与 HTTP 两层，
+  而浏览器用例只会点页面上**存在**的按钮。"控件缺失"这个形状对
+  1454 项离线用例和 34 项浏览器用例都是隐形的 —— 与"文案指向已删除的宿主"同一类，
+  只能靠真的看一眼界面。
+- 补的是那一段：``index.html`` 加 **📷 二维码导入** 与一个 ``accept="image/*"``
+  的隐藏 input（与「📂 导入配置」同一个形状），``app.js`` 里 ``FileReader`` 读成
+  dataURL、**剥掉 ``data:image/png;base64,`` 前缀**再 POST（8MB 的整条请求体上限
+  是按请求算的，手机拍的图本来就不小）。
+  **刻意不按 ``availability.qr`` 置灰**：§4 钉过的降级顺序是"缺 opencv 也让你选，
+  选完才说缺什么"，置灰等于把这条改回去。
+- 新增浏览器用例 ``test_a_qr_image_picked_in_the_page_fills_the_url_field``：真选一张
+  **能解出目标链接**的二维码图（``tests/fixtures/qr_sample.png``，OpenCV 的
+  ``QRCodeEncoder`` 生成并回读验证过），断言控件在、到的字节仍是 PNG 头且长度一致、
+  URL 落进输入框、``busy`` 收回去。解码器在本文件里是替身（CI 那条 leg 不装 opencv），
+  所以"用替身的地方"从三处改成四处，真解码仍由 ``tests/test_qr_utils.py`` 那两条负责。
+- 两条反向验证：删掉 ``app.js`` 里那个 change 监听 → 用例红；从 ``index.html`` 删掉按钮
+  → 用例报错。本文件模块文档里"只有三处替身"那句同步改掉。
+
 ## [4.0.0] - 2026-09-26
 
 ### 删除（桌面版 Tkinter 宿主退役 —— 入口从三个变成两个）

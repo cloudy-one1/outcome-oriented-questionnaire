@@ -34,7 +34,7 @@
   function cacheElements() {
     ["url", "count", "count-minus", "count-plus", "browser", "use-uc",
      "no-record-text", "btn-detect", "btn-export", "btn-save-default",
-     "file-import", "settings-note", "table", "table-body", "table-empty",
+     "file-import", "file-qr", "settings-note", "table", "table-body", "table-empty",
      "table-meta", "status", "status-text", "line-count", "log-scroll",
      "log-gutter", "log-lines", "btn-run", "btn-stop", "pct", "rounds",
      "progress", "progress-fill", "ok-count", "fail-count", "conn",
@@ -637,6 +637,25 @@
           .catch(fail);
       };
       reader.readAsText(file, "utf-8");
+      ev.target.value = "";
+    });
+    els["file-qr"].addEventListener("change", function (ev) {
+      var file = ev.target.files && ev.target.files[0];
+      if (!file) { return; }
+      var reader = new FileReader();
+      reader.onload = function () {
+        var data = String(reader.result);
+        var comma = data.indexOf(",");
+        // dataURL 的前缀在这里就剥掉：8MB 的请求体上限是按整条请求算的，
+        // 一张手机拍的二维码本来就不小。
+        api("/api/qr", {
+          filename: file.name,
+          image_base64: comma >= 0 ? data.slice(comma + 1) : data
+        })
+          .then(function (r) { render(r.state); showNote(""); })
+          .catch(fail);
+      };
+      reader.readAsDataURL(file);
       ev.target.value = "";
     });
     document.addEventListener("keydown", function (ev) {
