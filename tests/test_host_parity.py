@@ -41,6 +41,7 @@ from src.weight_text import reconstruct_questions  # noqa: E402
 from src import config as config_module  # noqa: E402
 from src import dialogs  # noqa: E402
 from webui.session import Availability, RunSession, SessionPaths  # noqa: E402
+from webui import service as service_module  # noqa: E402
 from webui.service import WebService  # noqa: E402
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -645,6 +646,379 @@ def test_resume_answers_produce_the_same_state_on_both_hosts(gui_window, tmp_pat
     web_db.close()
     gui_window.questions.clear()
     gui_window.weight_entries.clear()
+
+
+DETECT_URL = "https://www.wjx.test/vm/parity-detect.aspx"
+
+PROBE_QUESTIONS = [
+    {"q": 1, "type": "single", "title": "浏览器", "choices": ["Edge", "Chrome", "其他"]},
+    {"q": 2, "type": "scale", "title": "满意度", "scale": 5, "scale_min": 1},
+    {"q": 3, "type": "text", "title": "手机", "field": "phone"},
+    {"q": 4, "type": "matrix_multi", "title": "关注点", "rows": ["1", "2"],
+     "cols": ["a", "b"]},
+]
+
+
+class _FakeDriver:
+    """同一台假浏览器喂两个宿主。``counts`` 按"主文档、iframe 0、iframe 1…"排。"""
+
+    class _Switch:
+        def __init__(self, owner):
+            self.owner = owner
+
+        def default_content(self) -> None:
+            self.owner.frame = None
+
+        def frame(self, index) -> None:
+            self.owner.frame = int(index)
+
+    def __init__(self, counts=(), ready="complete", script_error=None):
+        self.counts = list(counts)
+        self.ready = ready
+        self.frame = None
+        self.visited: list[str] = []
+        self.quit_calls = 0
+        self.detect_frame: object = "unset"
+        self.script_error = script_error
+        self.switch_to = _FakeDriver._Switch(self)
+
+    def get(self, url) -> None:
+        self.visited.append(url)
+
+    def execute_script(self, js, *_a):
+        if self.script_error:
+            raise self.script_error
+        if "readyState" in js:
+            return self.ready
+        if "iframe" in js:
+            return max(0, len(self.counts) - 1)
+        idx = 0 if self.frame is None else self.frame + 1
+        return self.counts[idx] if idx < len(self.counts) else 0
+
+    def quit(self) -> None:
+        self.quit_calls += 1
+
+
+def _tk_detect(gui, monkeypatch, driver, *, questions=None, showing=False,
+               wait_ok=True, create_error=None,
+               import_first: str | None = None) -> list[tuple[str, str]]:
+    """桌面版探测：线程、``root.after`` 与四个可选导入都换成可控件，返回日志。
+
+    开头清一次全局 ``WEIGHT_CONFIG`` —— 不清的话这个模块里前一条用例载入的配置会漏进来，
+    而 ``populate`` 的默认值正是从那份全局取的，两侧"预填不一样"就变成测试自身的假象。
+    """
+    from gui import controller as ctl
+
+    config_module.WEIGHT_CONFIG.clear()
+    logs: list[tuple[str, str]] = []
+    monkeypatch.setattr(gui, "_log",
+                        lambda msg, tag="INFO": logs.append((tag, msg)))
+    monkeypatch.setattr(gui.root, "after",
+                        lambda _delay, fn=None: fn() if fn else None)
+    if create_error is not None:
+        def _boom(*_a, **_k):
+            raise create_error
+        monkeypatch.setattr(ctl, "create_driver", _boom)
+    else:
+        monkeypatch.setattr(ctl, "create_driver", lambda *_a, **_k: driver)
+    def _tk_detect_questions(_d):
+        _d.detect_frame = _d.frame      # 记录"在哪个帧里读的题"
+        return [dict(q) for q in (questions or [])]
+
+    monkeypatch.setattr(ctl, "detect_questions", _tk_detect_questions)
+    monkeypatch.setattr(ctl, "is_smart_verification_showing", lambda _d: showing)
+    monkeypatch.setattr(ctl, "wait_for_manual_verification",
+                        lambda _d, **_k: wait_ok)
+    monkeypatch.setattr(ctl.threading, "Thread", _InlineThread)
+    gui.url_var.set(DETECT_URL)
+    gui.questions[:] = []
+    gui.weight_entries.clear()
+    if import_first is not None:
+        gui._on_load_config(import_first)     # 真实顺序：先导入配置，再探测
+    gui._on_detect_questions()
+    return logs
+
+
+def _web_detect(monkeypatch, tmp_path, driver, *, questions=None, showing=False,
+                wait_ok=True, create_error=None,
+                import_first: str | None = None):
+    """webui 侧同一套注入：``spawn`` 换成就地执行，超时与停顿都设成 0。"""
+    session = RunSession(paths=SessionPaths(str(tmp_path / "web")),
+                         availability=Availability(config_io=True, history=True,
+                                                   qr=True, selenium=True))
+    config_module.WEIGHT_CONFIG.clear()     # 与桌面版同一前置
+    if create_error is not None:
+        def _boom(*_a, **_k):
+            raise create_error
+        create = _boom
+    else:
+        create = lambda *_a, **_k: driver      # noqa: E731
+    def _web_detect_questions(_d):
+        _d.detect_frame = _d.frame      # 与桌面版同一处记录点
+        return [dict(q) for q in (questions or [])]
+
+    svc = WebService(session, create_driver=create,
+                     detect_questions=_web_detect_questions,
+                     is_smart_verification_showing=lambda _d: showing,
+                     wait_for_manual_verification=lambda _d, **_k: wait_ok,
+                     spawn=lambda fn: fn(), settle_seconds=0.0, sleeper=lambda _s: None,
+                     page_ready_timeout=1, question_ready_timeout=1,
+                     history_db_cls=lambda _p: None, **CONFIG_IO)
+    session.set_field("url", DETECT_URL)
+    if import_first is not None:
+        svc.import_config(import_first)     # 真实顺序：先导入配置，再探测
+    svc.detect_questions()
+    logs = [(row["tag"], row["text"]) for row in session.log_lines]
+    return session, svc, logs
+
+
+def _texts_from_tk(gui) -> dict[int, str]:
+    return {qi: var.get() for qi, var in gui.weight_entries.items()}
+
+
+def _texts_from_web(session) -> dict[int, str]:
+    return {int(r["q"]): r["text"] for r in session.table_rows()}
+
+
+PROBE_PRESET = {
+    1: {"type": "single", "weights": [0.2, 0.3, 0.5]},
+    2: {"type": "scale", "scale": 5, "scale_min": 1, "weights": [5, 4, 3, 2, 1]},
+    3: {"type": "text", "field": "phone", "options": ["13800000000"]},
+    4: {"type": "matrix_multi", "rows": ["1", "2"], "cols": ["a", "b"],
+        "row_weights": {"1": [1, 2], "2": [3, 4]}},
+}
+
+
+@pytest.mark.parametrize("with_config", (False, True))
+def test_both_hosts_land_the_same_table_after_detecting(gui_window, monkeypatch,
+                                                        tmp_path,
+                                                        with_config) -> None:
+    """§4 第 2 行：探测回流 + 预填。同一台假 driver、同一份探测结果，表必须一模一样。
+
+    两种前置各跑一遍：空配置（预填=等权重）与**先导入一份配置再探测**（预填=那份配置）。
+    后半截是这条用例的价值所在 —— 两侧的预填走的是两条代码：桌面版在 ``populate`` 里
+    按全局 ``WEIGHT_CONFIG`` 算，webui 按 ``weight_texts`` 里记住的串。差一格的样子不是
+    报错，是"我明明载入了配置，探完之后表上又变回等权重"，而点开始时表会被重新解析
+    并整体写回全局 —— 那份配置就真的没了。
+    """
+    from src.config_io import save_weight_config
+
+    import_file = None
+    if with_config:
+        import_file = str(tmp_path / "preset.json")
+        save_weight_config(import_file, {k: dict(v) for k, v in PROBE_PRESET.items()},
+                           meta={"name": "preset"})
+
+    driver = _FakeDriver(counts=[len(PROBE_QUESTIONS)])
+    tk_logs = _tk_detect(gui_window, monkeypatch, driver,
+                         questions=PROBE_QUESTIONS, import_first=import_file)
+    tk_questions = [dict(q) for q in gui_window.questions]
+    tk_texts = _texts_from_tk(gui_window)
+    tk_quit = driver.quit_calls
+
+    web_driver = _FakeDriver(counts=[len(PROBE_QUESTIONS)])
+    session, svc, web_logs = _web_detect(monkeypatch, tmp_path, web_driver,
+                                         questions=PROBE_QUESTIONS,
+                                         import_first=import_file)
+    svc.close_db()
+
+    assert [dict(q) for q in session.questions] == tk_questions, "回流的题目表不一样"
+    assert _texts_from_web(session) == tk_texts, "探测回流的预填串不一样"
+    assert tk_texts[1] == ("0.2000,0.3000,0.5000" if with_config
+                           else "0.3333,0.3333,0.3333")
+    assert tk_texts[2] == ("5.0000,4.0000,3.0000,2.0000,1.0000" if with_config
+                           else "1,1,1,1,1")
+    assert tk_texts[4] == ("1:1,2 | 2:3,4" if with_config else "")
+    assert [t for _tag, t in web_logs][-2:] == [t for _tag, t in tk_logs][-2:], (
+        "探测完成那两句总结（题数与题型分布）是用户判断探对没探对的唯一依据")
+    assert web_driver.quit_calls == tk_quit == 1, "探测收尾必须关浏览器，且只关一次"
+    gui_window.questions.clear()
+    gui_window.weight_entries.clear()
+
+
+def test_questions_are_found_inside_an_iframe_on_both_hosts(gui_window, monkeypatch,
+                                                            tmp_path) -> None:
+    """iframe 兜底：主文档 0 题、第一个 iframe 有题。
+
+    真正要比的是**在哪个帧里读的题**：读错帧就是"探测成功但题是空的"，
+    而探完之后两边都会切回主文档（收尾动作一致，不是这条的看点）。
+    """
+    tk_driver = _FakeDriver(counts=[0, 2])
+    _tk_detect(gui_window, monkeypatch, tk_driver, questions=PROBE_QUESTIONS[:2])
+
+    web_driver = _FakeDriver(counts=[0, 2])
+    session, svc, _logs = _web_detect(monkeypatch, tmp_path, web_driver,
+                                      questions=PROBE_QUESTIONS[:2])
+    svc.close_db()
+    assert (tk_driver.detect_frame, web_driver.detect_frame) == (0, 0), (
+        "没在命中的 iframe 里读题 = 探到了主文档的空气")
+    assert tk_driver.frame == web_driver.frame is None, "收尾都得切回主文档"
+    assert len(session.questions) == len(gui_window.questions) == 2
+    gui_window.questions.clear()
+    gui_window.weight_entries.clear()
+
+
+def test_no_question_elements_anywhere_fails_the_same_way(gui_window, monkeypatch,
+                                                          tmp_path) -> None:
+    """主文档与所有 iframe 都没有题：一句"未能在页面中找到题目元素"，两边都得说。"""
+    tk_logs = _tk_detect(gui_window, monkeypatch, _FakeDriver(counts=[0]),
+                         questions=[])
+    _session, _svc, web_logs = _web_detect(monkeypatch, tmp_path,
+                                           _FakeDriver(counts=[0]), questions=[])
+    assert [t for tag, t in web_logs if "未能在页面中找到题目元素" in t] == \
+        [t for tag, t in tk_logs if "未能在页面中找到题目元素" in t]
+    assert gui_window.questions == [] and _session.questions == []
+    assert "探测完成" not in "".join(t for _tag, t in web_logs), "探不到题却报成功"
+
+
+def test_a_verification_timeout_stops_the_probe_on_both_hosts(gui_window, monkeypatch,
+                                                              tmp_path) -> None:
+    """滑块没做完：两边都停在这里，且不落任何题目。"""
+    tk_logs = _tk_detect(gui_window, monkeypatch, _FakeDriver(counts=[3]),
+                         questions=PROBE_QUESTIONS, showing=True, wait_ok=False)
+    _session, svc, web_logs = _web_detect(monkeypatch, tmp_path,
+                                          _FakeDriver(counts=[3]),
+                                          questions=PROBE_QUESTIONS,
+                                          showing=True, wait_ok=False)
+    svc.close_db()
+    assert [t for t in (x for _g, x in web_logs) if "验证超时" in t] == \
+           [t for _g, t in tk_logs if "验证超时" in t]
+    assert gui_window.questions == [] and _session.questions == []
+    assert "探测完成" not in "".join(t for _tag, t in tk_logs)
+
+
+def test_a_driver_that_never_started_is_reported_the_same_way(gui_window, monkeypatch,
+                                                              tmp_path) -> None:
+    """driver 起不来：两边都只报一行，不 stack、不落题、不谎报成功。"""
+    boom = RuntimeError("浏览器启动失败")
+    tk_logs = _tk_detect(gui_window, monkeypatch, _FakeDriver(counts=[3]),
+                         questions=PROBE_QUESTIONS, create_error=boom)
+    _session, svc, web_logs = _web_detect(monkeypatch, tmp_path,
+                                          _FakeDriver(counts=[3]),
+                                          questions=PROBE_QUESTIONS,
+                                          create_error=boom)
+    svc.close_db()
+
+    def _failed(lines):
+        return [t for tag, t in lines if t.startswith("探测失败")]
+
+    assert len(_failed(tk_logs)) == len(_failed(web_logs)) == 1
+    assert _failed(tk_logs)[0].split(":")[0] == _failed(web_logs)[0].split(":")[0]
+    assert "浏览器启动失败" in _failed(tk_logs)[0]
+    assert gui_window.questions == [] and _session.questions == []
+
+
+def test_the_probe_js_and_type_labels_are_one_copy_not_two() -> None:
+    """``_QUESTION_COUNT_JS`` 与 ``_TYPE_LABELS`` 是**刻意复制**的两份（service.py 顶部
+    写了理由：不 import gui 那份）。复制就有漂的风险，而漂的样子是"网页版把矩阵数成
+    单选题" —— 所以这里直接比那两个常量本身。
+    """
+    from gui import controller as tk_ctl
+
+    assert tk_ctl._QUESTION_COUNT_JS == service_module._QUESTION_COUNT_JS
+    assert tk_ctl._TYPE_LABELS == service_module._TYPE_LABELS
+
+
+def test_a_missing_qr_module_refuses_before_the_picker_on_both_hosts(
+    gui_window, monkeypatch, tmp_path
+) -> None:
+    """§4 第 3 行：二维码模块整个没加载（import 失败）→ 先拒绝、不开选择框。
+
+    注意这与"装了模块但没装 opencv"是两件事：后者**必须**照旧开选择框、选完才提示缺依赖
+    （那条顺序钉在 ``tests/test_qr_utils.py``，因为两个宿主共用同一个解码函数）。
+    """
+    from gui import controller as ctl
+
+    asked: list[str] = []
+    monkeypatch.setattr(ctl, "decode_qr_from_image", None)
+    dialogs.register_file_picker(lambda kind, _o: asked.append(kind) or None)
+    logs: list[tuple[str, str]] = []
+    monkeypatch.setattr(gui_window, "_log",
+                        lambda msg, tag="INFO": logs.append((tag, msg)))
+    monkeypatch.setattr(gui_window, "_history_get_db", lambda: None)
+    try:
+        gui_window._on_import_qr()
+    finally:
+        dialogs.register_file_picker(None)
+
+    session, svc = _qr_session(tmp_path, decode=None)
+    svc.import_qr("whatever.png")
+    web_logs = _web_log_pairs(session)
+    svc.close_db()
+
+    assert asked == [], "模块没加载还开选择框 = 让人白选一遍文件"
+    assert [t for _tag, t in web_logs if "二维码模块未加载" in t] == \
+        [t for _tag, t in logs if "二维码模块未加载" in t], (
+        f"webui={web_logs} 桌面版={logs}")
+
+
+def test_a_decoded_qr_lands_in_the_url_field_on_both_hosts(gui_window, monkeypatch,
+                                                           tmp_path) -> None:
+    """解出 URL：两边都写进字段、都说同一句成功话。"""
+    url = "https://www.wjx.test/vm/scanned.aspx"
+    from gui import controller as ctl
+
+    monkeypatch.setattr(ctl, "decode_qr_from_image", lambda _p: url)
+    monkeypatch.setattr(ctl.threading, "Thread", _InlineThread)
+    dialogs.register_file_picker(lambda _k, _o: "Z:/qr.png")
+    logs: list[tuple[str, str]] = []
+    monkeypatch.setattr(gui_window, "_log",
+                        lambda msg, tag="INFO": logs.append((tag, msg)))
+    try:
+        gui_window._on_import_qr()
+    finally:
+        dialogs.register_file_picker(None)
+    assert gui_window.url_var.get() == url
+
+    session, svc = _qr_session(tmp_path, decode=lambda _p: url)
+    svc.import_qr("qr.png")
+    web_logs = _web_log_pairs(session)
+    svc.close_db()
+    assert session.url == url
+    assert [t for _tag, t in web_logs if "解析成功" in t] == \
+        [t for _tag, t in logs if "解析成功" in t], (
+        f"webui={web_logs} 桌面版={logs}")
+
+
+def test_an_unreadable_qr_says_the_same_thing_on_both_hosts(gui_window, monkeypatch,
+                                                            tmp_path) -> None:
+    from gui import controller as ctl
+
+    monkeypatch.setattr(ctl, "decode_qr_from_image", lambda _p: None)
+    dialogs.register_file_picker(lambda _k, _o: "Z:/qr.png")
+    logs: list[tuple[str, str]] = []
+    url_before = gui_window.url_var.get()
+    monkeypatch.setattr(gui_window, "_log",
+                        lambda msg, tag="INFO": logs.append((tag, msg)))
+    try:
+        gui_window._on_import_qr()
+    finally:
+        dialogs.register_file_picker(None)
+
+    session, svc = _qr_session(tmp_path, decode=lambda _p: None)
+    svc.import_qr("qr.png")
+    web_logs = _web_log_pairs(session)
+    svc.close_db()
+
+    assert [t for _tag, t in web_logs if "未识别到二维码内容" in t] == \
+        [t for _tag, t in logs if "未识别到二维码内容" in t]
+    assert gui_window.url_var.get() == url_before
+    assert session.url == DETECT_URL, "解不出来却改字段 = 把用户原来的 URL 弄丢"
+
+
+def _qr_session(tmp_path, *, decode):
+    session = RunSession(paths=SessionPaths(str(tmp_path / "web")),
+                         availability=Availability(config_io=True, history=True,
+                                                   qr=True, selenium=True))
+    svc = WebService(session, decode_qr=decode, spawn=lambda fn: fn(),
+                     history_db_cls=lambda _p: None)
+    session.set_field("url", DETECT_URL)
+    return session, svc
+
+
+def _web_log_pairs(session) -> list[tuple[str, str]]:
+    """日志要在**动作之后**读：构造时抓的那一份永远不会长出新的行。"""
+    return [(row["tag"], row["text"]) for row in session.log_lines]
 
 
 def test_the_weight_table_reaches_the_same_snapshot(gui_window, tmp_path) -> None:

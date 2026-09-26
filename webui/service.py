@@ -289,12 +289,20 @@ class WebService:
         # 本份没有的题号静默残留，于是"载入配置"的结果取决于你之前载入过什么。
         apply_weight_config(cfg, replace=True)
 
-        synced = 0
+        # 第 4 列**按配置里的键逐个覆盖，其余行不动** —— 与桌面版同一条语义
+        # （全局是 replace，表上是逐键覆盖；表上没有行的题号也要记下，因为紧接着
+        # 「探测题目」会按行取用。对拍抓到的就是这一格：只写已有的行 = 新会话里
+        # 什么都没写进去，探完之后等权重预填把刚导入的配置盖掉）。
+        texts: dict[int, str] = {}
         for qi, qcfg in cfg.items():
+            if not isinstance(qcfg, dict):
+                continue
             rendered = format_weights_for_entry(qcfg)
-            if qi in self.session.weight_texts and rendered:
-                self.session.weight_texts[qi] = rendered
-                synced += 1
+            if rendered:
+                texts[int(qi)] = rendered
+        self.session.set_weight_texts(texts)
+        known = {int(q["q"]) for q in self.session.questions if "q" in q}
+        synced = sum(1 for qi in texts if qi in known)
         meta_name = meta.get("name") or os.path.basename(path)
         self._log(
             f"✓ 已载入「{meta_name}」· 配置 {len(cfg)} 道 · 同步到表格 {synced} 道",

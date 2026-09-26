@@ -767,7 +767,14 @@ def test_import_replaces_the_global_config_rather_than_merging(session, tmp_path
     assert any(t == "OK" and "我的配置" in x for t, x in logs_of(sess))
 
 
-def test_import_syncs_only_questions_that_are_on_the_table(session, tmp_path):
+def test_import_covers_existing_rows_and_remembers_the_rest(session, tmp_path):
+    """导入配置：表上有的行按配置覆盖，**表上没有的题号也先记下**。
+
+    只写已有行是 v3.4 对拍抓到的一条真缺陷：新会话里表是空的 → 等于什么都没写进去，
+    紧接着「探测题目」按等权重预填，点开始时那份表又被重新解析写回全局 —— 刚导入的
+    配置静默消失。桌面版不走这条路，它的预填直接读全局 ``WEIGHT_CONFIG``。
+    那句"同步到表格 N 道"仍然只数表上有的行，与桌面版逐字同口径。
+    """
     sess, _ = session
     cfg_file = tmp_path / "w.json"
     cfg_file.write_text("{}", encoding="utf-8")
@@ -778,8 +785,9 @@ def test_import_syncs_only_questions_that_are_on_the_table(session, tmp_path):
                          7: {"type": "single", "weights": [1, 1]}}, {}),
     ).import_config(str(cfg_file))
     assert sess.weight_texts[1] == "0.2500,0.7500"
-    assert sess.weight_texts[2] == ""
-    assert 7 not in sess.weight_texts
+    assert sess.weight_texts[2] == "", "配置里没有第 2 题 → 表上那行不该被改成别的"
+    assert sess.weight_texts[7] == "1.0000,1.0000", "没行的题号要留下，探测回流时要用"
+    assert [r["q"] for r in sess.table_rows()] == [1, 2], "记下不等于凭空多出一行"
     assert any("同步到表格 1 道" in x for _, x in logs_of(sess))
 
 
