@@ -26,6 +26,7 @@
   var fieldTimers = {};
   var weightTimer = null;
   var runsLoaded = false;
+  var tableSig = "";
   var shownConfirmId = null;
 
   function $(id) { return document.getElementById(id); }
@@ -256,6 +257,16 @@
   }
 
   function renderTable(rows) {
+    // 同一张表不重建。表是"服务端推什么就长什么样"，而服务端在一批事件里会推两次
+    // 同样的行（探测的 questions 事件 + 紧随其后的 state 快照）：重建会吃掉焦点与
+    // 敲到一半的文本，还会把逐行入场动画重播一遍。
+    var sig = "";
+    for (var n = 0; n < rows.length; n++) {
+      var r = rows[n];
+      sig += "\u0001" + [r.q, r.type, r.n, r.label, r.text].join("\u0002");
+    }
+    if (sig === tableSig) { return; }
+    tableSig = sig;
     var body = els["table-body"];
     body.textContent = "";
     els["table-empty"].hidden = rows.length > 0;

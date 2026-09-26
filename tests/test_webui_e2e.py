@@ -345,6 +345,31 @@ def test_detecting_fills_the_weight_table_and_the_card_counter_together(
         By.CSS_SELECTOR, "#table-body .table-row:nth-child(10)"))
 
 
+def test_an_unrelated_state_event_leaves_the_table_alone(page) -> None:
+    """与表无关的一次状态刷新，不该把整张权重表换成新的 DOM 节点。
+
+    探测之后服务端还会推整份 state（表内容一样），而 ``renderTable`` 原先无条件
+    ``textContent = ""`` 再重建：真跑整条 integration leg 时约三次里中一次
+    ``StaleElementReferenceException``（单独跑这个文件永远绿），浏览器里同一件事
+    的形态是"敲到一半的格子被换回服务端的值、焦点掉了、入场动画重播一遍"。
+    """
+    page.find_element(By.ID, "btn-detect").click()
+    WebDriverWait(page, 60).until(
+        lambda d: len(d.find_elements(
+            By.CSS_SELECTOR, "#table-body .table-row")) >= 13)
+    box = page.find_element(By.CSS_SELECTOR, "#table-body input[data-q='1']")
+    page.execute_script("arguments[0].dataset.marker = 'kept';", box)
+
+    before = page.find_element(By.ID, "no-record-text").is_selected()
+    page.find_element(By.ID, "no-record-text").click()
+    WebDriverWait(page, 20).until(
+        lambda d: d.find_element(By.ID, "no-record-text").is_selected() != before)
+
+    same = page.find_element(By.CSS_SELECTOR, "#table-body input[data-q='1']")
+    assert same.get_attribute("data-marker") == "kept", \
+        "一条不带表变化的 state 事件把整张表重建了"
+
+
 def test_a_run_drives_log_progress_and_counters_over_sse(page) -> None:
     """点下去的是真按钮，走的是真 worker 线程 + 真 SSE；只有引擎是替身。"""
     _run_a_batch(page)
