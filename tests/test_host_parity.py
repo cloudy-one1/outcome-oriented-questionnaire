@@ -1082,6 +1082,63 @@ def test_the_same_log_stream_numbers_and_degrades_the_same_way(gui_window,
     assert "BOGUS" not in view.log_text.tag_names(), "未知 tag 不该被注册成一个没配色的标签"
 
 
+PROGRESS_CASES = [
+    # (resume_start_idx, current_attempt, success, fail, total)
+    (1, 0, 0, 0, 7),      # 全新批次、还没跑第 1 次
+    (4, 0, 3, 0, 7),      # 续传批次、还没跑第 1 次 —— 该显示第 4 份，不是第 1 也不是第 3
+    (4, 1, 3, 0, 7),
+    (4, 2, 4, 1, 7),
+    (1, 7, 5, 2, 7),      # 跑完
+    (1, 0, 0, 0, 0),      # 总数为 0：不许除零
+]
+
+
+@pytest.mark.parametrize("case", PROGRESS_CASES)
+def test_the_progress_numbers_agree_on_both_hosts(gui_window, tmp_path,
+                                                  case) -> None:
+    """§4 第 9 行：进度条上那几个数怎么算，两边是**同一条规则的两份抄本**。
+
+    规则是"还没跑第 1 次就显示起点，否则显示 ``resume_start_idx + current_attempt - 1``"。
+    抄本漂了的样子不是报错，是"网页版的进度条比桌面版多一份 / 续传时从第 3 份开始显示"
+    —— 而长跑几小时的人就是靠这个数字判断还剩多久、要不要停。
+    """
+    from src.models import RunState
+
+    resume_start_idx, current_attempt, success, fail, total = case
+    state = RunState(
+        attempts_cap=total, total_target=total, resume_start_idx=resume_start_idx,
+        browser="edge", use_uc=False, survey_url="https://www.wjx.test/vm/p.aspx",
+    )
+    state.current_attempt = current_attempt
+    state.success_count = success
+    state.fail_count = fail
+
+    gui_window._state = state
+    gui_window._sync_ui_mirrors_from_state()
+    gui_window._update_progress()
+    tk_shown = (gui_window.current_round, gui_window.total_rounds,
+                gui_window.success_count, gui_window.fail_count)
+    tk_label = gui_window.progress_text_var.get()
+
+    session = RunSession(paths=SessionPaths(str(tmp_path / "web")),
+                         availability=Availability(config_io=True, history=True,
+                                                  qr=True, selenium=True))
+    svc = WebService(session, run_batch_fn=lambda *_a, **_k: None,
+                     history_db_cls=lambda _p: None)
+    svc._state = state
+    svc._sync_progress()
+    web_shown = (session.current_round, session.total_rounds,
+                 session.success_count, session.fail_count)
+    counts = session.snapshot()["counts"]
+    svc.close_db()
+
+    assert web_shown == tk_shown, f"{case}：两边显示的数不一样 {tk_shown} vs {web_shown}"
+    assert tk_label == f"{tk_shown[0]} / {tk_shown[1]}"
+    assert counts["round"] == tk_shown[0] and counts["total"] == tk_shown[1]
+    gui_window._state = None
+    gui_window.running = False
+
+
 def test_the_weight_table_reaches_the_same_snapshot(gui_window, tmp_path) -> None:
     """权重表 → ``weight_config_snapshot`` 这一整条，两个宿主必须给出同一份。
 
