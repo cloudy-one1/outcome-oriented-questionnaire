@@ -2,6 +2,21 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [未发布]
+
+### 门面口径
+
+- 四份门面文件（`CONTRIBUTING.md`、`SECURITY.md`、`.github/PULL_REQUEST_TEMPLATE.md`、
+  `.github/ISSUE_TEMPLATE/*`）写在 v3.3 的现实里，v4.0.0 把桌面宿主整棵树删了之后没人回头看：
+  PR 模板的覆盖率命令还写 `--cov=src --cov=gui`（`gui/` 已不存在，且它教人绕过
+  `readme_coverage.PACKAGES` 那个权威名单）；E2E 那条少了两个 `--require-file`，照它抄会连
+  "新宿主整片被吞成 skip"都测不出来；"人工介入走系统弹窗"那句连同 `messagebox` 一起退役了，
+  现在 Web 侧的确认是一条 SSE 反向通道（`webui/confirm.py`）。
+- `SECURITY.md` 补「本地控制面」一节，四条都按代码读出来写：绑定没有 `--host` 开关、
+  浏览器来的请求过 `Host` 回环 + `Origin` 同源两道、**`Origin` 缺席即放行所以本机任意进程
+  可驱动**、清空历史要 `purge_preview` 认范围再带一次性凭据 `purge_confirm`。
+  据此把"端口挪出回环"定性为配置风险而不是实现漏洞。
+
 ## [4.0.0] - 2026-09-26
 
 ### 删除（桌面版 Tkinter 宿主退役 —— 入口从三个变成两个）

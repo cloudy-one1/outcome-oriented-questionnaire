@@ -11,7 +11,13 @@
   `@dataclass(slots=True)`。CI 因此跑 3.10 与 3.13 两条 leg，只测高版本会让
   "最低支持 3.10"这句话永远不被验证。
 - Microsoft Edge 或 Google Chrome（WebDriver 由 Selenium Manager 自动管理）。
-  项目面向 Windows：人工介入那几步走的是系统弹窗。
+  项目面向 Windows：Edge 驱动那条路径是在 Windows 上量的。
+- **人工介入发生在浏览器窗口里**，不在系统弹窗里：验证码、补漏轮、人工提交那几步要的是
+  真人看着页面动手。桌面宿主（Tkinter）已在 v4.0 退役，`src/dialogs.py` 只剩间接层 ——
+  CLI 与测试不注册 handler 就拿到确定性默认值，Web 控制台的确认走一条 SSE 反向通道
+  （`webui/confirm.py`：服务端 `ask()` → 快照里的 confirms → 页面 POST 回 `/api/confirm`）。
+- `wjx-web` / `python run_web.py` 起的本地控制台**只监听 127.0.0.1**（`api.py` 还另判
+  回环 Host 与同源 Origin）。它没有鉴权，别把它端口转发出去。
 
 ```bash
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
@@ -24,21 +30,24 @@ pip install -e .                                    # 之后可直接用 wjx-fil
 
 ## 提交前必须过的门禁
 
-这几条就是 CI 的全部内容，本地跑不过不必推上来：
+这几条就是 push 到 `main` 与开 PR 时会跑的全部内容（镜像另有 `docker-smoke.yml`，每周一
+与手动触发，不在必填检查里）。本地跑不过不必推上来：
 
 | 门禁 | 命令 |
 |---|---|
 | 静态检查 | `python -m ruff check .` |
 | 类型检查 | `npx pyright`（`src/` + `webui/` + 入口 **0 error 0 warning**，不设 baseline、不写 `# type: ignore`） |
-| 离线套件 + 覆盖率地板 | `pytest tests/ -m "not integration" --cov=src --cov=gui --cov=webui --cov-report=json:coverage.json --cov-fail-under=$(grep -oE 'cov-fail-under=[0-9.]+' .github/workflows/ci.yml | cut -d= -f2)`（`--cov` 的权威名单是 `scripts/readme_coverage.py` 的 `PACKAGES`，与 `ci.yml` 不一致会红） |
+| 离线套件 + 覆盖率地板 | `pytest tests/ -m "not integration" --cov=src --cov=webui --cov-report=json:coverage.json --cov-fail-under=$(grep -oE 'cov-fail-under=[0-9.]+' .github/workflows/ci.yml \| cut -d= -f2)`（`--cov` 的权威名单是 `scripts/readme_coverage.py` 的 `PACKAGES`，与 `ci.yml` 不一致会红） |
 | 文档口径 | `python scripts/readme_coverage.py --check` |
-| 浏览器 E2E | `pytest tests/ -m integration -v --junitxml=e2e-junit.xml && python scripts/e2e_gate.py e2e-junit.xml` |
+| 浏览器 E2E | `pytest tests/ -m integration -v --junitxml=e2e-junit.xml && python scripts/e2e_gate.py e2e-junit.xml --require-file tests/test_e2e_integration.py --require-file tests/test_webui_e2e.py` |
 
 - **覆盖率地板只许上调**，而且它写在 `ci.yml` 里、是本仓库唯一还手写的门禁数字。
   README 的实测覆盖率是 `scripts/readme_coverage.py` 从 `coverage.json` 生成的，
   手改 README 那一块会在 `--check` 处变红。
 - **E2E 是阻塞的**。`scripts/e2e_gate.py` 会数 junit 里的实际执行条数 —— 驱动没起来
-  导致整片 skip 也照样是绿，那条就是堵这个洞的。只跑离线套件不算验过。
+  导致整片 skip 也照样是绿，那条就是堵这个洞的。两个 `--require-file` 堵的是另一半：
+  全局计数看得见"作答那批跑了"，看不见"新宿主那批全被吞成 skip"，两边各自点名、缺一即红。
+  只跑离线套件不算验过。
 - **`src/` + `webui/` + 入口里不许新增 `# type: ignore` / `# pyright:`**，现存条目登记在
   `tests/test_ci_guards.py` 的 `BASELINE` 里、只准变小。
 
@@ -59,7 +68,8 @@ pip install -e .                                    # 之后可直接用 wjx-fil
 
 - `main` 是唯一长期分支。工作分支从 `main` 切出来，名字带上类型与前缀（`fix/...`、
   `feat/...`、`chore/...`、`test/...`），合掉就删。
-- 提交信息首行照 `fix(v3.3): 一句话说清改了什么` 这个形状写；正文写**为什么**和取舍，
+- 提交信息首行照 `fix(vX.Y): 一句话说清改了什么` 这个形状写（类型用 `fix` / `feat` /
+  `test` / `refactor` / `docs` / `chore` / `ci`）；正文写**为什么**和取舍，
   不写"做了什么"—— diff 已经说明了做什么。
 - 一次提交只做一件事。行为改动与格式化分开，否则回归追不回来。
 
