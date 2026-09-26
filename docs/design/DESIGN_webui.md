@@ -77,14 +77,14 @@ webui/static/      index.html · app.js · styles.css      ← 观感落这里
 | URL / 份数 / 浏览器 / UC / 不记录填空 五个字段 | `app:723,766,825,851,865` | `GET /api/state` + `POST /api/field` |
 | 探测题目（含 iframe 兜底、25s/15s 超时只 debug 不报错） | `ctl:302-403` | `POST /api/detect` |
 | 扫码导入（opencv 缺失时**仍开选择框**、选完才提示缺依赖） | `ctl:274-296`、`qr:21-27` | `POST /api/qr`（上传图，保留同一降级顺序） |
-| 导入 / 导出 / 另存默认配置 + `config_io` 缺失时三按钮禁用 | `ctl:148-257`、`app:900-908` | `/api/config/*` + `state.config_io_available` |
-| 启动静默自动加载默认配置 | `app:270`、`ctl:259-268` | 服务启动时同一条路径 |
+| 导入 / 导出 / 另存默认配置 + `config_io` 缺失时三按钮禁用 | `ctl:148-257`、`app:900-908` | `/api/config/*` + `state.config_io_available` —— **对拍已钉**（同一张表导出的 JSON 除宿主标签外逐键相等；交叉导入同一份 `WEIGHT_CONFIG`；缺依赖三句措辞相同） |
+| 启动静默自动加载默认配置 | `app:270`、`ctl:259-268` | 服务启动时同一条路径 —— **对拍已钉**（分布、表格文本、两句日志逐字相同） |
 | 权重表 6 类题型的解析与预填、留空语义、矩阵 `1:w,w \| 2:w,w`、sort 作废规则 | `wp:232-595` | `POST /api/weights`，**解析函数直接复用 `weight_panel.build_weight_config` 的逻辑**（见 §5 末） |
 | 反向回填（未探测时按 cfg 反构最小 questions） | `wp:602-667` | **2026-09-26 才真的成立**：规则抽进 `src.weight_text.reconstruct_questions`，两个宿主共用同一份并有对拍（此前 webui 只同步文本、不建行，"已恢复到表格"那句是空的） |
 | 开始 / 停止、`running` 幂等、按钮禁用 | `app:1420-1507` | `POST /api/run` `/api/stop` |
 | 进度与成功/失败/未知计数、`displayed_round` | `app:1300-1318,1605-1611` | SSE `progress` 事件 |
 | 断点续传确认（答"否"仍保留权重恢复） | `app:1347-1418` | SSE `confirm` 事件 → 前端弹 → `POST /api/confirm` |
-| 孤儿批次收尾（>60min `running` 改判 failed） | `app:272-289` | 服务启动时同一步 |
+| 孤儿批次收尾（>60min `running` 改判 failed） | `app:272-289` | 服务启动时同一步 —— **对拍已钉**（同一份"90 分钟前的 running"，改判后的 `status` 与那句 WARN 逐字相同） |
 | 日志：8 种 tag、行号、`HH:MM:SS`、`❯` 前缀、吸底、`N lines` | `lv:28-37,191-209` | SSE `log` 事件 + 前端渲染 |
 | 历史 runs 8 列 / 明细 6 列 / 200 条上限 | `hp:184-234,256` | `GET /api/history/*` |
 | 导出 CSV = **两个文件**、`_answers` 后缀、`utf-8-sig`、公式注入前缀拦截 | `hp:348-402`、`hp:38-50` | `/api/history/export` 打包两个下载 |
@@ -249,9 +249,10 @@ webui integration 在 `.venv-ci313` 连跑四遍全绿，且在 GitHub 的 windo
 **2026-09-26 第 7 步开工，按四段走，每段都停在可用状态**：
 
 - **A 拆耦合**（已做完）：`gui/qr_utils.py` → `src/qr_utils.py`，webui 不再 import 宿主包。
-- **B 补对拍**（进行中）：§4 每行补到"同一条命令打到两边"。已补第一行「反向回填」，
-  顺手抓到一处真差距（不是缺测试）：续传恢复权重时 webui 只写文本不建行，那句
-  "已自动恢复到表格，可检查/修改"没有对象。现在 **4/16** 行有对拍。
+- **B 补对拍**（进行中）：§4 每行补到"同一条命令打到两边"。已补 4 行，每补一行都在查
+  有没有真差距 —— 只有「反向回填」那行查出**一处真缺陷**（续传时 webui 只写文本不建行，
+  "已恢复到表格"那句是空的），另外三行（配置工件、开机自动载入、孤儿批次）查下来
+  两边等价，同样值得钉着。现在 **7/16** 行有对拍。
 - **C 改文档**：README/CHANGELOG 改成以 webui 为主（③）。
 - **D 删**：`git rm gui/`（10 个文件 4671 行）+ `tests/test_gui_*.py`（3241 行），
   同时改 `pyproject` 的 `wjx-gui` 与 `packages`、`ci.yml` 的 `--cov=gui`、
