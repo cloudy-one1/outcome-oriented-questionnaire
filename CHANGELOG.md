@@ -34,6 +34,8 @@
   是按请求算的，手机拍的图本来就不小）。
   **刻意不按 ``availability.qr`` 置灰**：§4 钉过的降级顺序是"缺 opencv 也让你选，
   选完才说缺什么"，置灰等于把这条改回去。
+- 位置放在 **问卷 URL 那一行的右边**，不在下面那排动作按钮里 —— 扫码就是"填地址"的
+  另一种输入法，跟「探测 / 导出 / 另存 / 导入配置」并列会让人以为它是批次的一步。
 - 新增浏览器用例 ``test_a_qr_image_picked_in_the_page_fills_the_url_field``：真选一张
   **能解出目标链接**的二维码图（``tests/fixtures/qr_sample.png``，OpenCV 的
   ``QRCodeEncoder`` 生成并回读验证过），断言控件在、到的字节仍是 PNG 头且长度一致、

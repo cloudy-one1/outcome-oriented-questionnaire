@@ -41,6 +41,12 @@
             <label for="url">🔗 问卷 URL</label>
             <input id="url" name="url" type="text" autocomplete="off"
                    placeholder="https://www.wjx.top/vm/xxxx.aspx">
+            <!-- 扫码是"填 URL"的另一种输入法，所以跟输入框同一行，
+                 不放进下面那排动作按钮里。缺 opencv 时照样能点：选好图之后
+                 由后端说"二维码模块未加载"，与设计稿 §4 第 3 行钉过的降级顺序一致。 -->
+            <label class="btn btn-ghost file-btn" for="file-qr">📷 二维码导入
+              <input type="file" id="file-qr" accept="image/*">
+            </label>
           </div>
           <div class="field">
             <label for="count">📊 提交份数</label>
@@ -73,11 +79,6 @@
             <button type="button" class="btn btn-ghost" id="btn-save-default">⭐ 另存默认</button>
             <label class="btn btn-ghost file-btn" for="file-import">📂 导入配置
               <input type="file" id="file-import" accept=".json,application/json">
-            </label>
-            <!-- 缺 opencv 时这个按钮照样能点：选好图之后由后端说"二维码模块未加载"，
-                 与设计稿 §4 第 3 行钉过的降级顺序一致（先让你选，再说缺什么）。 -->
-            <label class="btn btn-ghost file-btn" for="file-qr">📷 二维码导入
-              <input type="file" id="file-qr" accept="image/*">
             </label>
           </div>
           <p class="field-note" id="settings-note"></p>
