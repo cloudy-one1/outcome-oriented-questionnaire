@@ -467,14 +467,14 @@ pip install -r requirements-dev.txt
 # 全量测试（含依赖真实浏览器驱动的 E2E）
 python -m pytest tests/ -v
 
-# 离线套件（无浏览器环境 / CI，1715 项；只装 requirements*.txt 的口径下会有若干 skip）
+# 离线套件（无浏览器环境 / CI，1735 项；只装 requirements*.txt 的口径下会有若干 skip）
 python -m pytest tests/ -m "not integration" -q
 
 # 仅浏览器 E2E（需本机 Edge / Chrome + WebDriver，33 项：25 项作答链路 + 8 项 webui 控制台）
 python -m pytest tests/ -m integration -q
 ```
 
-当前测试全部通过：**1748 项**（离线 1715 + 浏览器 33）。
+当前测试全部通过：**1768 项**（离线 1735 + 浏览器 33）。
 
 > **类型门禁不随环境变**：`src/` + `gui/` + 入口在两种环境下都是 **0 error
 > 0 warning**。三处可选依赖（`opencv-python`、`undetected_chromedriver`、`openpyxl`）
@@ -487,7 +487,7 @@ python -m pytest tests/ -m integration -q
 >
 > | 门禁 | 装齐可选依赖（开发机） | 未装（CI / 干净 venv） |
 > |---|---|---|
-> | 离线套件 | 1715 passed | 1711 passed + 4 skipped（二维码解析 2 项、`.xlsx` 真读 1 项，外加全新检出时 `coverage.json` 还不存在 —— 文档口径比对那一项也 skip，它是同一次运行**末尾**才产出的） |
+> | 离线套件 | 1735 passed | 1731 passed + 4 skipped（二维码解析 2 项、`.xlsx` 真读 1 项，外加全新检出时 `coverage.json` 还不存在 —— 文档口径比对那一项也 skip，它是同一次运行**末尾**才产出的） |
 > | 覆盖率 | 总口径比 CI 高约 0.2pp（`src/` +0.1、`gui/` +0.5、`webui/` 不变）—— 三个可选项各自改变一侧的分支走向 | 见下方「已知缺口（诚实记录）」的生成块，那是门禁认的唯一口径 |
 >
 > 覆盖率数字现在只有一个来源：`scripts/readme_coverage.py` 从 `coverage.json` 生成，
@@ -533,6 +533,13 @@ python -m pytest tests/ -m integration -q
   确认与选文件都是"否/取消"）。此前 `gui/` 里 13 处模态框直调就是那两行缺口
   （`app.py` 25%、`controller.py` 14%）写着"模态对话框"的直接原因；换出口之后
   断点续传那 5 个字段的自洽性、配置导出导入的往返都有离线契约。
+- **webui 自己那份宿主契约**：`tests/test_webui_host_contract.py` 把"表单 → `RunState`、
+  权重表 → 快照、交给 `run_batch` 的每个关键字、进度那几个数、导出文档的形状"钉成
+  **字面量**，断言右边不出现另一个宿主。它的前身是 `tests/test_host_parity.py` 那 23 条
+  （30 个用例）跨宿主对拍：桌面版退役后"两边相等"会退化成"没人再说这些数该是多少"，
+  所以期望值先就地钉死、再删对照物。18 处改坏（措辞、级别表、`stop_check` 恒 False、
+  导入改回合并、自动载入的守卫去掉……）逐条跑过，17 处让这个文件变红；唯一没变红的那处
+  （快照里的 `int(k)` 改成 `k`）是等价变异 —— 键在进快照前就已经是 int。
 
 ### E2E 覆盖范围
 

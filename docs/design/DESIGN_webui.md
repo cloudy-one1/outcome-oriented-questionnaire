@@ -96,6 +96,9 @@ webui/static/      index.html · app.js · styles.css      ← 观感落这里
 - **有跨宿主对拍：12 行** —— 1 表单五字段、2 探测、3 扫码、4 配置导入导出、5 自动载入、
   6 权重解析、7 反向回填、8 开始/停止、9 进度与计数、10 续传两个答案、11 孤儿批次、
   12 日志。都在 `tests/test_host_parity.py`（含 `test_weight_parser_parity.py`）。
+  **D-1 之后期望值另有 single 落点**：`tests/test_webui_host_contract.py` 用字面量钉住其中
+  14 个对拍函数（右边不出现 `gui`），其余 9 个在 `test_webui_service.py` 早就是单侧断言 ——
+  对拍那条"和那边一样"的判据随桌面版一起走，删之前必须先有这份能独立活着的记录。
   这一趟抓出三条真缺陷（`running` 没有推送通道不算在内，那是 runner 红出来的）：
   反向回填 webui 不建行、导入配置再探测会静默丢掉配置、日志 4 位行号此前没人钉。
 - **已经是同一份实现，无从"两边各测一遍"：1 行** —— 14 导出 CSV（`src/history_export`）。
@@ -274,10 +277,20 @@ webui integration 在 `.venv-ci313` 连跑四遍全绿，且在 GitHub 的 windo
   在前，桌面版降为"参照实现，后续版本移除"），三入口写进功能特性与 `pyproject` 的
   description，权重表编辑格式 / 历史 / 二维码 / 续传那几处的"GUI 独占"措辞改掉。
   CHANGELOG 的历史条目不重写 —— 它记的是当时的事实。
-- **D 删**：`git rm gui/`（10 个文件 4671 行）+ `tests/test_gui_*.py`（3241 行），
-  同时改 `pyproject` 的 `wjx-gui` 与 `packages`、`ci.yml` 的 `--cov=gui`、
-  `readme_coverage.PACKAGES` 与 `coverage_gaps.json` 的 gui 组，并处理
-  `test_webui_entry.py` 那条"拿 `gui/app.py` 当参照物"的用例。
+- **D 删**：分两刀，先转换后落刀。
+  - **D-1 转契约**（已做完）：新增 `tests/test_webui_host_contract.py`（20 项，断言右边
+    不出现 `gui`）。对拍那 23 个函数逐条查过去向：14 个的期望值改由这个文件钉成字面量，
+    另外 9 个（探测 5 例、续传三个方向、`config_io` 缺席的拒绝措辞、日志行号）在
+    `tests/test_webui_service.py` 里早就是 webui 单侧断言。18 处改坏验过 17 处变红，
+    唯一活下来的是 `snapshot_weight_config` 里 `int(k)`→`k` 这个等价变异。
+    两条顺手补出来的判据是**删 Tk 才会露出的洞**：`_QUESTION_COUNT_JS` 少一家选择器时
+    只有对拍红（`test_webui_service.py` 132 项 + E2E 8 项全绿，替身返回的是写死的题数），
+    而"两份抄本一致"这条判据本身随对拍一起走。
+  - **D-2 落刀**（未做）：`git rm gui/`（10 个文件 4631 行）+ `tests/test_gui_*.py`
+    （7 个文件 3241 行）+ `run_gui.py` + `tk_root` 基座，同时改 `pyproject` 的 `wjx-gui`
+    与 `packages`、`ci.yml` 的 `--cov=gui`、`readme_coverage.PACKAGES`
+    与 `coverage_gaps.json` 的 gui 组，并处理 `test_webui_entry.py` 那条
+    "拿 `gui/app.py` 当参照物"的用例。删之后是 **v4.0.0**（入口少了一个是破坏性变更）。
 
 三条前提到 C 段结束时的状态：**① 按条有结论**（12 行对拍 + 4 行写明为什么不对拍）、
 **② 到位**、**③ 已改写**。所以 D 可以动 —— 但它是这一整程里唯一不可逆的一步，

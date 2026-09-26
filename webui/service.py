@@ -140,7 +140,7 @@ class WebService:
         self,
         session: RunSession,
         *,
-        save_weight_config: Callable[..., None] | None = None,
+        save_weight_config: Callable[..., object] | None = None,
         load_weight_config: Callable[..., Any] | None = None,
         validate_weight_config: Callable[[dict], list[str]] | None = None,
         build_config: Callable[[], dict] | None = None,
@@ -195,7 +195,7 @@ class WebService:
     def _log(self, msg: str, tag: str = "INFO") -> None:
         self.session.log(msg, tag)
 
-    def _save_ready(self, action: str) -> Callable[..., None] | None:
+    def _save_ready(self, action: str) -> Callable[..., object] | None:
         """导出类动作的前置检查：能救就返回那个导出函数，不能就报过原因并给 None。
 
         返回**函数本身**而不是 bool：调用方拿到的是同一个被验过的对象，
