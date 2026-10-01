@@ -219,8 +219,11 @@ def parse_args(argv: list[str] | None = None) -> Namespace:
     parser.add_argument(
         "-n", "--count",
         type=_positive_int,
-        default=DEFAULT_TOTAL_SUBMISSIONS,
-        help="目标提交份数（必须 >= 1）",
+        # v4.2：default 用 None 哨兵而不是默认份数 —— 此前 `count_explicit` 靠
+        # "值不等于默认值"判断用户有没有显式传 -n，显式 `-n 17`（恰好等于默认）
+        # 会被当成没传，续传时计划份数被上次批次覆盖。
+        default=None,
+        help=f"目标提交份数（必须 >= 1；不传按 {DEFAULT_TOTAL_SUBMISSIONS} 份）",
     )
     parser.add_argument(
         "-b", "--browser",
@@ -686,11 +689,15 @@ def run_batch(
         state.run_id = int(resume_run_id)
         state.success_count = int(resume_done)          # 绝对计数，finish_run 覆写为累计值
         state.fail_count = int(resume_fail)
-        state.resume_start_idx = int(resume_done) + 1   # 进度显示 / submission_index 接续
+        # v4.1：起点必须跳过全部已消费的尝试（成功 + 失败/unknown）。
+        # 此前只加 resume_done，失败轮的 submission_index 会被新尝试撞号，
+        # record_answer 的 INSERT OR REPLACE 会把旧失败明细覆盖掉。
+        state.resume_start_idx = int(resume_done) + int(resume_fail) + 1
         import time as _t0
         state.total_elapsed_start = _t0.perf_counter()
-        _log(f"[resume] 续传 Run #{state.run_id}：已完成 {resume_done} 份，"
-             f"本次继续提交 {attempts_cap} 份")
+        _log(f"[resume] 续传 Run #{state.run_id}：已完成 {resume_done} 份"
+             f"（另有 {resume_fail} 次失败尝试），"
+             f"从第 {state.resume_start_idx} 次尝试继续")
     elif history_db is not None:
         import time as _t
         state.run_id = _start_run_quietly(
@@ -714,6 +721,28 @@ def run_batch(
                     _cb_e, action="on_round 回调", recovery="忽略，继续批次",
                     submission_index=res.index,
                 ))
+
+    def _record_submission(submission_idx: int, final_status: str) -> None:
+        """逐份成败落库（v4.1，见 history.record_submission_result）。
+
+        每份出结果**立即**写一行 —— runs.success_count 只在收尾落库，进程被
+        强杀时收尾代码不会跑，续传起点必须靠这里的逐份行才算得出来。
+        三个会消费尝试的出口都要走到：正常三态、浏览器死亡、单轮 WebDriver
+        异常（后两者在下面的 except 分支里同样计一次失败尝试）。
+        被中断（SubmissionAborted）的那一份不写：它没被消费，续传要重跑。
+        """
+        if history_db is None or state.run_id is None:
+            return
+        try:
+            history_db.record_submission_result(
+                state.run_id, int(submission_idx), final_status,
+            )
+        except Exception as _e:
+            raise_non_recoverable(_e)
+            _log("  " + format_exc_log(
+                _e, action="history.record_submission_result",
+                recovery="忽略，继续批次", submission_index=submission_idx,
+            ))
 
     try:
         # 审查 P2-2：循环上限改为 attempts_cap
@@ -786,6 +815,7 @@ def run_batch(
                 _quit_quietly(driver)
                 driver = create_driver(browser, **driver_kwargs)  # 重新创建浏览器
                 state.mark_failure()
+                _record_submission(displayed_idx, "failed")
                 _emit(RoundOutcome(
                     index=displayed_idx, outcome="browser_dead",
                     message="浏览器断开，已重建后继续", state=state,
@@ -803,6 +833,7 @@ def run_batch(
                     submission_index=displayed_idx,
                 ))
                 state.mark_failure()
+                _record_submission(displayed_idx, "failed")
                 _emit(RoundOutcome(
                     index=displayed_idx, outcome="error",
                     message=f"本轮异常: {type(e).__name__}", state=state,
@@ -829,6 +860,7 @@ def run_batch(
                 _log(f"{prefix} FAIL")
                 _emit(RoundOutcome(index=displayed_idx, outcome="failed",
                                    message="提交失败", state=state))
+            _record_submission(displayed_idx, outcome)
 
             # --- 清理浏览器状态（为下一轮做准备） ---
             _cleanup_browser_state(driver)
@@ -852,9 +884,13 @@ def run_batch(
             )
 
     except KeyboardInterrupt:
-        # 用户按下 Ctrl+C → 优雅退出（审查 P1-3：标记 interrupted 而非 finished）
+        # 用户按下 Ctrl+C → 优雅退出（审查 P1-3：标记 interrupted 而非 finished）。
+        # v4.2：标记后**继续上抛** —— 此前吞掉后正常返回，批次的 fail==0 时 main
+        # 以退出码 0 收场，与预约等待期"中断退非零，别让 cron 以为跑成了"的口径
+        # 相悖。finally 的 finish_run 在栈展开时照常执行，history 不缺收尾。
         state.mark_interrupted()
         _log("\n用户中断")
+        raise
 
     except Exception as e:
         # V2.4：未捕获异常 → 批次记 failed（此前会被误标 finished 污染成功率）。
@@ -918,6 +954,13 @@ def main(argv: list[str] | None = None) -> None:
       argv : 模拟的 sys.argv[1:]；为 None 时使用真实 sys.argv[1:]
     """
     args = parse_args(argv)
+
+    # v4.2：-n 的哨兵解析必须放在任何消费点之前 —— count_explicit 记录"用户
+    # 有没有显式传 -n"，随后把默认值落定供下面 alpha/replay/TOTAL_SUBMISSIONS 用。
+    # 此前靠"值 != 默认值"判断，显式 `-n 17`（恰好等于默认）被当成没传。
+    count_explicit = args.count is not None
+    if args.count is None:
+        args.count = DEFAULT_TOTAL_SUBMISSIONS
 
     # V2.4：URL 必填（合规——不再内置真实线上问卷作为默认值）
     # v3.0：--url-file 也算给了 URL
@@ -1056,7 +1099,8 @@ def main(argv: list[str] | None = None) -> None:
     # run_batch 把 total_submissions 当作「绝对目标份数」，attempts_cap = 目标 - 已尝试
     # （已尝试 = 上次已成功 + 已失败），
     # 若这里仍传 args.count 的默认值，续传会按默认 17 份重新计划。
-    count_explicit = args.count != DEFAULT_TOTAL_SUBMISSIONS
+    # v4.2：count_explicit 改为 argparse 哨兵判定（见 main 开头），
+    # "显式传了恰好等于默认值的份数"不再被误判成没传。
     if args.resume:
         if history_db is None:
             print("[resume] --resume 需要配合 -H/--history 指定 DB 路径")
@@ -1065,15 +1109,20 @@ def main(argv: list[str] | None = None) -> None:
         if prev is None:
             print("[resume] 未找到 24h 内可恢复的未完成批次，按全新批次开始")
         else:
-            prev_done = int(prev["success_count"] or 0)
             prev_planned = int(prev["total_submissions"] or 0)
+            # v4.1：续传起点按逐份成败表算（resume_progress 单一真相）——
+            # 硬崩后 runs.success_count 停在 0 的老洞由此关闭；老批次无逐份行
+            # 时该函数自动退回收尾计数，行为与旧版一致。
+            prev_done, prev_fail = history_db.resume_progress(int(prev["id"]))
             if 0 < prev_done < prev_planned:
                 resume_run_id = int(prev["id"])
-                resume_done = history_db.count_done_submissions(resume_run_id)
-                resume_fail = int(prev["fail_count"] or 0)
+                resume_done = prev_done
+                resume_fail = prev_fail
                 print(
                     f"[resume] 恢复 Run #{resume_run_id}（状态 {prev['status']}）："
-                    f"已完成 {resume_done}/{prev_planned} 份，从第 {resume_done + 1} 份继续"
+                    f"已成功 {resume_done}/{prev_planned} 份"
+                    f"（另有 {resume_fail} 次失败尝试），"
+                    f"从第 {resume_done + resume_fail + 1} 次尝试继续"
                 )
                 if not count_explicit:
                     TOTAL_SUBMISSIONS = prev_planned
@@ -1176,30 +1225,38 @@ def main(argv: list[str] | None = None) -> None:
 
     total_success = 0
     total_fail = 0
-    for _ti, (_url, _count) in enumerate(targets, 1):
-        if len(targets) > 1:
-            print(f"\n[{_ti}/{len(targets)}] {_url[:70]}（{_count} 份）")
-        success, fail = run_batch(
-            _url,
-            _count,
-            browser=BROWSER,
-            use_uc=USE_UC,
-            history_db=history_db,
-            weight_config=dict(WEIGHT_CONFIG) if WEIGHT_CONFIG else None,
-            no_record_text=args.no_record_text,
-            target_success=args.target_success,
-            max_attempts=args.max_attempts,
-            resume_run_id=resume_run_id,
-            resume_done=resume_done,
-            resume_fail=resume_fail,
-            headless=bool(args.headless),
-            user_data_dir=args.profile_dir,
-            max_total_seconds=args.max_total_time,
-            rescue_gaps=args.rescue_gaps,
-            manual_submit=args.manual_submit,
-        )
-        total_success += success
-        total_fail += fail
+    try:
+        for _ti, (_url, _count) in enumerate(targets, 1):
+            if len(targets) > 1:
+                print(f"\n[{_ti}/{len(targets)}] {_url[:70]}（{_count} 份）")
+            success, fail = run_batch(
+                _url,
+                _count,
+                browser=BROWSER,
+                use_uc=USE_UC,
+                history_db=history_db,
+                weight_config=dict(WEIGHT_CONFIG) if WEIGHT_CONFIG else None,
+                no_record_text=args.no_record_text,
+                target_success=args.target_success,
+                max_attempts=args.max_attempts,
+                resume_run_id=resume_run_id,
+                resume_done=resume_done,
+                resume_fail=resume_fail,
+                headless=bool(args.headless),
+                user_data_dir=args.profile_dir,
+                max_total_seconds=args.max_total_time,
+                rescue_gaps=args.rescue_gaps,
+                manual_submit=args.manual_submit,
+            )
+            total_success += success
+            total_fail += fail
+    except KeyboardInterrupt:
+        # v4.2：批次内 Ctrl+C 从 run_batch 原样上抛到这里 —— 与预约等待期同一口径，
+        # 非零码退出，别让 cron 以为跑成了。run_batch 的 finally 已写完 history
+        # 收尾（status=interrupted），已完成份数 --resume 可续。
+        print("\n[中断] 批次被 Ctrl+C 中断 → 非零码退出（已完成的份数在历史里，"
+              "--resume 可续传）")
+        sys.exit(1)
     print(f"运行结束 — 成功 {total_success}, 失败 {total_fail}"
           + (f"（共 {len(targets)} 份问卷）" if len(targets) > 1 else ""))
     if getattr(args, "report_alpha", False):
@@ -1264,8 +1321,11 @@ def main(argv: list[str] | None = None) -> None:
             raise_non_recoverable(_e)
             pass  # 其他清理失败仍然忽略
 
-    # 失败时以非零码退出，方便脚本判断成功/失败
-    sys.exit(0 if fail == 0 else 1)
+    # 失败时以非零码退出，方便脚本判断成功/失败。
+    # v4.1 修正：必须用累计值 total_fail —— 此前用的是循环残留变量 fail
+    # （每轮 run_batch 覆盖），--url-file 队列里前几批失败、最后一批全成
+    # 时退出码是 0，脚本侧误判整批成功。
+    sys.exit(0 if total_fail == 0 else 1)
 
 
 def _report_reliability(history_db: Any, weight_config: dict) -> None:

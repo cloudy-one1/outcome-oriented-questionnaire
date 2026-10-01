@@ -380,14 +380,21 @@ def test_multi_target_run_prints_a_per_survey_header_and_one_total(
     assert "成功 3, 失败 0" in out and "共 2 份问卷" in out
 
 
-def test_exit_code_currently_only_reflects_the_last_survey(tmp_path: str) -> None:
-    """现状记录，不是期望：收尾用的是循环变量 `fail`（`src/cli.py:1268`）而不是 `total_fail`。
+def test_exit_code_reflects_every_survey_in_the_queue(tmp_path: str) -> None:
+    """v4.1 修复：收尾必须用累计值 total_fail，不能用循环残留变量 fail。
 
-    前面几份全失败、最后一份成功 → 退 0。单问卷时两者等价，所以这个洞只在 `--url-file`
-    队列上存在。按"报出来、不顺手改生产行为"的规矩先把现状钉在这里；要修就是那一处
-    改成 `total_fail == 0`，并把本条断言改成 `code == 1`。
+    此前 `src/cli.py` 退出码用循环变量 `fail`（每轮 run_batch 覆盖），--url-file
+    队列里前几批失败、最后一批全成 → 退 0，脚本侧误判整批成功。单问卷时两者
+    等价，这个洞只在多问卷队列上存在 —— 而退出码的全部意义就在给脚本看。
     """
     queue = write_queue(tmp_path, queue_body(f"{URL},1", f"{OTHER},1"))
     exit_code, calls = run_main(["--url-file", queue], replies=[(0, 4), (4, 0)])
     assert len(calls) == 2
-    assert exit_code.code == 0               # ← 现状；修完应为 1
+    assert exit_code.code == 1, "前一批失败、后一批全成，累计失败 4 → 必须 1"
+
+
+def test_exit_code_zero_only_when_every_survey_is_clean(tmp_path: str) -> None:
+    """对照组：队列里每一批都全成 → 退 0（防止上一条的修复矫枉过正）。"""
+    queue = write_queue(tmp_path, queue_body(f"{URL},1", f"{OTHER},1"))
+    exit_code, _calls = run_main(["--url-file", queue], replies=[(1, 0), (2, 0)])
+    assert exit_code.code == 0

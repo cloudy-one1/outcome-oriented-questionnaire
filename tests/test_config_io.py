@@ -264,6 +264,34 @@ class TestConfigIO(unittest.TestCase):
         self.assertTrue(any("范围非法" in e for e in errs),
                         f"应报范围非法，实际: {errs}")
 
+    def test_validate_reports_non_integer_scale_min_instead_of_raising(self) -> None:
+        """v4.2（CODE_REVIEW_v4.0 P2）：`scale_min` 非整数时校验器必须返回错误
+        列表而不是自己抛 —— 此前裸 int()，畸形外部配置把"返回错误"的公开契约
+        打成了"抛 TypeError"。"""
+        bad = {1: {"type": "scale", "scale": 5, "scale_min": "abc",
+                   "weights": [1, 2, 3, 4, 5]}}
+        errs = self.mod.validate_weight_config(bad)
+        self.assertTrue(any("scale_min" in e for e in errs),
+                        f"应报 scale_min 非法，实际: {errs}")
+
+    def test_validate_reports_colliding_anchors(self) -> None:
+        """v4.2（CODE_REVIEW_v4.0 P2）：两条锚点认领同一道题 → 配置期报出。
+
+        运行期对同一题的撞锚是按文件序静默首中，用户看到的与生效的可以不同；
+        典型成因是复制一条配置改权重后忘删旧条目。
+        """
+        anchor = {"title": "您的性别", "signature": "single:2"}
+        cfg = {
+            1: {"type": "single", "weights": [1, 1], "anchor": dict(anchor)},
+            2: {"type": "single", "weights": [3, 1], "anchor": dict(anchor)},
+        }
+        errs = self.mod.validate_weight_config(cfg)
+        self.assertTrue(any("锚点互撞" in e and "Q1、Q2" in e for e in errs),
+                        f"应报锚点互撞，实际: {errs}")
+        # 只有一条时不报
+        errs2 = self.mod.validate_weight_config({1: cfg[1]})
+        self.assertEqual(errs2, [])
+
     def test_validate_rejects_matrix_row_weights_length_mismatch(self) -> None:
         """matrix 题 row_weights 每行长度不匹配 cols → 报错。"""
         bad = {1: {"type": "matrix_single",

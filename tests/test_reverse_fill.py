@@ -548,6 +548,19 @@ def test_preflight_warns_when_detection_has_no_titles() -> None:
     assert any("没带回题干" in ln for ln in lines)
 
 
+def test_preflight_without_columns_emits_no_column_warnings() -> None:
+    """v4.2（CODE_REVIEW_v4.0 P2）：启动阶段（探测未发生）不开列计划告警。
+
+    此前 ``begin_replay`` 拿空题目列表跑列计划，每道题列都吃一条 blocked
+    假警 —— 用户要么被吓退，要么学会忽略回放告警，真 blocked 跟着没人看。
+    表级提示（空表/行数）不受影响。
+    """
+    lines = preflight(fixture_table(), [], target_submissions=99,
+                      with_columns=False)
+    assert not [ln for ln in lines if "不回放" in ln or "照旧随机生成" in ln]
+    assert any("回退" in ln for ln in lines), "行数提示是表级的，仍要发"
+
+
 # ===========================================================================
 #  8. 端到端：样例表 → 列计划 → 逐份覆盖
 # ===========================================================================

@@ -31,7 +31,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from webui.api import MAX_BODY_BYTES, Api, Response
+from webui.api import (
+    MAX_BODY_BYTES,
+    Api,
+    Response,
+    host_is_loopback,
+    origin_is_same_origin,
+)
 
 logger = logging.getLogger("wjx.webui.server")
 
@@ -79,6 +85,20 @@ class WebUIRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         path = unquote(urlparse(self.path).path)
         if path == "/api/events":
+            # v4.1：SSE 分支此前在 _dispatch（Host/Origin 校验所在地）之前直接返回，
+            # 是唯一绕过同源防线的端点 —— DNS rebinding 后攻击者页面与
+            # http://evil:port/api/events 同源，EventSource 可持续读 hello 首帧
+            # （整份会话快照：问卷 URL、数据路径）与全部日志流。这里补上与
+            # Api.handle 相同的两道检查， Host/Origin 校验不再有旁路。
+            host = self.headers.get("Host") or f"{self.api.host}:{self.api.port}"
+            if not host_is_loopback(host):
+                self._send(Response.error(
+                    HTTPStatus.FORBIDDEN, "只允许本机回环地址访问"))
+                return
+            if not origin_is_same_origin(self.headers.get("Origin"), host):
+                self._send(Response.error(
+                    HTTPStatus.FORBIDDEN, "跨站请求被拒绝"))
+                return
             self._serve_events()
             return
         static = STATIC_FILES.get(path)

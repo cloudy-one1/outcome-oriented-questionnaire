@@ -228,6 +228,7 @@ def test_a_detected_type_is_called_exactly_this_in_the_summary() -> None:
         "text": "填空",
         "matrix": "矩阵",
         "matrix_multi": "矩多",
+        "matrix_scale": "矩量",
         "sort": "排序",
     }
 

@@ -3,6 +3,8 @@
 职责：
     - 记录一次批量运行（runs 表）：URL、份数、浏览器、成功/失败数、耗时
     - 记录每道题答案明细（answers 表）：run_id、题号、题型、选中项(JSON)、文本答案、耗时
+    - 逐份提交的最终成败（submissions 表，v4.1）：每份出结果即写，
+      硬崩后续传起点与信度口径有据可依（resume_progress 的单一真相）
     - 查询接口：query_runs / query_answers / stats_summary
     - 清理接口：purge_old(days_older_than=N)
 
@@ -76,11 +78,31 @@ CREATE TABLE IF NOT EXISTS answers (
     FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
 );
 
+-- 逐份提交的最终成败（v4.1）。runs.success_count 只在批次收尾落库，进程被强杀
+-- 时收尾代码根本没跑、这一列停在 0，续传守卫（0 < done < planned）恒假 ——
+-- 最需要续传的场景恰恰是它唯一不工作的场景，结局是"按全新批次开始"把已提交
+-- 的份数原样再交一遍。本表每份出结果即写（见 record_submission_result），是
+-- "逐份最终成败"的单一真相；续传起点（resume_progress）与将来的信度口径都按它取数。
+-- 整表是新增的：老库由 IF NOT EXISTS 补建、补建时没有任何历史行，所以唯一索引
+-- 可以安全放在 _SCHEMA_SQL 里无条件执行（老库不存在"有重复行导致建索引失败"），
+-- 不需要占用一个迁移版本号。
+CREATE TABLE IF NOT EXISTS submissions (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id              INTEGER NOT NULL,
+    submission_index    INTEGER NOT NULL,            -- 本次运行的第几次尝试(1-based)
+    final_status        TEXT    NOT NULL,            -- 'success' | 'failed' | 'unknown'
+    finished_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_submissions_unique
+    ON submissions(run_id, submission_index);
+
 -- 常用查询索引
 CREATE INDEX IF NOT EXISTS idx_runs_started  ON runs(started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status   ON runs(status);
 CREATE INDEX IF NOT EXISTS idx_answers_run   ON answers(run_id);
 CREATE INDEX IF NOT EXISTS idx_answers_qnum  ON answers(question_number);
+CREATE INDEX IF NOT EXISTS idx_submissions_run ON submissions(run_id);
 
 -- 注意：(run_id, submission_index, question_number) 的 UNIQUE 索引不放在这里
 -- （_SCHEMA_SQL 由 executescript 无条件执行，老库若有重复行会导致 CREATE UNIQUE INDEX
@@ -561,6 +583,60 @@ class SubmissionHistory:
         sql = "SELECT success_count FROM runs WHERE id = ?"
         row = self._query_one(sql, (int(run_id),))
         return int(row["success_count"]) if row else 0
+
+    def record_submission_result(
+        self,
+        run_id: int,
+        submission_index: int,
+        final_status: str,
+    ) -> None:
+        """逐份成败落库（v4.1）：每份提交出结果时即写，不再等批次收尾。
+
+        :param final_status: ``'success' | 'failed' | 'unknown'``。
+            被中断（SubmissionAborted）的那一份**不写** —— 它没有被消费，
+            下次续传要原样重跑它。
+
+        幂等：``(run_id, submission_index)`` 唯一，同号重写（理论上不该发生）
+        覆盖旧值。写失败由调用方降级 —— 与 record_answer 同一契约，
+        历史库故障不拦提交主流程。
+        """
+        if final_status not in ("success", "failed", "unknown"):
+            raise ValueError(f"final_status 不认识: {final_status!r}")
+        sql = (
+            "INSERT OR REPLACE INTO submissions (run_id, submission_index, final_status)"
+            " VALUES (?, ?, ?)"
+        )
+        with self._locked():
+            self._conn.execute(sql, (int(run_id), int(submission_index), final_status))
+
+    def resume_progress(self, run_id: int) -> tuple[int, int]:
+        """续传进度的**单一真相**：返回 ``(已成功份数, 已烧掉的失败尝试数)``。
+
+        v4.1 起按逐份成败表统计 —— 硬崩后每份成功/失败都已经落过行，
+        续传起点不再依赖"批次收尾才写"的 runs.success_count。
+        逐份表建立之前的老批次没有逐份行：退回 runs 的收尾计数
+        （优雅中断的批次收尾时写过这两个数；硬崩的老批次本来就是 0，
+        与旧版"续不上"的行为一致，不会更糟）。
+        """
+        with self._locked():
+            row = self._conn.execute(
+                "SELECT"
+                " SUM(CASE WHEN final_status = 'success' THEN 1 ELSE 0 END) AS done,"
+                " SUM(CASE WHEN final_status IN ('failed','unknown') THEN 1 ELSE 0 END)"
+                "   AS fail,"
+                " COUNT(*) AS total"
+                " FROM submissions WHERE run_id = ?",
+                (int(run_id),),
+            ).fetchone()
+            if row is not None and int(row["total"] or 0) > 0:
+                return int(row["done"] or 0), int(row["fail"] or 0)
+            run = self._conn.execute(
+                "SELECT success_count, fail_count FROM runs WHERE id = ?",
+                (int(run_id),),
+            ).fetchone()
+        if run is None:
+            return 0, 0
+        return int(run["success_count"] or 0), int(run["fail_count"] or 0)
 
     def reap_stale_runs(self, stale_after_minutes: int = 60) -> int:
         """把卡在 ``running`` 的孤儿批次改判为 ``failed``，返回处理条数。

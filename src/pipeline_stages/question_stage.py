@@ -11,7 +11,6 @@ import time
 from typing import Any, Callable
 
 
-from ..answering import build_answer_strategy
 from .. import distribution  # v3.2 投递分布在线纠正的缓冲入口
 from .. import reverse_fill  # v3.2 真实答卷回放：逐题问一次要不要覆盖
 from ..answering_v2 import generate_answer as generate_answer_v2
@@ -95,6 +94,62 @@ def _wait_for_questions(
 _HOLD_POLL = 0.25   # 轮询片长度（秒）；也是 holding 期间时钟暂停的粒度
 
 
+def _v2_selected(q: dict) -> list[Any]:
+    """用 v2 生成器出 single/multi 的选项值列表（点击/落盘/回执路径不变）。
+
+    v4.1（CODE_REVIEW_v4.0 P0-1）：single/multi 此前走 v1 ``build_answer_strategy``，
+    而 plan（--alpha-target）与 distribution（--drift-correct）的查表入口只接在
+    v2 上 —— 问卷上最常见的两类题于是两个功能都拿不到：配额建了不兑现、
+    统计收了不纠正。v1 与 v2 在这两类题上返回同域的选项值列表（v2 内部
+    ``{"type": ..., "selected": [choices[i], ...]}``），路由切换对点击层透明。
+    v1 模块已随之退役。
+    """
+    return list(generate_answer_v2(q).get("selected") or [])
+
+
+def _distribution_picks(
+    q: dict,
+    qtype: str,
+    options_selected: list[Any],
+) -> tuple[list[int], int]:
+    """把落库用的 ``options_selected``（value/分值域）换算成 distribution 的权重下标域。
+
+    v4.1（CODE_REVIEW_v4.0 P0-2）：此前把 1-based 的选项 value / 量表分值直接
+    喂给 ``distribution.buffer_answer``，而 ``adjust`` 按 0-based 权重下标取数 ——
+    0 号选项恒被判"严重欠投"顶满 factor 上限，其余修正整体错一位，末位份额
+    永远丢弃。这里统一换算：
+
+    - single/multi/dropdown：``choices.index(v)``（value 域 → 下标域）；
+    - scale：``val - scale_min``（权重域第 i 格对应分值 scale_min+i）；
+    - matrix* / sort / 其余：**不收**。矩阵的统计单位是"每行"，摊平计数会把
+      每份 len(rows) 个 pick 混进同一桶，份额和 ≠ 1，factor 永远钉在夹紧边界；
+      排序题记的是 item id，不是选项份额。宁可少纠正，不可对错账纠正 ——
+      不入账时 ``adjust`` 查不到统计，原样返回权重。
+
+    :return: ``(0-based picks, 权重槽位数)``；题型不参与时 ``([], 0)``。
+    """
+    qt = str(qtype).lower()
+    if qt in ("single", "multi", "dropdown"):
+        choices = list(q.get("choices") or [])
+        index_of: dict[Any, int] = {}
+        for i, c in enumerate(choices):
+            index_of.setdefault(c, i)   # 同值重复选项取第一个，避免重复计数
+        picks = [index_of[v] for v in options_selected if v in index_of]
+        return picks, len(choices)
+    if qt in ("scale", "rating"):
+        try:
+            smin = int(q.get("scale_min", 1))
+            smax = int(q.get("scale", 5))
+        except (TypeError, ValueError):
+            return [], 0
+        picks = [
+            v - smin for v in options_selected
+            if isinstance(v, int) and smin <= v <= smax
+        ]
+        return picks, max(smax - smin + 1, 0)
+    return [], 0
+
+
 # ============================================================================
 #  单题答题分发器 + 逐题 history 答案明细落盘
 # ============================================================================
@@ -109,8 +164,9 @@ def _answer_one_question(
 ) -> bool:
     """为单道题生成答案并写入 DOM，可选地落盘 history.answers。
 
-    - V1 题型 (single/multi)：沿用 ``build_answer_strategy`` +
-      ``js_click_question_options``，保证 100% 行为不变。
+    - single/multi：``answering_v2.generate_answer``（经 :func:`_v2_selected` 取
+      选项值列表）+ ``js_click_question_options`` —— 点击/落盘路径与 v1 时代一致，
+      生成器统一到 v2 是为了让 plan/distribution 的查表入口覆盖这两类题（v4.1）。
     - V2 题型 (text/scale/dropdown/matrix_single)：使用
       ``answering_v2.generate_answer``（统一 dict）+ 对应 interaction 新函数。
     - v3.0 题型 (matrix_multi/sort)：同上，分发在下面的 ``ans_type`` 分支链。
@@ -151,10 +207,10 @@ def _answer_one_question(
             replay_values = picked
 
     # ------------------------------------------------------------------
-    #  V1 题型：单选 / 多选（完全保留原逻辑，不做任何破坏性改动）
+    #  V1 题型：单选 / 多选（点击/回执路径不变；生成已统一走 v2，见 _v2_selected）
     # ------------------------------------------------------------------
     if qtype in ("single", "multi"):
-        answer_values = replay_values if replay_values else build_answer_strategy(q)
+        answer_values = replay_values if replay_values else _v2_selected(q)
         try:
             is_ok = js_click_question_options(driver, qnum, qtype, answer_values)
         except TRANSIENT_DOM_EXCEPTIONS as _e:
@@ -283,7 +339,7 @@ def _answer_one_question(
             else:
                 # 兜底：如果有 choices，降级成单选（与 answering_v2 的兜底一致）
                 if q.get("choices"):
-                    answer_values = build_answer_strategy(q)
+                    answer_values = _v2_selected({**q, "type": "single"})
                     is_ok = js_click_question_options(driver, qnum, "single", answer_values)
                     options_selected = list(answer_values)
                 else:
@@ -346,16 +402,12 @@ def _answer_one_question(
     # ---- 投递分布纠正：先攒进缓冲，这一份真的提交成功了才计入 ----
     # 与上面的 history 落盘同址不同命：history 记的是"作答时就写"，这里要的是
     # "**落地**了多少份" —— 失败与 UNKNOWN 的那几份不该进来（见 src/distribution.py）。
+    # v4.1：value/分值域先经 _distribution_picks 换算成 0-based 权重下标域再入账
+    # （P0-2），矩阵/排序不入账（统计口径不同，见该函数 docstring）。
     if distribution.control_enabled() and is_ok and options_selected:
-        picks = [v for v in options_selected if isinstance(v, int)]
-        if picks:
-            total = (
-                len(q.get("choices") or [])
-                or len(q.get("cols") or [])
-                or len(q.get("items") or [])
-                or len(picks)
-            )
-            distribution.buffer_answer(qnum, picks, total)
+        picks, n_slots = _distribution_picks(q, qtype, options_selected)
+        if picks and n_slots > 0:
+            distribution.buffer_answer(qnum, picks, n_slots)
 
     return bool(is_ok)
 

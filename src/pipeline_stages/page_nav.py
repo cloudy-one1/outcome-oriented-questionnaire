@@ -37,18 +37,28 @@ NEXT_PAGE_SELECTORS: list[str] = list(WJX.next_page_selectors)
 _PAGE_WRAPPER_SEL = WJX.page_wrapper_selector
 _DETECT_PAGES_JS = f"""
 var nodes = document.querySelectorAll('{_PAGE_WRAPPER_SEL}');
-var pages = 0, shown = 0;
+var ctl = [];
 for (var i = 0; i < nodes.length; i++) {{
     var n = nodes[i];
     // 只把"确实装着题目控件"的容器当一页，避免把分页导航条本身数成一页
     if (!n.querySelector || !n.querySelector('input, select, textarea')) continue;
-    pages += 1;
-    var hidden = n.hidden || (n.style && n.style.display === 'none');
-    if (!hidden && window.getComputedStyle
-            && window.getComputedStyle(n).display === 'none') hidden = true;
-    if (!hidden) shown += 1;
+    ctl.push(n);
 }}
-return JSON.stringify({{pages: pages, shown: shown}});
+var pages = ctl.length, shown = 0;
+function _hidden(el) {{
+    var hidden = el.hidden || (el.style && el.style.display === 'none');
+    if (!hidden && window.getComputedStyle
+            && window.getComputedStyle(el).display === 'none') hidden = true;
+    return hidden;
+}}
+for (var j = 0; j < ctl.length; j++) {{
+    if (!_hidden(ctl[j])) shown += 1;
+}}
+// v4.2：最后一个**装着控件**的分页容器是否可见 —— 它可见说明已经站在最后一页，
+// 这是把"没有下一页按钮"与"最后一页"区分开的唯一判据（CODE_REVIEW_v4.0 P2：
+// 此前两者混同，多页问卷中段按钮认不出会被当成最后一页照常提交半份卷）。
+var lastVisible = pages > 0 && !_hidden(ctl[pages - 1]);
+return JSON.stringify({{pages: pages, shown: shown, lastVisible: lastVisible}});
 """
 
 
@@ -58,19 +68,26 @@ def page_counts(driver: Any) -> tuple[int, int]:
     探测本身出问题（脚本被页面改写、会话已失效）时一律按"不是分页问卷"处理 ——
     这样最坏结果只是"不翻页"，而反过来（猜成多页）会在单页问卷上白点一次下一页键。
     """
+    pages, _shown, _last = _page_geometry(driver)
+    return pages, _shown
+
+
+def _page_geometry(driver: Any) -> tuple[int, int, bool]:
+    """``(容器数, 可见数, 最后一个容器是否可见)``；探测失败按单页降级。"""
     try:
         raw = driver.execute_script(_DETECT_PAGES_JS)
     except Exception as _e:  # noqa: BLE001 - 旁路探测，任何失败都只降级为"单页"
         raise_non_recoverable(_e)
         logger.debug("分页探测失败，按单页问卷处理: %s", _e)
-        return 0, 0
+        return 0, 0, False
     if not isinstance(raw, str):
-        return 0, 0
+        return 0, 0, False
     try:
         data = json.loads(raw)
-        return int(data.get("pages", 0)), int(data.get("shown", 0))
+        return (int(data.get("pages", 0)), int(data.get("shown", 0)),
+                bool(data.get("lastVisible", False)))
     except (ValueError, TypeError, AttributeError):
-        return 0, 0
+        return 0, 0, False
 
 _CLICK_NEXT_JS_TEMPLATE = """
 var sels = %s;
@@ -131,14 +148,23 @@ def advance_to_next_page(
     """
     # 先确认"这真是一份分页问卷"：单页问卷没有下一页按钮，但它的提交键可能长得像，
     # 误点就等于只交第一页 —— 所以没有 ≥2 个分页容器时直接判定"没有下一页"。
-    pages, _shown = page_counts(driver)
+    pages, _shown, last_visible = _page_geometry(driver)
     if pages < 2:
         return "no_more", f"分页容器 {pages} 个，按单页问卷处理"
 
     js = _CLICK_NEXT_JS_TEMPLATE % json.dumps(NEXT_PAGE_SELECTORS)
     raw = driver.execute_script(js)
     if isinstance(raw, str) and raw.startswith("no_button"):
-        return "no_more", "未发现可用的下一页按钮"
+        # v4.2：no_button 有两种截然不同的含义 ——
+        #   a) 最后一个分页容器可见 → 真的站在最后一页 → 照常交提交；
+        #   b) 后面还有藏着的分页容器 → 按钮其实存在只是没认出来 → 判失败，
+        #      绝不能把只答了前几页的问卷交上去（与"failed 必须整份判失败"
+        #      的模块契约同一条红线）。
+        if last_visible:
+            return "no_more", "未发现可用的下一页按钮（最后的分页容器可见，已在末页）"
+        return ("failed",
+                f"分页容器共 {pages} 个但最后一个不可见，且未发现下一页按钮 —— "
+                "后面的页还没答到，不提交")
     if not isinstance(raw, str) or not raw.startswith("clicked:"):
         # 注入返回了意外形态（被页面脚本改写 / 返回 None）：不猜，交回上层判失败
         return "failed", f"翻页脚本返回意外值: {raw!r}"

@@ -350,13 +350,12 @@ def build_stealth_js(
     }} catch (_) {{}}
 
     // ======================================================================
-    // 10. iframe contentWindow 劫持（跨 frame 检测绕过）
+    // 10. iframe contentWindow —— v4.2 刻意**不**劫持。
+    // 此前把所有 iframe 的 contentWindow 都指向顶层 window：同源 iframe 里
+    // 页面自己的 self/parent/top 全错（问卷页一旦嵌编辑器/验证组件/广告位就被
+    // 破坏），而 `iframe.contentWindow === window` 这个过强不变量本身就是检测点
+    // （真实浏览器里永远为 false）。绕过跨 frame 检测的收益抵不过这些代价。
     // ======================================================================
-    try {{
-        _origDefineProperty(HTMLIFrameElement.prototype, 'contentWindow', Object.assign({{
-            get: function() {{ return window; }}
-        }}, commonDesc));
-    }} catch (_) {{}}
 
     // ======================================================================
     // 11. connection.rtt / downlink 模拟真实网络

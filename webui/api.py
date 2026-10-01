@@ -186,7 +186,10 @@ class Api:
             since = max(0, int(query.get("since", "0")))
         except ValueError:
             since = 0
-        rows = [r for r in self.session.log_lines if r["n"] > since]
+        # v4.1：先在锁内取快照再过滤 —— 此前直接迭代 deque，worker 线程并发
+        # append 会抛 "deque mutated during iteration"，被 handle 兜底翻成 500。
+        with self.session._lock:
+            rows = [r for r in self.session.log_lines if r["n"] > since]
         return Response.json({"ok": True, "lines": rows})
 
     def post_field(self, body: bytes, _query: dict) -> Response:
@@ -397,12 +400,12 @@ class Api:
         ("POST", "/api/config/export"): post_config_export,
         ("POST", "/api/config/save-default"): post_save_default,
         ("POST", "/api/weights"): post_weights,
-    ("GET", "/api/history/runs"): get_history_runs,
-    ("GET", "/api/history/answers"): get_history_answers,
-    ("GET", "/api/history/export"): get_history_export,
-    ("POST", "/api/history/purge"): post_history_purge,
-    ("POST", "/api/history/refresh"): post_history_refresh,
-    ("POST", "/api/confirm"): post_confirm,
+        ("GET", "/api/history/runs"): get_history_runs,
+        ("GET", "/api/history/answers"): get_history_answers,
+        ("GET", "/api/history/export"): get_history_export,
+        ("POST", "/api/history/purge"): post_history_purge,
+        ("POST", "/api/history/refresh"): post_history_refresh,
+        ("POST", "/api/confirm"): post_confirm,
         ("POST", "/api/run"): post_run,
         ("POST", "/api/stop"): post_stop,
         ("POST", "/api/shutdown"): post_shutdown,

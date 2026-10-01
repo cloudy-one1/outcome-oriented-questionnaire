@@ -862,43 +862,53 @@ def preflight(
     table: Sequence[dict[str, str]],
     detected_questions: Sequence[dict[str, Any]],
     target_submissions: int | None = None,
+    *,
+    with_columns: bool = True,
 ) -> list[str]:
     """跑之前的告警清单（人读中文句子）。**这里不抛异常** —— 拦截与降级
     的区别很重要：列对不上题只是"这一题照旧随机"，不是"这次运行不能跑"。
+
+    ``with_columns=False`` 给启动阶段（探测还没发生）用：列计划三态告警全部
+    跳过，只留表级的空表/行数提示。v4.2（CODE_REVIEW_v4.0 P2）：此前
+    ``begin_replay`` 拿空题目列表跑列计划，每道题列都吃一条 blocked 假警 ——
+    用户要么被吓退，要么学会忽略回放告警，真 blocked 跟着没人看。列的真实
+    状态由 ``_plan_for`` 在首次逐题作答时带 dedup 地讲。
     """
     rows: list[dict[str, str]] = [dict(r) for r in table]
     headers = headers_of(rows)
-    plan = resolve_question_columns(headers, list(detected_questions), sample_rows=rows)
+    plan = (resolve_question_columns(headers, list(detected_questions), sample_rows=rows)
+            if with_columns else None)
     out: list[str] = []
 
     if not rows:
         out.append("[回放] 答卷表是空的 → 本次运行与不启用回放完全一致（逐题走加权随机）")
 
-    for b in plan.blocked:
-        out.append(f"[回放] 列「{b.header}」{b.reason} → 这一列不回放")
-    for b in plan.fallback:
-        out.append(
-            f"[回放] 列「{b.header}」（Q{b.qnum}）{b.reason} → 这些份的该题走加权随机"
-        )
+    if plan is not None:
+        for b in plan.blocked:
+            out.append(f"[回放] 列「{b.header}」{b.reason} → 这一列不回放")
+        for b in plan.fallback:
+            out.append(
+                f"[回放] 列「{b.header}」（Q{b.qnum}）{b.reason} → 这些份的该题走加权随机"
+            )
 
-    claimed = {b.qnum for b in plan.bindings if b.qnum is not None}
-    missing = [
-        int(q["q"]) for q in detected_questions
-        if _as_int(q.get("q")) is not None and int(q["q"]) not in claimed
-    ]
-    if missing:
-        out.append(
-            "[回放] 探测到的 "
-            + "、".join(f"Q{n}" for n in sorted(missing))
-            + " 在表里没有对应列 → 这些题照旧随机生成"
-        )
+        claimed = {b.qnum for b in plan.bindings if b.qnum is not None}
+        missing = [
+            int(q["q"]) for q in detected_questions
+            if _as_int(q.get("q")) is not None and int(q["q"]) not in claimed
+        ]
+        if missing:
+            out.append(
+                "[回放] 探测到的 "
+                + "、".join(f"Q{n}" for n in sorted(missing))
+                + " 在表里没有对应列 → 这些题照旧随机生成"
+            )
 
-    questions = list(detected_questions)
-    if questions and not any(str(q.get("title") or "").strip() for q in questions):
-        out.append(
-            "[回放] 本次探测没带回题干，只能按表头的前导序号认题 —— "
-            "请核对这份答卷表与当前问卷是同一版本（题序变了会整排错位）"
-        )
+        questions = list(detected_questions)
+        if questions and not any(str(q.get("title") or "").strip() for q in questions):
+            out.append(
+                "[回放] 本次探测没带回题干，只能按表头的前导序号认题 —— "
+                "请核对这份答卷表与当前问卷是同一版本（题序变了会整排错位）"
+            )
 
     target = _as_int(target_submissions)
     if target is not None and target > len(rows):
@@ -936,7 +946,10 @@ def begin_replay(path: str, target_submissions: int | None = None) -> list[str]:
     _session = _Session(
         path=path, table=table, queue=ReplayQueue(table), headers=headers_of(table)
     )
-    return preflight(table, [], target_submissions=target_submissions)
+    # with_columns=False：此刻探测还没发生，列计划必然全是假警（v4.2，
+    # 见 preflight docstring）；列的真实状态由 _plan_for 逐题作答时讲。
+    return preflight(table, [], target_submissions=target_submissions,
+                     with_columns=False)
 
 
 def end_replay() -> None:

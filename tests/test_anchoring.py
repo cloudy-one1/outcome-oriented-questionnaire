@@ -21,7 +21,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from src import anchoring, config  # noqa: E402
-from src.answering import build_answer_strategy  # noqa: E402
+from src.answering_v2 import generate_answer  # noqa: E402
 from src.config_io import (  # noqa: E402
     SCHEMA_VERSION,
     save_weight_config,
@@ -210,23 +210,26 @@ def test_lookup_reads_the_global_by_default() -> None:
 # ===========================================================================
 #  与作答链路的接线（"算了却没传"这类缺陷的历史现场）
 # ===========================================================================
-def test_build_answer_strategy_uses_the_anchored_entry() -> None:
-    """加权确实来自锚点条目 —— 接线断了这里就红。"""
+def test_generate_answer_uses_the_anchored_entry() -> None:
+    """加权确实来自锚点条目 —— 接线断了这里就红。（v4.1：改从 v2 生成器入口测，
+    single/multi 生产路径已统一走 answering_v2）"""
     config.WEIGHT_CONFIG[2] = {
         "type": "single", "weights": [1.0, 0.0, 0.0, 0.0],
         "anchor": {"title": "您的性别", "signature": "single:4"},
     }
-    picked = {build_answer_strategy(_q(9, "您的性别"))[0] for _ in range(60)}
+    picked = {generate_answer(_q(9, "您的性别"))["selected"][0] for _ in range(60)}
     assert picked == {1}
 
 
-def test_build_answer_strategy_falls_back_to_uniform_when_the_stems_differ() -> None:
+def test_generate_answer_falls_back_to_uniform_when_the_stems_differ() -> None:
     """题号撞上但题干不是那道题 → 该题走等权，而不是套用错位的确定性分布。"""
     config.WEIGHT_CONFIG[9] = {
         "type": "single", "weights": [1.0, 0.0, 0.0, 0.0],
         "anchor": {"title": "您的性别", "signature": "single:4"},
     }
-    picked = {build_answer_strategy(_q(9, "您的最高学历"))[0] for _ in range(200)}
+    picked = {
+        generate_answer(_q(9, "您的最高学历"))["selected"][0] for _ in range(200)
+    }
     assert len(picked) > 1, "错位配置被用上了：只选出了一个选项"
 
 

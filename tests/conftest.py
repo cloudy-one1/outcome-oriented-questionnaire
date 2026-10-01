@@ -6,12 +6,12 @@
 真卷准备的，我们的 E2E 跑的是 `tests/fixtures/` 里的本地 mock 页面，平台改版不会
 影响它。
 
-为什么值得做：ci.yml 的 e2e job 现在是 `continue-on-error: true`，因为驱动在
-runner 上偶发起不来，不该红掉主流程 —— 代价是这个 job 从此没人看，而它是唯一能
+为什么值得做：引入这套机制时 ci.yml 的 e2e job 曾是 `continue-on-error: true`（驱动在
+runner 上偶发起不来，不该红掉主流程）—— 代价是这个 job 从此没人看，而它是唯一能
 验证"拼出来的 JS 在真 DOM 里成立"的环节（selector 被误拼进 JS 字符串字面量这类
 "语法合法、语义非法"的错误，node --check 和所有离线替身都看不见）。
-把可归因于浏览器的失败转成 skip 之后，这个 job 可以变成真门禁：剩下的红只剩
-"代码回归"一种解释。
+把可归因于浏览器的失败转成 skip 之后，这个 job 自 v3.1 起已改成阻塞门禁：
+剩下的红只剩"代码回归"一种解释。
 
 配套的 `scripts/e2e_gate.py` 管住这套机制唯一的作弊面：全 skip 的 job 看起来
 也是绿的。

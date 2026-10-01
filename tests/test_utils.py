@@ -226,6 +226,14 @@ class TestWeightsUsable(unittest.TestCase):
                 f"{bad!r} 应判为不可用",
             )
 
+    def test_rejects_negative_weights(self) -> None:
+        """v4.1：混合正负此前只查正权和、穿透运行时防线 —— numpy 路径除零或
+        抛 "probabilities are not non-negative"，random.choices 路径产出静默
+        错误的分布。负权重在任何采样语义下都不合法。"""
+        for bad in ([-1.0, 1.0, 1.0], [5.0, -5.0], [3.0, 1.0, -1.0]):
+            self.assertFalse(weights_are_usable(bad, 3), f"{bad!r} 应判为不可用")
+            self.assertIsNone(sanitize_weights(bad, 3), "sanitize 同样必须降级")
+
     def test_accepts_normal_weights(self) -> None:
         self.assertTrue(weights_are_usable([1, 2, 3], 3))
         self.assertTrue(weights_are_usable([0.0, 0.0, 5.0], 3))
@@ -239,8 +247,8 @@ class TestWeightsUsable(unittest.TestCase):
         self.assertEqual(sanitize_weights([1, 3], 2), [1.0, 3.0])
 
     def test_generator_no_longer_crashes_on_bad_weights(self) -> None:
-        """端到端：坏权重只降级，不抛。"""
-        from src import answering, answering_v2
+        """端到端：坏权重只降级，不抛。（v4.1：v1 生成器退役，统一走 v2 入口）"""
+        from src import answering_v2
 
         cfgs = {
             1: {"type": "multi", "weights": [0, 0, 0],
@@ -249,10 +257,10 @@ class TestWeightsUsable(unittest.TestCase):
                 "weights": [float("nan")] * 5},
         }
         with mock.patch.dict("src.config.WEIGHT_CONFIG", cfgs, clear=True):
-            out = answering.build_answer_strategy(
+            multi = answering_v2.generate_answer(
                 {"q": 1, "type": "multi", "choices": [1, 2, 3]}
             )
-            self.assertEqual(len(out), 2)
+            self.assertEqual(len(multi["selected"]), 2)
             scale = answering_v2.generate_answer(
                 {"q": 2, "type": "scale", "scale": 5}
             )

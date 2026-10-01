@@ -26,7 +26,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 # 与 pyrightconfig.json 的 include 保持一致（下面第二条用例就是钉这个的）
-SCOPED_PATHS = ("src", "webui",
+# v4.2：scripts/ 纳入门禁范围 —— 三个门禁脚本自己只有行为测试，没有类型检查。
+SCOPED_PATHS = ("src", "webui", "scripts",
                 "run_cli.py", "run_web.py", "conftest.py")
 
 _SUPPRESSION = re.compile(r"^#\s*(type:\s*ignore|pyright:)")

@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -24,8 +25,13 @@ from ..models import SUBMIT_FAILED, SUBMIT_SUCCESS, SUBMIT_UNKNOWN, SubmitOutcom
 from ._scripts import (
     SUBMIT_SELECTORS,
     submit_button_fallback_script,
+    submit_redirect_veto_script,
     submit_success_detect_script,
 )
+
+#: 跳转 URL 上的验证特征（与 src/verification.py 信号 b 的同一组词根，双处各持一份
+#: 是刻意的：verification 看的是问卷页正文，这里看的是提交后的跳转地址）
+_REDIRECT_VETO_URL_RE = re.compile(r"verify|captcha|antispam|validate|turing|check-human")
 
 
 # ============================================================================
@@ -108,8 +114,15 @@ def _wait_until_submit_effect(driver: Any, timeout: float) -> SubmitOutcome:
     """点击提交按钮后，检测效果（URL 变化 / 成功提示）。
 
     返回值三态：
-        "success" : URL 变化，或页面出现「提交成功 / 感谢您的参与」等关键词
-        "unknown" : 等待 timeout 内未观察到任何效果
+        "success" : URL 变化且未被负向信号否决，或页面出现「提交成功 / 感谢您的参与」
+        "unknown" : 等待 timeout 内未观察到任何效果；或跳转被否决（见下）
+
+    v4.2（CODE_REVIEW_v4.0 P2）：URL 变化不再**无条件**判成功 —— 跳到人机验证页 /
+    错误页同样是跳转，此前会被记成成功。跳转后先跑一次负向信号探测（captcha 组件
+    与错误文案，见 ``submit_redirect_veto_script``）：被否决就继续轮询到超时
+    （unknown —— 按钮点过、页面动了，但成不成说不清），不否决才按成功收。
+    成功侧刻意不做强信号要求：问卷星支持提交后跳自定义网址，强求成功文案会把
+    真成功判成 unknown → 下一轮重复提交，那个代价更大。
     """
     try:
         old_url: str | None = driver.current_url
@@ -120,20 +133,34 @@ def _wait_until_submit_effect(driver: Any, timeout: float) -> SubmitOutcome:
         old_url = None
     start = time.perf_counter()
     success_check_js = submit_success_detect_script()
+    veto_check_js = submit_redirect_veto_script()
     # 瞬态集合已含 WebDriverException 基类，所以走到 `except Exception` 的几乎只剩
     # KeyError/TypeError 这类纯代码 bug。此前它被 `pass` 无日志吞掉（审查 P2-2 的
     # 同类站点）。控制流刻意不变：仍然轮询到超时、仍然返回 unknown，只是留一次痕
     # —— 每 0.15s 轮一次，不打标记会在 6s 窗口里刷出几十行。
     bug_logged = False
+    vetoed = False
     while time.perf_counter() - start < timeout:
         try:
             cur = driver.current_url
             if old_url is None:
                 old_url = cur          # 补建基线，后续轮次才能做真实的 URL 变化对比
                 continue
-            if cur != old_url:
-                return SUBMIT_SUCCESS
+            if cur != old_url and not vetoed:
+                # 跳转先过负向信号否决：URL 词根 → DOM/文案探测，两级都不命中
+                # 才算干净跳转。否决只置位不提前收 —— 成功信号每一轮都还在查，
+                # 人在场把验证做完的那条路仍然通向 success。
+                reason = "url-verify" if _REDIRECT_VETO_URL_RE.search(cur.lower()) else None
+                if not reason:
+                    _dom = driver.execute_script(veto_check_js)
+                    reason = str(_dom) if _dom else None
+                if reason:
+                    vetoed = True
+                    print(f"  [提交] 跳转后的页面带负向信号（{reason}）→ "
+                          "继续观察至超时，按 unknown 保守计败")
             if driver.execute_script(success_check_js):
+                return SUBMIT_SUCCESS
+            if cur != old_url and not vetoed:
                 return SUBMIT_SUCCESS
         except TRANSIENT_DOM_EXCEPTIONS:
             pass

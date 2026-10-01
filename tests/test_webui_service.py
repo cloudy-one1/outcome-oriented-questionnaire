@@ -1049,6 +1049,11 @@ class FakeHistory:
         self.queries.append(url)
         return self.prev
 
+    def resume_progress(self, run_id):
+        """v4.1 续传口径：替身直接读 prev 行的收尾计数（无逐份行时的回退路径）。"""
+        prev = self.prev or {}
+        return int(prev.get("success_count", 0)), int(prev.get("fail_count", 0))
+
     @classmethod
     def deserialize_weight_config(cls, prev):
         return dict((prev or {}).get("_restored", {}))
@@ -1057,8 +1062,9 @@ class FakeHistory:
         self.closed = True
 
 
-def resumable(done=2, planned=5, restored=None):
+def resumable(done=2, planned=5, restored=None, failed=0):
     prev = {"id": 7, "status": "interrupted", "success_count": done,
+            "fail_count": failed,
             "total_submissions": planned, "started_at": "2026-09-20T10:00:00"}
     if restored:
         prev["_restored"] = restored
@@ -1251,7 +1257,26 @@ def test_resume_accepted_moves_the_counters_the_engine_will_use(tmp_path):
     assert state.resume_start_idx + state.attempts_cap - 1 == state.total_target
     assert state.total_target - state.success_count == state.attempts_cap
     assert any(t == "OK" and "恢复 Run #7" in x for t, x in logs_of(sess))
-    assert any("断点续传启动：从第 3 份" in x for _, x in logs_of(sess))
+    assert any("断点续传启动：从第 3 次尝试" in x for _, x in logs_of(sess))
+
+
+def test_resume_adds_failed_attempts_to_the_start_index(tmp_path):
+    """v4.1：起点必须跳过已烧掉的失败轮，attempts_cap 必须减去 done+fail。
+
+    此前只减 done：上批 done=2/fail=3/planned=10 时恢复后多跑 3 份，新份的
+    submission_index 撞上旧失败轮（record_answer 的 INSERT OR REPLACE 覆盖旧
+    明细），且 fail_count 不恢复 → 收尾把上批失败数清零。
+    """
+    sess, svc, calls, _db = make_runner(
+        tmp_path, prev=resumable(done=2, planned=10, failed=3))
+    sess.set_field("url", "https://x.test/s")
+    svc.start_run()
+    assert svc.wait_for_run(5)
+    state = calls["state"]
+    assert (state.resume_start_idx, state.run_id, state.success_count) == (6, 7, 2)
+    assert state.fail_count == 3, "上批失败数必须跟着恢复，收尾覆写才不清零"
+    assert state.total_target == 10 and state.attempts_cap == 5
+    assert state.resume_start_idx + state.attempts_cap - 1 == state.total_target
 
 
 def test_the_resume_question_names_the_run_and_the_number_it_offers(tmp_path):
@@ -1270,7 +1295,7 @@ def test_the_resume_question_names_the_run_and_the_number_it_offers(tmp_path):
     message = asked[0][1]
     assert "Run #7" in message
     assert "已成功 5 / 17 份" in message
-    assert "是否从第 6 份继续" in message
+    assert "是否从第 6 次尝试继续" in message
 
 
 def test_the_resume_query_uses_the_same_500_char_key_the_table_stores(tmp_path):
@@ -1722,7 +1747,7 @@ class _RaisingHistory:
     def query_runs(self, limit=50, status=None):
         return self._runs
 
-    def query_answers(self, run_id):
+    def query_answers(self, run_id, limit=5000):
         if run_id in self._skip:
             raise OSError("database disk image is malformed")
         return [{"run_id": run_id, "submission_index": 1, "question_number": 1,

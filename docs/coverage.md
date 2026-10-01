@@ -11,9 +11,9 @@
 
 | 范围 | 离线覆盖率 |
 |---|---|
-| 全部 | **93.2%** |
-| `src/` | 91.7%（4864 条语句剩 405 行） |
-| `webui/` | 99.1%（1294 条语句剩 12 行） |
+| 全部 | **93.0%** |
+| `src/` | 91.4%（4967 条语句剩 427 行） |
+| `webui/` | 98.9%（1310 条语句剩 15 行） |
 
 #### 已补齐的缺口（"补齐前"一列是登记时的实测）
 
@@ -22,17 +22,17 @@
 | `src/logging_setup.py` | 0% | **100.0%**（剩 0 行） | `tests/test_logging_setup.py` |
 | `src/browser/driver_factory.py` | 9% | **98.4%**（剩 3 行） | `tests/test_driver_factory_offline.py` |
 | `src/pipeline.py` | 26% | **97.0%**（剩 7 行，v3.0 加了分页与弹窗诊断分支） | `tests/test_pipeline_core.py`、`tests/test_pipeline_waits.py` |
-| `src/verification.py` | 34% | **97.0%**（剩 3 行，非 Windows 降级桩本机不可达） | `tests/test_verification_flow.py` |
+| `src/verification.py` | 34% | **98.0%**（剩 2 行，非 Windows 降级桩本机不可达） | `tests/test_verification_flow.py` |
 | `src/browser/__init__.py` | 52.2% | **100.0%**（剩 0 行） | `tests/test_browser_facade_offline.py` |
 | `src/interactions/choices.py` | 58.8% | **100.0%**（剩 0 行） | `tests/test_choices_interaction.py` |
 | `src/interactions/sort.py` | 22.2% | **100.0%**（剩 0 行） | `tests/test_sort_interaction.py` |
-| `src/cli.py` | 74.3% | **81.9%**（剩 95 行，剩余是 run_batch 内的浏览器接线与降级分支） | `tests/test_cli_exit_and_reports.py`、`tests/test_cli_main.py`、`tests/test_cli_batch.py` |
+| `src/cli.py` | 74.3% | **81.4%**（剩 101 行，剩余是 run_batch 内的浏览器接线与降级分支） | `tests/test_cli_exit_and_reports.py`、`tests/test_cli_main.py`、`tests/test_cli_batch.py` |
 
 #### 仍然没有防线的地方
 
 | 模块 | 离线覆盖率 | 为什么还留着 |
 |---|---|---|
-| `src/pipeline_stages/question_stage.py` | 63.3% | 逐题 DOM 交互主干：等待、「哪道题调哪个填充器」的分发、带框选项只勾不填的降级都已有离线测试（`tests/test_question_stage_dispatch.py`），真实点击仍靠 E2E |
+| `src/pipeline_stages/question_stage.py` | 66.7% | 逐题 DOM 交互主干：等待、「哪道题调哪个填充器」的分发、带框选项只勾不填的降级都已有离线测试（`tests/test_question_stage_dispatch.py`），真实点击仍靠 E2E |
 | `src/qr_utils.py` | 51.5% | 缺口全在「真的解一张图」那 16 行：要 OpenCV，而 CI 口径不装可选依赖，`tests/test_qr_utils.py` 里两条真读图用例因此 skip。缺依赖时的降级顺序、失败路径提示几次与是哪一类、解不出必给 None 都已有契约。该模块 v3.4 从 `gui/` 移到 `src/`，v4.0 桌面版退役后它是 webui 独占的可选依赖路径 |
 
 > 本块由 `python scripts/coverage_doc.py --write` 从 `coverage.json` 生成，`--check` 已进 CI 当门禁

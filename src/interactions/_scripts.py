@@ -292,7 +292,14 @@ def fill_text_script(q: int, text: str) -> str:
         try {{ el.dispatchEvent(new Event('focus', {{ bubbles:true }})); }} catch(_) {{}}
 
         // 3. 清原有值 → 赋值（如果是 contentEditable 走 innerText）
+        // v4.1：按 maxlength 截断 —— 程序赋值不受 maxlength 约束，超长文本
+        // 会被平台长度校验整格清掉，提交时这题落空、只能判 unknown（与
+        // fill_option_blank 的同类缺口同修；那里当时已带截断）。
         var txt = {text_json};
+        try {{
+            var limit = parseInt(el.getAttribute('maxlength'));
+            if (limit > 0 && txt.length > limit) txt = txt.substring(0, limit);
+        }} catch(_) {{}}
         if (el.isContentEditable) {{
             el.innerText = txt;
         }} else {{
@@ -623,7 +630,10 @@ def fill_sort_script(q: int, order: list) -> str:
             var li = byId2[String(v)];
             if (li && wanted.indexOf(li) === -1) wanted.push(li);
         }});
-        lis.forEach(function(li) {{ if (wanted.indexOf(li) === -1) wanted.push(li); }});
+        // v4.1：这条守卫此前被下面一行"把没匹配上的 li 补进 wanted"的循环架空，
+        // 恒为假 —— order 引用了列表里不存在的项时，脚本会静默按"认识的项 +
+        // 剩余项"重排并返回 true，上层记成功，实际提交了与目标不符的顺序。
+        // 现在删掉补齐循环：order 必须恰好覆盖全部列表项，有认不出的项就拒绝。
         if (wanted.length !== lis.length) return false;   // 顺序里有认不出的项
         wanted.forEach(function(li) {{ ul.appendChild(li); }});
 
@@ -871,4 +881,44 @@ def submit_success_detect_script() -> str:
                txt.indexOf('感谢您的参与') !== -1 ||
                txt.indexOf('感谢您的认真填写') !== -1 ||
                !!document.querySelector('.submit-succ, .success-tip, #success-tip, .success');
+    """
+
+
+def submit_redirect_veto_script() -> str:
+    """提交后跳转页的**负向**信号探测（v4.2，CODE_REVIEW_v4.0 P2）。
+
+    返回否决原因字符串（'' = 不否决）。URL 变化本身不能当成功判据 ——
+    跳到人机验证页 / 错误页同样是跳转。这里刻意只收高精度的负向信号：
+    验证组件的专有词根（不收 ``[id*="verify"]`` 这类宽词根，也不收 layui 通用
+    弹窗 —— 那两类在正常完成页上会误伤），以及错误页文案。
+    成功侧不做要求：问卷星支持"提交后跳自定义网址"，强求成功文案会把真成功
+    判成 unknown → 下一轮重复提交，那个代价更大。
+    """
+    return """
+        return (function () {
+            var sel = ['#antispam', '.antispam', '#wjx-antispam', '.wjx-antispam',
+                       '.captcha', '#captcha', 'iframe[src*="captcha"]',
+                       'iframe[src*="tcaptcha"]', 'iframe[src*="captcha-cloud"]',
+                       'iframe[src*="recaptcha"]', 'iframe[src*="hcaptcha"]',
+                       '.TencentCaptcha', '#TCaptcha', '.geetest_holder',
+                       '.nc-container', '.yidun', '.slide-verify', '.slider-verify'];
+            for (var i = 0; i < sel.length; i++) {
+                try {
+                    var el = document.querySelector(sel[i]);
+                    if (el) {
+                        var r = el.getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0) return 'captcha-dom';
+                    }
+                } catch (_) {}
+            }
+            var txt = ((document.title || '') + ' ' +
+                       ((document.body && document.body.innerText) || '')).toLowerCase();
+            var kw = ['出错了', '服务器错误', '页面不存在', '问卷已经停止', '停止收集',
+                      '人机验证', '请完成验证', 'verify you are human',
+                      'proof you are human'];
+            for (var j = 0; j < kw.length; j++) {
+                if (txt.indexOf(kw[j]) !== -1) return 'error-text:' + kw[j];
+            }
+            return '';
+        })();
     """

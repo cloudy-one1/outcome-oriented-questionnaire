@@ -36,6 +36,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Sequence
 
+from .anchoring import lookup_weight_entry
 from .config import WEIGHT_CONFIG
 from .reliability import cronbach_alpha, dimensions_from_config, reverse_from_config
 
@@ -675,19 +676,31 @@ def ensure_plan(questions: Sequence[Mapping[str, Any]]) -> list[str]:
              + ("不可计算" if plan.alpha_planned is None
                 else f"{plan.alpha_planned:.3f}")
              + f"（参与题号 {sorted(set(items))}，按秩映射兑现配额）"]
+    notes.append("[信度]   配额权重按锚定契约取数：带锚条目按题干+结构认领，"
+                 "不带锚按题号（与作答侧同一份查表）")
     return notes + [f"[信度]   {n}" for n in plan.notes]
 
 
 def _weights_for(q: Mapping[str, Any]) -> list[float]:
-    """该题的目标权重；没配就是等权（计划要兑现的边际与生成器用的是同一份配置）。"""
-    cfg = WEIGHT_CONFIG.get(int(q["q"])) if q.get("q") is not None else None
+    """该题的目标权重；没配就是等权（计划要兑现的边际与生成器用的是同一份配置）。
+
+    v4.2（CODE_REVIEW_v4.0 P2）两处修正：
+      - 取数走 ``anchoring.lookup_weight_entry``（锚点优先、题号兜底）—— 此前按
+        题号直读 ``WEIGHT_CONFIG``，插题问卷上配额会被**精确地**兑现到错位的题上，
+        anchoring 契约 1（带锚条目永不退回答题号）在计划这条路上不成立；
+      - 负权重一律回退等权 —— 此前只查正权和，负权重会让 ``_quotas`` 产出
+        负配额（``base`` 全负 floor 后补不回来，且总和检查反而可能放行）。
+    """
+    cfg = lookup_weight_entry(dict(q)) if q.get("q") is not None else None
     raw = q.get("weights") or (cfg.get("weights") if isinstance(cfg, dict) else None)
     n = _option_count(q)
     try:
         w = [float(x) for x in (raw or [])]
     except (TypeError, ValueError):
         w = []
-    return w if len(w) == n and sum(v for v in w if v > 0) > 0 else [1.0] * n
+    if len(w) != n or any(v < 0 for v in w) or sum(w) <= 0:
+        return [1.0] * n
+    return w
 
 
 def forced_choice(qnum: int | None) -> int | None:

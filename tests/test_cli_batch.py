@@ -158,16 +158,20 @@ class TestRunBatchSmoke(unittest.TestCase):
             cfg_mod.WEIGHT_CONFIG.update(saved)
 
     def test_keyboard_interrupt_marks_interrupted(self) -> None:
-        """Ctrl+C → status='interrupted'（find_resumable_run 可恢复）。"""
+        """Ctrl+C → status='interrupted'（find_resumable_run 可恢复）。
+
+        v4.2：run_batch 标记后**继续上抛** —— main 以非零码退出（与预约等待期
+        口径一致），收尾 finish_run 在栈展开时照常执行，history 不缺收尾。
+        """
         with SubmissionHistory(":memory:") as db:
-            with mock.patch("src.browser.create_driver",
+            with self.assertRaises(KeyboardInterrupt), \
+                 mock.patch("src.browser.create_driver",
                             side_effect=_fake_driver_factory), \
                  mock.patch("src.utils.human_pause", return_value=0.0), \
                  mock.patch("src.pipeline.run_one_submission",
                             side_effect=KeyboardInterrupt):
-                success, fail = cli.run_batch(SURVEY_URL, 3, history_db=db)
+                cli.run_batch(SURVEY_URL, 3, history_db=db)
             row = db._query_one("SELECT * FROM runs")
-        self.assertEqual((success, fail), (0, 0))
         self.assertEqual(row["status"], "interrupted")
 
     def test_resume_reuses_run_and_accumulates_counts(self) -> None:

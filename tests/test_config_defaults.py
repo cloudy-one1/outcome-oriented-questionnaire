@@ -2,14 +2,15 @@
 
 为什么单独开一个文件、且用子进程断言：
   ``src.config.WEIGHT_CONFIG`` 是全局可变 dict，其它测试套件会在用例里
-  注入 / 清空它（``tests/test_answering.py`` 的 setUp 就无条件 clear）。
+  注入 / 清空它（v4.0 前 ``tests/test_answering.py`` 的 setUp 就无条件 clear，
+  该文件已随 v1 生成器退役）。
   于是"出厂那一刻它到底是什么"在本进程内是不可知的 —— 只能新起解释器，
   在干净 import 之后读它。这正是 v2.7 之前 493 个测试全绿却漏掉该缺陷的
   原因：所有等权重分支的测试都跑在一个人造的空配置上。
 
 覆盖三件事：
   1. 出厂 ``WEIGHT_CONFIG`` 为空 dict（不传 --config 时不会套用别人的分布）；
-  2. 空配置下 ``build_answer_strategy`` 真的走等权（docs/config.md「方式一」的承诺）；
+  2. 空配置下 ``generate_answer`` 真的走等权（docs/config.md「方式一」的承诺）；
   3. ``examples/weight_config.example.json`` 能被 loader 读、能通过校验
      —— 迁移出去的示例若漂成非法结构，README 里的引用就变成假链接。
 """
@@ -27,7 +28,8 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from src import answering, config
+from src import config
+from src.answering_v2 import generate_answer
 from src.config_io import load_weight_config, validate_weight_config
 
 EXAMPLE_PATH = os.path.join(ROOT, "examples", "weight_config.example.json")
@@ -79,7 +81,7 @@ class TestShippedDefaults(unittest.TestCase):
         q = {"q": 1, "type": "single", "choices": [1, 2, 3, 4]}
         n = 20000
         picked = collections.Counter(
-            answering.build_answer_strategy(q)[0] for _ in range(n)
+            generate_answer(q)["selected"][0] for _ in range(n)
         )
         self.assertEqual(set(picked), {1, 2, 3, 4})
         for opt in (1, 2, 3, 4):
@@ -105,7 +107,7 @@ class TestShippedDefaults(unittest.TestCase):
             n = 12000
             hits = collections.Counter()
             for _ in range(n):
-                hits.update(answering.build_answer_strategy(q))
+                hits.update(generate_answer(q)["selected"])
             total = sum(hits.values())
             for opt in range(1, n_opts + 1):
                 self.assertAlmostEqual(

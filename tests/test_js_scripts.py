@@ -350,6 +350,7 @@ def _script_cases() -> dict[str, str]:
         ),
         "submit_button_fallback_script__noargs": S.submit_button_fallback_script(),
         "submit_success_detect_script__noargs": S.submit_success_detect_script(),
+        "submit_redirect_veto_script__noargs": S.submit_redirect_veto_script(),
         "install_alert_recorder_script__noargs": S.install_alert_recorder_script(),
         "read_blocked_alerts_script__noargs": S.read_blocked_alerts_script(),
     }

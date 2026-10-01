@@ -85,14 +85,18 @@ def _utf8_stdout() -> None:
     """
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+            reconfigure = getattr(stream, "reconfigure", None)
+            if reconfigure is None:  # pragma: no cover - 非 TextIOWrapper 流
+                continue
+            reconfigure(encoding="utf-8", errors="backslashreplace")
         except (AttributeError, ValueError):  # pragma: no cover - 老 wrapper 流
             pass
 
 
 def main(argv: list[str] | None = None) -> int:
     _utf8_stdout()
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(
+        description=(__doc__ or "").splitlines()[0])
     parser.add_argument("junit", help="pytest --junitxml 产出的文件")
     parser.add_argument("--max", type=int, default=MAX_ANNOTATIONS)
     args = parser.parse_args(argv)

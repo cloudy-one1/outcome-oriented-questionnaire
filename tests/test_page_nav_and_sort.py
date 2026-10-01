@@ -32,10 +32,12 @@ class FakePageDriver:
         self,
         *,
         pages: int = 2,
+        last_visible: bool = True,
         numbers_per_call: list[list[int]] | None = None,
         click_reply: str = "clicked:#btnNext",
     ) -> None:
         self.pages = pages
+        self.last_visible = last_visible
         self.queue = list(numbers_per_call or [[1, 2], [3]])
         self.click_reply = click_reply
         self.clicks = 0
@@ -44,7 +46,8 @@ class FakePageDriver:
     def execute_script(self, script: str, *_a: object, **_k: object) -> object:
         # 三段脚本按各自的开头区分：分页探测 / 翻页点击 / 题目探测
         if script.lstrip().startswith("var nodes ="):
-            return json.dumps({"pages": self.pages, "shown": 1})
+            return json.dumps({"pages": self.pages, "shown": 1,
+                               "lastVisible": self.last_visible})
         if script.lstrip().startswith("var sels ="):
             self.clicks += 1
             return self.click_reply
@@ -104,11 +107,26 @@ def test_single_page_survey_is_never_asked_for_a_next_button() -> None:
     assert "单页" in detail
 
 
-def test_no_next_button_means_last_page() -> None:
-    d = FakePageDriver(pages=2, click_reply="no_button")
-    verdict, _ = page_nav.advance_to_next_page(d, {1, 2}, _sleep=_no_sleep)
+def test_no_next_button_on_the_last_page_is_no_more() -> None:
+    """v4.2：末页判据 = 最后一个分页容器可见。可见 → 没有下一页是正常的。"""
+    d = FakePageDriver(pages=2, last_visible=True, click_reply="no_button")
+    verdict, detail = page_nav.advance_to_next_page(d, {1, 2}, _sleep=_no_sleep)
     assert verdict == "no_more"
+    assert "末页" in detail
     assert d.clicks == 1
+
+
+def test_no_next_button_with_hidden_pages_is_failed_not_no_more() -> None:
+    """v4.2（CODE_REVIEW_v4.0 P2）：多页问卷中段按钮认不出 ≠ 已在最后一页。
+
+    此前两种形状混同：中段找不到按钮照样进提交，只答了前几页的问卷被交上去，
+    服务端仍算一份有效回收 —— 那是最坏的静默失败。现在最后一个分页容器
+    还藏着 → 判 failed，绝不提交。
+    """
+    d = FakePageDriver(pages=3, last_visible=False, click_reply="no_button")
+    verdict, detail = page_nav.advance_to_next_page(d, {1, 2}, _sleep=_no_sleep)
+    assert verdict == "failed"
+    assert "不提交" in detail
 
 
 def test_advanced_when_visible_question_numbers_change() -> None:

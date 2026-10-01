@@ -41,13 +41,19 @@ def _check_digit(body17: str) -> str:
 #  1. 身份证
 # ---------------------------------------------------------------------------
 def test_id_card_is_18_chars_with_valid_checksum_and_birth_date() -> None:
+    import calendar
+
     for _ in range(200):
         p = draw_persona()
         assert re.fullmatch(r"\d{17}[\dXx]", p.id_card), p.id_card
         assert _check_digit(p.id_card[:17]) == p.id_card[17].upper(), p.id_card
         assert p.id_card[6:10] == str(p.birth_year)
-        assert 1 <= int(p.id_card[10:12]) <= 12
-        assert 1 <= int(p.id_card[12:14]) <= 28
+        month = int(p.id_card[10:12])
+        assert 1 <= month <= 12
+        # v4.2：出生日按真实月历抽 —— 此前恒 ≤28，29/30/31 从不出现
+        assert 1 <= int(p.id_card[12:14]) <= calendar.monthrange(p.birth_year, month)[1]
+        # 身份证出生段与生日题同源（Persona.birth_date），同卷两题不再互相矛盾
+        assert p.id_card[6:14] == p.birth_date.strftime("%Y%m%d")
 
 
 def test_id_card_gender_digit_matches_gender_pool() -> None:
@@ -68,6 +74,43 @@ def test_id_card_region_prefix_is_the_same_city_as_the_address() -> None:
         assert int(p.id_card[:2]) in prov_codes, p.id_card[:2]
         assert p.id_card[2:4] != "00", "市级段不能空着，那是省级占位"
         assert p.address_text.startswith(p.province if not p.municipality else p.city)
+
+
+def test_id_card_region_uses_the_real_gb_city_code() -> None:
+    """v4.2（CODE_REVIEW_v4.0 P2）：6 位区划的市级段必须是 GB/T 2260 的**真实市码**。
+
+    此前 = 省码 + 名录下标+1，而名录是截断子集 —— 山东临沂（名录第 11 位）
+    曾拿到 3711，那是日照的段。现在名录直存真码，这里按表逐项钉死。
+    """
+    # 覆盖全部 (省, 市) 组合：对每一项抽一次，命中它的画像必须带表里那个真码
+    claimed = {(code, name): real for code, _n, _m, cities in persona._REGIONS
+               for name, real in cities}
+    assert claimed, "地区表不能是空的"
+    # 名录里每个市的 4 位市码必须落在 GB 序上（省码 + 两位数字）
+    for (prov, name), code4 in claimed.items():
+        assert re.fullmatch(r"\d{2}", str(code4)), (name, code4)
+    # 按省抽人，前 6 位必须与该省名录中某条 (码) 精确一致（不是"顺位拼出来"的值）
+    per_province = {}
+    for code, _n, _m, cities in persona._REGIONS:
+        per_province[code] = {f"{code}{c:0>2}00" for _name, c in cities}
+    hits = 0
+    for _ in range(600):
+        p = draw_persona()
+        region6 = p.id_card[:6]
+        assert region6 in per_province[p.province_code], (
+            f"{p.province}/{p.city} 的区划 {region6} 不在真实市码表里"
+        )
+        hits += 1
+    assert hits == 600
+
+
+def test_idcard_field_wires_the_persona_id_card() -> None:
+    """v4.2：身份证题必须填画像的证件号 —— 此前这条链断在中间，
+    证件号的位置落的是 _random_sentence() 的随机短句。"""
+    p = active_persona()
+    ans = answering_v2.generate_answer({"q": 1, "type": "text", "field": "idcard"})
+    assert ans["field"] == "idcard"
+    assert ans["text"] == p.id_card, "必须用当前画像的证件号，且不是随机短句"
 
 
 # ---------------------------------------------------------------------------

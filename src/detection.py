@@ -400,6 +400,7 @@ return (function() {
             if (isDate || /日期|时间/.test(verify)) field = 'date';
             else if (/邮箱/.test(verify)) field = 'email';
             else if (/手机|电话/.test(verify)) field = 'phone';
+            else if (/身份证|证件/.test(verify)) field = 'idcard';
             else if (/数字|数值/.test(verify)) field = 'age';   // 纯数字框：按年龄档生成最安全
 
             // 地区题的三条平台侧信号（同类项目在 HTML 里就是靠这三条认的）：
@@ -421,7 +422,11 @@ return (function() {
             txt = txt.toLowerCase();
 
             if (field === null) {
-                if (/姓名|名字|name|您的称呼|称呼/.test(txt)) field = 'name';
+                // 身份证放在最前：题干必然含"身份证/证件号"， specificity 最高；
+                // 漏了它 answer 侧会落到自由短句兜底 —— 18 位证件号的位置出现
+                // 一句"整体体验非常不错"，这份数据必废（v4.2 前正是这个形状）。
+                if (/身份证|证件号|证件号码/.test(txt)) field = 'idcard';
+                else if (/姓名|名字|name|您的称呼|称呼/.test(txt)) field = 'name';
                 else if (/手机|电话|mobile|phone|tel|联系方式/.test(txt)) field = 'phone';
                 else if (/邮箱|e-mail|email|mail/.test(txt)) field = 'email';
                 else if (/地址|住址|addr|address/.test(txt)) field = 'address';
@@ -841,6 +846,11 @@ return (function() {
     );
     fillables.forEach(function(el) {
         if (el.disabled || el.readOnly) return;
+        // v4.1：不可见的文本控件不是给人填的 —— 与 detect_questions 的同一条
+        // 守卫（"真卷上量表每级的标注文字装在 display:none 的 textarea 里"）
+        // 对齐。缺这条时，那种隐藏 textarea 里的标注文字会把**未答的量表题**
+        // 报成已答，续填扫描直接把整题跳过，完整度自检也发现不了。
+        if (el.offsetParent === null) return;
         // 选项自带的填空框（"其他____"）不是一道填空题。它的 id 形如 q2_6_text，
         // 下面那条宽松的 /q(\d+)/ 兜底匹配会把它归给第 2 题，于是"框里有字"
         // 就把整题报成已答 —— 而那一格属于哪个选项、有没有被勾中，全没人看。

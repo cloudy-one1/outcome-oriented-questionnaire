@@ -250,6 +250,13 @@ def parse_weight_texts(questions: list[dict], texts: Mapping[Any, Any]
             if floats is None:
                 warn(f"Q{qi} 未知题型 {qtype} 且权重格式错误，已跳过：{raw}")
                 continue
+            # v4.1：兜底分支与其他 builder 同样查非法数值 —— matrix_scale 恰恰
+            # 被刻意赶到这条路上（见模块 docstring），此前 "0.2,-0.2,1" 这类
+            # 负数串会静默入库，运行期产生静默错误的分布。
+            bad = [w for w in floats if _bad_number(w)]
+            if bad:
+                warn(f"Q{qi} 权重含非法数值（NaN/Inf/负数），已跳过：{raw}")
+                continue
             entry = {"type": q.get("type"), "weights": floats}
 
         if entry is None:

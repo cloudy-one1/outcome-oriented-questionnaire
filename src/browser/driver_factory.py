@@ -103,11 +103,11 @@ def _cdp_extra_headers(*, browser: str = "edge", ua: str | None = None) -> dict[
         "Sec-CH-UA-Mobile": "?0",
         "Sec-CH-UA-Platform": '"Windows"',
         "Sec-CH-UA-Platform-Version": '"10.0.0"',
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
         "Upgrade-Insecure-Requests": "1",
+        # v4.2：Sec-Fetch-* 四件套移除 —— setExtraHTTPHeaders 作用于**每一个**请求，
+        # 而真实浏览器对 XHR/fetch 发 Dest:empty / Mode:cors，Sec-Fetch-User 只在
+        # 用户触发的导航出现；全部请求都带 document 头本身就是可检特征。
+        # Fetch Metadata 交给浏览器自己按请求语义生成。
     }
 
 
@@ -189,7 +189,11 @@ def create_edge_driver(
     # ==================================================================
     #  Step 2. 浏览器启动参数
     # ==================================================================
-    opts.add_argument("--inprivate")
+    # v4.2：隐私模式只在**没给** user_data_dir 时启用 —— InPrivate/Incognito
+    # 会话不加载既有 profile 的任何 cookie/localStorage，与 --profile-dir
+    # "跨批次复用登录态"的承诺直接互斥，两个一起给等于登录态永远失效。
+    if not user_data_dir:
+        opts.add_argument("--inprivate")
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
@@ -204,7 +208,9 @@ def create_edge_driver(
     opts.add_argument("--disable-hang-monitor")                    # 禁用浏览器页面挂起监视器（避免误杀）
 
     # UA + 窗口尺寸（配合 screen 指纹）
-    opts.add_argument(f"user-agent={ua}")
+    # v4.1：补 `--` 前缀 —— Chromium 只把 `-`/`/` 开头的 token 当 switch，
+    # `user-agent=...` 会被当位置参数丢弃，UA 伪装实际全靠 CDP override 兜底。
+    opts.add_argument(f"--user-agent={ua}")
     # 窗口略大于可用区域（模拟真实窗口有标题栏 + 边框）
     opts.add_argument(f"--window-size={screen_w},{screen_h}")
 
@@ -397,6 +403,10 @@ def create_chrome_driver(
 
             uc_opts = uc.ChromeOptions()
             # UC 的参数风格：headless / user-data-dir 等
+            # v4.2：binary 环境变量同样要在 UC 分支生效 —— 此前 BINARY_ENV_VARS
+            # 只由 Edge 与原生 Chrome 应用，容器/受限环境设了 WJX_BROWSER_BINARY
+            # 且 use_uc=True 时静默失效，UC 仍去找默认二进制。
+            _apply_binary_location(uc_opts)
             if user_data_dir:
                 uc_opts.add_argument(f"--user-data-dir={user_data_dir}")
             if headless:
@@ -470,8 +480,10 @@ def create_chrome_driver(
     opts = webdriver.ChromeOptions()
     _apply_binary_location(opts)
 
-    # Chrome 隐私模式（对应 Edge 的 --inprivate）
-    opts.add_argument("--incognito")
+    # Chrome 隐私模式（对应 Edge 的 --inprivate；v4.2 起与 --user-data-dir 互斥，
+    # 理由见 Edge 分支的注释）
+    if not user_data_dir:
+        opts.add_argument("--incognito")
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
@@ -485,8 +497,8 @@ def create_chrome_driver(
     opts.add_argument("--dns-prefetch-disable")
     opts.add_argument("--disable-hang-monitor")
 
-    # UA + 窗口尺寸
-    opts.add_argument(f"user-agent={ua}")
+    # UA + 窗口尺寸（同 Edge：switch 必须带 `--` 前缀，见上文 v4.1 注释）
+    opts.add_argument(f"--user-agent={ua}")
     opts.add_argument(f"--window-size={screen_w},{screen_h}")
 
     if user_data_dir:

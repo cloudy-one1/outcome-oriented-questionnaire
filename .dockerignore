@@ -1,0 +1,33 @@
+# v4.1（CODE_REVIEW_v4.0 P1-9）：Dockerfile 的 `COPY . ./` 会把构建上下文整棵
+# 打进镜像。没有本文件时，本地构建会把 data/history.db（含填空题原文等 PII，
+# .gitignore 自己都承认）、两个虚拟环境、coverage 产物全部送进镜像层 ——
+# 而 docker-smoke 在干净 checkout 上构建，结构性发现不了这个问题。
+# 只排"绝不该进镜像"的目录，不搞白名单，避免新增源文件被静默排除。
+
+# 运行数据与隐私
+data/
+
+# 版本库与本地工具链
+.git
+.gitignore
+.gitattributes
+.qoder/
+.venv*/
+.venv-ci313/
+
+# 测试、缓存与产物
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+.coverage
+coverage.json
+_review_tmp/
+
+# 文档与评审（镜像只跑代码，不需要）
+docs/
+*.md
+!README.md
+
+# 桌面版残留（v4.0 已删源码，只剩 pycache）
+gui/

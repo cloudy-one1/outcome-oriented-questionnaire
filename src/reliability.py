@@ -279,22 +279,29 @@ def measure_dimensions(
             continue
 
         matrix = [[float(scores[q][s]) for s in subs] for q in usable]
-        obs_min = min(min(r) for r in matrix)
-        obs_max = max(max(r) for r in matrix)
 
         rev_applied = [q for q in usable if q in reverse_set]
+        # 每题自身的观测值域（翻转与报告都用它 —— v4.2 起不再用维度合并值域：
+        # 维度里混着 5 点与 10 点刻度、或某题极端选项恰好没被观测到时，
+        # 合并值域翻转会让该题的值越出自身值域，误差直接进 α）
+        obs_min = min(min(r) for r in matrix)
+        obs_max = max(max(r) for r in matrix)
         if rev_applied:
-            flip = obs_min + obs_max
-            matrix = [
-                [flip - x for x in row] if q in reverse_set else row
-                for q, row in zip(usable, matrix)
-            ]
+            flipped: list[list[float]] = []
+            for q, row in zip(usable, matrix):
+                if q in reverse_set:
+                    flip = min(row) + max(row)
+                    flipped.append([flip - x for x in row])
+                else:
+                    flipped.append(row)
+            matrix = flipped
 
         notes: list[str] = []
         if rev_applied:
             notes.append(
-                f"反向题 {rev_applied} 已按观测值域 [{obs_min:g}, {obs_max:g}] 翻转 "
-                "—— 用观测值域而非题面满分：历史库不存选项数（口径见模块 docstring）"
+                f"反向题 {rev_applied} 已按各题自身观测值域翻转 "
+                "—— 用观测值域而非题面满分：历史库不存选项数（口径见模块 docstring）；"
+                "v4.2 起翻转逐题进行，不再用维度合并值域（混刻度时会越界）"
             )
         reports.append(DimensionReport(
             name,
@@ -356,7 +363,10 @@ def implicit_dimension(
     名字里就写着"未声明维度" —— 这个数**不能**被当成某个构念的信度来引用，
     它只是"这批量表题彼此相关到什么程度"。把它悄悄叫"满意度信度"才是造假。
     """
-    rows = history_db.query_answers(run_id=run_id)
+    rows = history_db.query_answers(run_id=run_id, limit=_ANSWER_SCAN_LIMIT)
+    # v4.2：显式传 limit —— 此前用 query_answers 的默认 5000，>5000 行的 run
+    # 兜底维度静默缺尾部题（"部分样本冒充全样本比报错更糟"，本模块自己的原则），
+    # 主流程 measure_dimensions 一直是显式传的，唯独这里漏了。
     qnums = sorted({
         int(r["question_number"]) for r in rows
         if str(r["question_type"] or "") in ALPHA_TYPES

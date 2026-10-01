@@ -14,7 +14,7 @@
 
     # 量表 / 填空
     {"type": "scale",        "value": int_1_to_N}
-    {"type": "text",         "text": "具体内容", "field": "name"|"phone"|...|None}
+    {"type": "text",         "text": "具体内容", "field": "name"|"phone"|...|"idcard"|None}
 
     # 矩阵
     {"type": "matrix_single","rows": {row_idx: col_idx, ...}}
@@ -339,6 +339,9 @@ def generate_answer(question: dict) -> dict[str, Any]:
         scale_max = int(question.get("scale", 5))
         scale_min = int(question.get("scale_min", 1))
         indices = list(range(scale_min, scale_max + 1))
+        if not indices:
+            # 畸形结构（scale_max < scale_min）：此前落到 random.choice([]) 直接崩
+            return {"type": "scale", "value": scale_min}
         # 权重：1→1分, 2→2分 ... 必须对齐 indices
         w = _cfg_weights(question)
         if not weights_are_usable(w, len(indices)):
@@ -370,6 +373,13 @@ def generate_answer(question: dict) -> dict[str, Any]:
             text = p.phone
         elif field == "email":
             text = p.email
+        elif field == "idcard":
+            # v4.2 接线：detection 认出身份证题 → 填画像的真校验位证件号。
+            # 此前这条链断在中间（persona.id_card 生成后零消费），
+            # 证件号的位置落的是 _random_sentence() 的随机短句。
+            # 出生段与 birth_date_text 同源（Persona.birth_date），生日题
+            # 与身份证题同卷出现时月日不再互相矛盾。
+            text = p.id_card
         elif field in ("address", "addr"):
             text = p.address_text
         elif field in ("region", "area", "local"):
@@ -377,7 +387,11 @@ def generate_answer(question: dict) -> dict[str, Any]:
         elif field in ("age", "number"):
             # 画像的年龄优先；只有它落在题目 min/max 之外才夹回去 —— 夹完仍是个
             # 合法年龄，只是这一格与身份证 / 生日的自洽性弱一档。
-            lo, hi = int(question.get("min", 16)), int(question.get("max", 70))
+            # v4.2：页面把 "18人" 这类非数字塞进 dataset 时不裸抛，回退默认档。
+            try:
+                lo, hi = int(question.get("min", 16)), int(question.get("max", 70))
+            except (TypeError, ValueError):
+                lo, hi = 16, 70
             text = str(min(max(p.age, min(lo, hi)), max(lo, hi)))
         elif field == "date":
             text = _birth_or_window_date(question, p)

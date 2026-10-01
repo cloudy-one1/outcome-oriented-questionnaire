@@ -42,6 +42,10 @@ jobs:
         uses: jakebailey/pyright-action@v2
         with:
           project: ./pyrightconfig.json
+          # v4.1：钉住 pyright 版本 —— pytest/ruff 都钉在 requirements 里，唯独
+          # 这一步默认拉最新版，而 pyright 会随版本新增诊断、收紧推断，一次
+          # 上游发版就能让 0-error 门禁无因变红。与本地验证用的版本一致。
+          version: "1.1.414"
 
       - name: Run offline test suite + coverage ratchet
         # 覆盖率地板：只允许往上走。地板就是这条命令里的 `--cov-fail-under`，
@@ -106,7 +110,7 @@ jobs:
         # 退出码三态照 scripts/e2e_gate.py：0 通过 / 1 一条都没真跑 / 2 报告读不了
         #
         # 两个 --require-file 堵的是另一半：conftest 会把浏览器故障降级成 skip，
-        # 只有全局计数的话"作答那 25 项跑了、webui 那 8 项全被吞成 skip"依然是绿的，
+        # 只有全局计数的话"作答那 25 项跑了、webui 那 10 项全被吞成 skip"依然是绿的，
         # 而后者正是本轮新宿主唯一的真浏览器防线。两边各自点名，缺一即红。
         run: >
           python scripts/e2e_gate.py e2e-junit.xml

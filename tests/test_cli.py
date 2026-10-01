@@ -23,18 +23,22 @@ class TestCliArgumentParsing(unittest.TestCase):
     """测试 src.cli 中的参数解析函数。"""
 
     def test_default_values_when_no_args(self) -> None:
-        """V2.4：URL 无默认值（合规，不再内置真实线上问卷）→ parsed.url 为 None。"""
+        """V2.4：URL 无默认值（合规，不再内置真实线上问卷）→ parsed.url 为 None。
+
+        v4.2：count 的 default 是 None 哨兵（默认值在 main 里落定）——
+        count_explicit 要靠"是否为 None"判断用户有没有显式传 -n。
+        """
         parsed = cli.parse_args([])  # 模拟 python run_cli.py
         self.assertIsNone(parsed.url)
-        self.assertEqual(parsed.count, config.DEFAULT_TOTAL_SUBMISSIONS)
+        self.assertIsNone(parsed.count)
 
     def test_url_long_option(self) -> None:
         """--url 指定 URL。"""
         test_url = "https://v.wjx.cn/vm/ABC123.aspx"
         parsed = cli.parse_args(["--url", test_url])
         self.assertEqual(parsed.url, test_url)
-        # 未传 --count，保留默认份数
-        self.assertEqual(parsed.count, config.DEFAULT_TOTAL_SUBMISSIONS)
+        # 未传 --count → 哨兵 None（显式传了才是数值）
+        self.assertIsNone(parsed.count)
 
     def test_url_short_option(self) -> None:
         """-u 短选项指定 URL。"""

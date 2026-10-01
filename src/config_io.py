@@ -97,7 +97,10 @@ def save_weight_config(
     }
 
     # 4. 写入（UTF-8 不带 BOM，标准 JSON 工具都兼容）
-    with open(path, "w", encoding="utf-8") as f:
+    # v4.2：先写同目录临时文件再 os.replace 原子替换 —— 此前直接截断写，
+    # 「另存预设」中途进程被杀/磁盘满会留下半个 JSON，用户已有的配置文件被毁。
+    tmp_path = f"{os.path.abspath(path)}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(
             payload,
             f,
@@ -106,6 +109,9 @@ def save_weight_config(
             separators=None if pretty else (",", ":"),
             sort_keys=True,
         )
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, os.path.abspath(path))
     return os.path.abspath(path)
 
 
@@ -179,7 +185,16 @@ def apply_weight_config(cfg: dict[int, dict], *, replace: bool = False) -> None:
                     唯一真相，残留的旧题号会让上一份问卷的权重静默生效。
     """
     if replace:
+        # v4.2：组装好新 dict 后一次性 update，不再 clear→逐条写 —— 此前的
+        # 中间态窗口里（清空完、还没写满），正在读的运行线程会看到残缺配置，
+        # 相关题号静默回落等权随机。逐题 get 是原子的，一次性 update 后
+        # 新旧键值交替的窗口缩到解释器单条字节码级别。
+        rebuilt: dict[int, dict] = {}
+        for qnum, qcfg in cfg.items():
+            rebuilt[int(qnum)] = dict(qcfg)
         _config_module.WEIGHT_CONFIG.clear()
+        _config_module.WEIGHT_CONFIG.update(rebuilt)
+        return
     for qnum, qcfg in cfg.items():
         qnum_int = int(qnum)
         _config_module.WEIGHT_CONFIG[qnum_int] = dict(qcfg)
@@ -204,6 +219,9 @@ def validate_weight_config(
     if not isinstance(cfg, dict):
         errors.append("配置必须是 dict（题号->题配置映射）")
         return errors
+
+    # v4.2：锚点互撞登记 —— 键 = (归一化题干, 结构签名)，值 = 声明它的题号列表
+    _anchor_claims: dict[tuple[str, str], list] = {}
 
     for qnum, qcfg in cfg.items():
         # 1. 题号必须能转成正整数
@@ -272,6 +290,26 @@ def validate_weight_config(
         # 10. v3.0 排序题：order（固定顺序）与 weights（每项靠前的概率）
         if qtype_lc in {"sort", "ordering", "rank"}:
             errors.extend(_validate_sort_order(qi, qcfg))
+
+        # v4.2：锚点互撞检测 —— 两条锚点认领**同一道题**（归一化题干+结构签名
+        # 完全相同）时，运行期按文件序静默首中（anchoring.lookup_weight_entry
+        # 的 for 循环），用户看到的与实际生效的可以不同。典型成因是复制一条
+        # 配置改权重后忘删旧条目，配置期直接报出来。
+        if isinstance(qcfg.get("anchor"), dict):
+            anchor = qcfg["anchor"]
+            key = (str(anchor.get("title") or "").strip(),
+                   str(anchor.get("signature") or "").strip())
+            if key != ("", ""):
+                owners = _anchor_claims.setdefault(key, [])
+                owners.append(qi)
+
+    for (title, sig), owners in _anchor_claims.items():
+        if len(owners) > 1:
+            errors.append(
+                f"锚点互撞：题干「{title}」（{sig}）被 "
+                f"Q{'、Q'.join(str(o) for o in owners)} 同时声明 → "
+                "运行期只生效文件序第一条，其余是死配置"
+            )
 
     return errors
 
@@ -445,18 +483,27 @@ def _validate_scale_length(qi: int, qcfg: dict) -> list[str]:
         errs.append(f"Q{qi} scale 的 'scale' 字段必须是整数，实际 {scale_max!r}")
         return errs
 
-    scale_min = int(qcfg.get("scale_min", 1))
-    expected_len = smax - scale_min + 1
+    try:
+        smin = int(qcfg.get("scale_min", 1))
+    except (TypeError, ValueError):
+        # v4.2：此前这里裸 int()，"scale_min": "abc"/null 这类外部配置会让
+        # 校验器自己抛异常而不是返回错误列表，违反本函数的公开契约
+        # （对照上方 scale_max 有完整守卫）。
+        errs.append(f"Q{qi} scale 的 'scale_min' 字段必须是整数，"
+                    f"实际 {qcfg.get('scale_min')!r}")
+        return errs
+
+    expected_len = smax - smin + 1
     if expected_len <= 0:
         errs.append(
-            f"Q{qi} scale 范围非法：scale_min={scale_min} > scale_max={smax}"
+            f"Q{qi} scale 范围非法：scale_min={smin} > scale_max={smax}"
         )
         return errs
 
     if len(w) != expected_len:
         errs.append(
             f"Q{qi} scale 的 weights 长度 {len(w)} 与量表范围 {expected_len}"
-            f"（scale_min={scale_min}..scale_max={smax}）不匹配"
+            f"（scale_min={smin}..scale_max={smax}）不匹配"
         )
 
     return errs

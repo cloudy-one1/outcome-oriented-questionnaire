@@ -18,7 +18,10 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src import config  # noqa: E402
-from src.pipeline_stages.question_stage import _answer_one_question  # noqa: E402
+from src.pipeline_stages.question_stage import (  # noqa: E402
+    _answer_one_question,
+    _distribution_picks,
+)
 
 
 class RecordingDriver:
@@ -235,12 +238,76 @@ def test_replayed_single_overrides_the_weight_config(monkeypatch) -> None:
         lambda _d, _q, _t, vals: clicked.append(list(vals)) or True,
     )
     monkeypatch.setattr(
-        "src.pipeline_stages.question_stage.build_answer_strategy",
+        "src.pipeline_stages.question_stage.generate_answer_v2",
         lambda _q: pytest.fail("回放覆盖生效时不该再问生成策略"),
     )
     q = {"q": 1, "type": "single", "choices": [1, 2, 3]}
     assert _answer_one_question(RecordingDriver(), q, submission_index=1) is True
     assert clicked == [[2]], clicked
+
+
+# ===========================================================================
+#  v4.1：single/multi 生产入口必须真的查信度计划（CODE_REVIEW_v4.0 P0-1）
+# ===========================================================================
+def test_single_production_entry_consults_the_plan(monkeypatch) -> None:
+    """single 走 v2 生成器后，plan.forced_choice 的 one-hot 必须兑现到点击值。
+
+    此前 single/multi 走 v1 生成器，plan 把 single 列为参与题型、建了配额，
+    但 forced_choice 全仓库只在 answering_v2 里被调 —— 生产入口永远查不到，
+    绿测（test_plan 用 v2 入口自证）掩盖了裂缝。本条从**分发入口**钉住：
+    计划在场时点击值必须确定性等于配额行，多轮无一例外。
+    """
+    clicked: list[list] = []
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.js_click_question_options",
+        lambda _d, _q, _t, vals: clicked.append(list(vals)) or True,
+    )
+    monkeypatch.setattr(
+        "src.plan.forced_choice",
+        lambda qnum: 1,   # 计划给 Q1 定了 0-based 第 1 个选项
+    )
+    q = {"q": 1, "type": "single", "choices": [10, 20, 30]}
+    for _ in range(10):
+        assert _answer_one_question(RecordingDriver(), q) is True
+    # forced_choice=1 → v2 one-hot 抽中下标 1 → choices[1] = 20，十轮全中
+    assert clicked and all(vals == [20] for vals in clicked), clicked
+
+
+# ===========================================================================
+#  v4.1：distribution 缓冲的键域换算（CODE_REVIEW_v4.0 P0-2）
+# ===========================================================================
+def test_distribution_picks_convert_value_domain_to_weight_index() -> None:
+    """选项 value（1-based）必须换算成 0-based 权重下标，漏项丢弃。"""
+    picks, n = _distribution_picks(
+        {"q": 1, "type": "single", "choices": [10, 20, 30]},
+        "single", [20, 30, 99],   # 99 不在 choices 里 → 丢弃
+    )
+    assert (picks, n) == ([1, 2], 3)
+
+
+def test_distribution_picks_map_scale_value_to_scale_min_offset() -> None:
+    """量表记的是分值：权重域第 i 格对应分值 scale_min+i。"""
+    picks, n = _distribution_picks(
+        {"q": 2, "type": "scale", "scale": 5, "scale_min": 1},
+        "scale", [1, 5, 7],
+    )
+    assert (picks, n) == ([0, 4], 5)
+    picks, n = _distribution_picks(
+        {"q": 3, "type": "scale", "scale": 10, "scale_min": 6},
+        "scale", [6, 10],
+    )
+    assert (picks, n) == ([0, 4], 5)
+
+
+def test_distribution_picks_exclude_matrix_and_sort() -> None:
+    """矩阵（统计单位是"每行"）与排序（记 item id）不进纠正统计 —— 宁可少纠正。"""
+    for q, qt, opts in (
+        ({"q": 4, "type": "matrix_single", "rows": [1], "cols": [1, 2]},
+         "matrix_single", [1, 2]),
+        ({"q": 5, "type": "sort", "items": ["a", "b"]}, "sort", [1, 2]),
+    ):
+        picks, n = _distribution_picks(q, qt, opts)
+        assert (picks, n) == ([], 0), qt
 
 
 def test_replayed_text_lands_in_the_dom_and_history(monkeypatch) -> None:

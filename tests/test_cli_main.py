@@ -114,6 +114,26 @@ def test_main_resume_explicit_count_overrides_planned(db_path: str) -> None:
     assert kwargs["resume_run_id"] is not None, "-n 覆盖份数不应关掉续传本身"
 
 
+def test_resume_explicit_count_equal_to_default_still_counts_as_explicit(
+    db_path: str,
+) -> None:
+    """v4.2（CODE_REVIEW_v4.0 P2）：显式 `-n 17`（恰好等于默认值）必须被当成
+    "用户传了"—— 哨兵判定。
+
+    此前 count_explicit 靠"值 != 默认值"判断，显式传默认值被当成没传，
+    续传时计划份数被上次批次覆盖（50）而不是用户要的 17。
+    """
+    _seed_interrupted_run(db_path, planned=50, done=12)
+
+    with mock.patch.object(cli, "run_batch") as rb:
+        rb.return_value = (0, 0)
+        with pytest.raises(SystemExit):
+            cli.main(["-u", URL, "-H", db_path, "-n", "17", "--resume"])
+
+    args, _kwargs = rb.call_args
+    assert args[1] == 17, "显式 -n 17 应以 17 为准（旧实现会沿用 50）"
+
+
 def test_main_resume_restores_weight_snapshot(db_path: str) -> None:
     """续传要恢复批次权重快照（docs/cli.md「断点续传」承诺的行为）。"""
     snap = {1: {"type": "single", "weights": [0.7, 0.3]}}

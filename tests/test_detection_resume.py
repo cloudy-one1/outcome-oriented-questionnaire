@@ -123,6 +123,21 @@ class TestOptionBlankLocator(unittest.TestCase):
         # 改判成量表/矩阵后要清掉按选择题记下的结论
         self.assertIn("delete it.blank_options", drv.scripts[0])
 
+    def test_text_field_classification_carries_idcard(self) -> None:
+        """v4.2：填空字段分类必须有 idcard（身份证）类目 —— verify 与题干两条路。
+
+        漏了它，证件号的位置会被填进 _random_sentence() 的随机短句，
+        这份数据必废；persona.id_card 也因此当了三版的死字段。
+        """
+        from src.detection import detect_questions
+
+        drv = _ScriptRecordingDriver()
+        detect_questions(drv)
+        script = drv.scripts[0]
+        self.assertIn("field = 'idcard'", script)
+        self.assertIn("/身份证|证件/", script, "verify 属性这条平台信号要认身份证")
+        self.assertIn("/身份证|证件号|证件号码/", script, "题干兜底也要认身份证")
+
     def test_answered_scan_treats_unwritten_blank_as_unanswered(self) -> None:
         """勾了带框的项但框是空的 → 该题不算已答，续填才会重做它。"""
         from src.detection import detect_answered_questions
@@ -132,6 +147,28 @@ class TestOptionBlankLocator(unittest.TestCase):
         script = drv.scripts[0]
         self.assertIn("blankPending", script)
         self.assertIn("delete answered[parseInt(q)]", script)
+
+    def test_answered_scan_guards_invisible_text_controls(self) -> None:
+        """v4.1：已答扫描的填空分支必须带与 detect_questions 相同的隐藏控件守卫。
+
+        真卷上量表每级的标注文字装在 display:none 的 textarea 里（detect_questions
+        的注释自证）；缺这条守卫时，那段文字会把未答的量表题报成已答，
+        续填扫描整题跳过、完整度自检也发现不了。
+        """
+        from src.detection import detect_answered_questions, detect_questions
+
+        drv = _ScriptRecordingDriver()
+        detect_questions(drv)
+        detect_answered_questions(drv)
+        probe, answered = drv.scripts[0], drv.scripts[1]
+        guard = "if (el.offsetParent === null) return;"
+        self.assertIn(guard, probe, "探测侧的守卫是基线，先在")
+        self.assertIn(guard, answered, "已答扫描必须带上同一条守卫")
+        # 守卫必须落在填空分支（fillables 遍历）里，而不是脚本其它角落
+        fill_section = answered.split("4. 填空", 1)[1]
+        self.assertTrue(fill_section.lstrip().startswith(guard.split("if")[0].strip())
+                        or guard in fill_section,
+                        "填空分支里找不到隐藏控件守卫")
 
     def test_locator_defined_exactly_once_across_src(self) -> None:
         """整个 src 里定位函数只允许有一个定义点（import 不算定义）。"""

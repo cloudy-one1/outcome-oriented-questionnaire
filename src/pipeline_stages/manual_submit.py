@@ -32,7 +32,10 @@ from ..exceptions import (
     format_exc_log,
     raise_non_recoverable,
 )
-from ..interactions._scripts import submit_success_detect_script
+from ..interactions._scripts import (
+    submit_redirect_veto_script,
+    submit_success_detect_script,
+)
 from ..interactions.submit import SELECTORS as SUBMIT_SELECTORS
 from ..models import SUBMIT_FAILED, SUBMIT_SUCCESS, SubmitOutcome
 from ..utils import ManualHoldLock
@@ -59,15 +62,32 @@ return false;
 """
 
 
-def _submitted(driver: Any, base_url: str | None, success_js: str) -> bool:
-    """人点下去之后页面有没有出现提交效果（与 ``_wait_until_submit_effect`` 同判据）。"""
+def _submitted(driver: Any, base_url: str | None, success_js: str,
+               veto_js: str) -> bool:
+    """人点下去之后页面有没有出现提交效果（与 ``_wait_until_submit_effect`` 同判据）。
+
+    v4.2：URL 变化同样先过负向信号否决 —— 跳到人机验证页 / 错误页不算"已提交"。
+    但这里**继续等**而不是收 unknown：人在场，可能正在完成验证，成功信号
+    随后就会出现；等满超时自然落回"没交"的 SUBMIT_FAILED。
+    """
     try:
         cur = driver.current_url
     except TRANSIENT_DOM_EXCEPTIONS:
         # 点击瞬间页面正在跳转，这一轮读不到；下一轮再问
         return False
     if base_url is not None and cur != base_url:
-        return True
+        try:
+            if bool(driver.execute_script(success_js)):
+                return True
+            return not bool(driver.execute_script(veto_js))
+        except TRANSIENT_DOM_EXCEPTIONS:
+            return False
+        except Exception as _e:
+            raise_non_recoverable(_e)
+            print("  " + format_exc_log(
+                _e, action="人工提交：读提交效果", recovery="下一轮再问（不因此判失败）",
+            ))
+            return False
     try:
         return bool(driver.execute_script(success_js))
     except TRANSIENT_DOM_EXCEPTIONS:
@@ -100,6 +120,7 @@ def wait_for_manual_submit(
         # 判成提交成功 —— 与 _wait_until_submit_effect 同一取舍。
         base_url = None
     success_js = submit_success_detect_script()
+    veto_js = submit_redirect_veto_script()
     print("  [人工提交] 已停在提交按钮前 —— 请在窗口里核对（要改的直接改），"
           f"由**你**点提交；最长等 {timeout:.0f}s，停止/Ctrl+C 可取消这一份")
     try:
@@ -116,7 +137,7 @@ def wait_for_manual_submit(
                 print("    收到停止请求，这一份不提交（也没交上去）")
                 raise SubmissionAborted("人工提交等待期间收到停止请求")
 
-            if _submitted(driver, base_url, success_js):
+            if _submitted(driver, base_url, success_js, veto_js):
                 print(f"    [人工提交] 已观察到提交效果（等了 {waited:.0f}s）")
                 return SUBMIT_SUCCESS
             if waited >= timeout:

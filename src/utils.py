@@ -283,7 +283,7 @@ class ManualHoldLock:
 
 
 # ============================================================================
-#  权重合法性清洗 —— v1(answering) 与 v2(answering_v2) 共用同一份判定
+#  权重合法性清洗 —— answering_v2 与各入口共用的同一份判定
 # ============================================================================
 
 def weights_are_usable(weights: Any, n: int) -> bool:
@@ -293,7 +293,10 @@ def weights_are_usable(weights: Any, n: int) -> bool:
       - 长度与选项数不符
       - 含 NaN / Inf（``random.choices`` 会抛 ValueError）
       - 含非数值项
-      - 正权重总和为 0（全 0 或全负，同样抛 ValueError / 除零）
+      - 含负数（v4.1：此前只查正权和，混合正负会穿过本防线 —— numpy 归一化
+        路径除零或抛 "probabilities are not non-negative"，random.choices 路径
+        产出静默错误的分布。负权重在任何采样语义下都不是合法输入）
+      - 正权重总和为 0（全 0，同样抛 ValueError / 除零）
     """
     if not isinstance(weights, (list, tuple)) or len(weights) != n:
         return False
@@ -302,6 +305,8 @@ def weights_are_usable(weights: Any, n: int) -> bool:
         if isinstance(w, bool) or not isinstance(w, (int, float)):
             return False
         if math.isnan(w) or math.isinf(w):
+            return False
+        if w < 0:
             return False
         if w > 0:
             positive_total += w
@@ -325,15 +330,15 @@ def sanitize_weights(
     """
     if weights_are_usable(weights, n):
         return [float(w) for w in weights]
-    msg = f"  WARNING: Q{question} {label}非法（长度/NaN/总和为 0），已按等权重处理" \
+    msg = f"  WARNING: Q{question} {label}非法（长度/NaN/负数/总和为 0），已按等权重处理" \
         if question is not None \
-        else f"  WARNING: {label}非法（长度/NaN/总和为 0），已按等权重处理"
+        else f"  WARNING: {label}非法（长度/NaN/负数/总和为 0），已按等权重处理"
     (warn or print)(msg)
     return None
 
 
 # ============================================================================
-#  加权无放回抽样 —— v1(answering) 与 v2(answering_v2) 共用这一份实现
+#  加权无放回抽样 —— answering_v2 与等权分支共用这一份实现
 # ============================================================================
 
 def weighted_sample_no_replace(

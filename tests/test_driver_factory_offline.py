@@ -493,7 +493,8 @@ def test_create_edge_driver_options_and_timeout(env: Harness) -> None:
     args = arguments_of(d)
     assert "--inprivate" in args
     assert "--disable-blink-features=AutomationControlled" in args
-    assert f"user-agent={EDGE_UA}" in args
+    # v4.1：switch 必须带 `--` 前缀（`user-agent=` 无前缀会被 Chromium 丢弃）
+    assert f"--user-agent={EDGE_UA}" in args
     assert f"--window-size={SCREEN_W},{SCREEN_H}" in args
     assert "--headless=new" not in args
 
@@ -513,7 +514,7 @@ def test_create_edge_driver_headless_flag_only_when_requested(env: Harness) -> N
 def test_create_edge_driver_respects_explicit_user_agent(env: Harness) -> None:
     ua = EDGE_UA.replace("Edg/131.0.2903.112", "Edg/129.0.0.0")
     d = create_edge_driver(ua)
-    assert f"user-agent={ua}" in arguments_of(d)
+    assert f"--user-agent={ua}" in arguments_of(d)
     assert env.uas.calls == []  # 指定了 UA 就不该再去随机
 
 
@@ -521,7 +522,7 @@ def test_create_edge_driver_without_ua_consults_pick_user_agent(env: Harness) ->
     env.uas.edge_ua = "Mozilla/5.0 custom-edge-ua"
     d = create_edge_driver()
     assert env.uas.calls == [("edge", {})]
-    assert f"user-agent={env.uas.edge_ua}" in arguments_of(d)
+    assert f"--user-agent={env.uas.edge_ua}" in arguments_of(d)
 
 
 def test_create_edge_driver_applies_edge_flavored_cdp(env: Harness) -> None:
@@ -622,7 +623,7 @@ def test_create_chrome_native_options(env: Harness) -> None:
     args = arguments_of(d)
     assert "--incognito" in args
     assert "--disable-blink-features=AutomationControlled" in args
-    assert f"user-agent={CHROME_UA}" in args
+    assert f"--user-agent={CHROME_UA}" in args
     assert f"--window-size={SCREEN_W},{SCREEN_H}" in args
     assert "--headless=new" not in args
     assert d.options.experimental_options["excludeSwitches"] == ["enable-automation"]
@@ -634,7 +635,7 @@ def test_create_chrome_native_headless_and_explicit_ua(env: Harness) -> None:
     d = create_chrome_driver("Mozilla/5.0 pinned-chrome-ua", headless=True)
     args = arguments_of(d)
     assert "--headless=new" in args
-    assert "user-agent=Mozilla/5.0 pinned-chrome-ua" in args
+    assert "--user-agent=Mozilla/5.0 pinned-chrome-ua" in args
     assert env.uas.calls == []
 
 

@@ -250,6 +250,33 @@ def test_a_cross_origin_post_is_refused_over_http(server):
     assert svc.calls == []
 
 
+def test_the_sse_endpoint_refuses_a_foreign_host(server):
+    """v4.1：SSE 分支此前在 Api.handle 之前直接返回，是同源防线的唯一旁路 ——
+    DNS rebinding 后攻击者页面与 /api/events 同源，能持续读会话快照与日志流。"""
+    handle, _session, _svc, _api = server
+    conn = http.client.HTTPConnection("127.0.0.1", handle.port, timeout=5)
+    conn.request("GET", "/api/events", headers={"Host": "attacker.test"})
+    resp = conn.getresponse()
+    body = resp.read()
+    conn.close()
+    assert resp.status == 403
+    assert "本机" in body_of(body)["error"]
+
+
+def test_the_sse_endpoint_refuses_a_cross_origin_eventsource(server):
+    """EventSource 带 Origin 头且跨源时同样 403（对照：同源 GET 仍放行）。"""
+    handle, _session, _svc, _api = server
+    conn = http.client.HTTPConnection("127.0.0.1", handle.port, timeout=5)
+    conn.request("GET", "/api/events",
+                 headers={"Host": f"127.0.0.1:{handle.port}",
+                          "Origin": "http://evil.test"})
+    resp = conn.getresponse()
+    body = resp.read()
+    conn.close()
+    assert resp.status == 403
+    assert "跨站" in body_of(body)["error"]
+
+
 def test_unknown_path_is_a_404_over_http(server):
     handle, _session, _svc, _api = server
     resp, _body = get(handle, "/api/nope")

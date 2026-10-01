@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 import time
 from typing import Any, Callable
@@ -42,7 +43,11 @@ _FOCUS_TEXT = (
 )
 _WM_CLOSE = 0x0010
 
-try:
+# v4.1 修正：此前用 ``except ImportError`` 选实现，但 ctypes 与 ctypes.wintypes
+# 在非 Windows 的 Python 3 上**都能导入**，降级桩永远不可达 —— 非 Windows 上每次
+# 调用都白起一个线程去摸不存在的 ctypes.windll（AttributeError 被内层吞掉）。
+# 本工具虽然只跑 Windows，但降级桩必须真的可达才算防线。
+if sys.platform == "win32":
     import ctypes  # Windows API 调用库
     from ctypes import wintypes
 
@@ -75,17 +80,22 @@ try:
             timer.daemon = True
             timer.start()
 
-except ImportError:
+else:
     # 非 Windows 系统（Linux/Mac）降级
     def force_focus(auto_close_seconds: float = 25.0) -> None:
         pass
 
 
 # 额外的验证码内容中文关键词（检查 body.innerText）
+# v4.1 移除"请点击"：它对整个 body.innerText 做子串匹配，而探测每 2 题跑一次、
+# 探测的又是承载全部题干正文的问卷页 —— 多选题里"请点击您…"这类普通指令
+# 一出现，整份问卷立刻被判"有验证"：弹窗 + 持锁空等满 120s（关键词一直在，
+# 永远等不到"已通过"）→ 判失败 → 每份重复，整批全灭。正文级匹配只留
+# 不会出现在正常题面里的强信号词。
 CAPTCHA_KEYWORDS: tuple[str, ...] = (
     "请完成验证", "请拖动", "验证完成后", "滑动解锁", "人机验证",
     "请按住", "按住按钮", "智能验证", "行为验证", "安全验证",
-    "图形验证", "请点击", "点击相同的字", "文字验证码",
+    "图形验证", "点击相同的字", "文字验证码",
     "PROOF YOU ARE HUMAN", "verify you are human",
     "Please verify", "Press and hold", "Press & hold",
 )

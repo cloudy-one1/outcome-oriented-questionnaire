@@ -759,5 +759,74 @@ class TestSubmissionHistory(unittest.TestCase):
         db2.close()
 
 
+class TestPerSubmissionStatus(unittest.TestCase):
+    """v4.1 — 逐份成败表（submissions）与续传口径（resume_progress）。
+
+    CODE_REVIEW_v4.0 P1-1：runs.success_count 只在批次收尾落库，硬崩后停在 0，
+    续传守卫恒假 → 按全新批次重跑已提交的份数。逐份行在每份出结果时即写，
+    续传起点不再依赖收尾。
+    """
+
+    def setUp(self) -> None:
+        self._tmpfd, self._tmppath = tempfile.mkstemp(suffix=".db")
+        os.close(self._tmpfd)
+        from src.history import SubmissionHistory  # type: ignore
+        self.db: Any = SubmissionHistory(self._tmppath)
+
+    def tearDown(self) -> None:
+        self.db.close()
+        if os.path.exists(self._tmppath):
+            os.unlink(self._tmppath)
+
+    def test_record_submission_result_rejects_unknown_status(self) -> None:
+        rid = self.db.start_run("https://x/1", 3, "edge", False)
+        with self.assertRaises(ValueError):
+            self.db.record_submission_result(rid, 1, "interrupted")
+
+    def test_resume_progress_counts_from_per_submission_rows(self) -> None:
+        """逐份行在场时按表统计：成功记 done，failed/unknown 都算已烧掉的尝试。"""
+        rid = self.db.start_run("https://x/2", 10, "edge", False)
+        for idx, status in ((1, "success"), (2, "failed"), (3, "unknown"),
+                            (4, "success")):
+            self.db.record_submission_result(rid, idx, status)
+        self.assertEqual(self.db.resume_progress(rid), (2, 2))
+
+    def test_resume_progress_survives_hard_crash_without_finish_run(self) -> None:
+        """核心回归：不调 finish_run（模拟强杀），逐份行照样给出续传起点。"""
+        rid = self.db.start_run("https://x/3", 5, "edge", False)
+        self.db.record_submission_result(rid, 1, "success")
+        self.db.record_submission_result(rid, 2, "failed")
+        self.db.record_submission_result(rid, 3, "success")
+        row = self.db.find_resumable_run("https://x/3")
+        self.assertIsNotNone(row)
+        self.assertEqual(int(row["success_count"]), 0, "收尾没跑，runs 行停在 0")
+        self.assertEqual(self.db.resume_progress(rid), (2, 1),
+                         "逐份行才是续传起点的单一真相")
+
+    def test_resume_progress_falls_back_to_legacy_runs_counts(self) -> None:
+        """逐份表建立之前的老批次没有逐份行 → 退回收尾计数（行为与旧版一致）。"""
+        rid = self.db.start_run("https://x/4", 5, "edge", False)
+        self.db.finish_run(rid, success_count=2, fail_count=1,
+                           total_elapsed_seconds=1.0, status="interrupted")
+        self.assertEqual(self.db.resume_progress(rid), (2, 1))
+
+    def test_resume_progress_of_unknown_run_is_zero(self) -> None:
+        self.assertEqual(self.db.resume_progress(99999), (0, 0))
+
+    def test_purge_cascades_to_submissions(self) -> None:
+        """purge_old 删 runs 时逐份行必须级联消失，不留孤儿。"""
+        rid = self.db.start_run("https://x/5", 1, "edge", False)
+        self.db.record_submission_result(rid, 1, "success")
+        # 把 started_at 拨老再清 7 天
+        self.db._conn.execute(
+            "UPDATE runs SET started_at = datetime('now', '-30 days') WHERE id = ?",
+            (rid,),
+        )
+        removed = self.db.purge_old(days_older_than=7)
+        self.assertEqual(removed, 1)
+        left = self.db._query("SELECT COUNT(*) c FROM submissions")
+        self.assertEqual(int(left[0]["c"]), 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

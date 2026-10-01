@@ -52,9 +52,10 @@ class _ScriptResult:
         self.body_text: str = ""
         self.has_success_selector: bool = False
         self.find_submit_btn: bool = False  # JS 兜底找按钮
+        self.veto_reason: str = ""          # v4.2：跳转否决脚本的返回值
 
-    def change_url(self) -> None:
-        self.current_url_value = "https://wjx.cn/done"
+    def change_url(self, url: str = "https://wjx.cn/done") -> None:
+        self.current_url_value = url
 
     def set_success_text(self, txt: str) -> None:
         self.body_text = txt
@@ -77,6 +78,9 @@ class _FakeDriver:
         return _FakeElement(found=True)
 
     def execute_script(self, script: str, *args: Any) -> Any:
+        # v4.2：跳转否决脚本（负向信号探测）
+        if "captcha-dom" in script:
+            return self._state.veto_reason
         # 成功文本检测脚本（只含强信号：提交成功 / 感谢）
         if "提交成功" in script or "感谢" in script:
             if self._state.has_success_selector:
@@ -104,7 +108,7 @@ class TestSubmitTriState(unittest.TestCase):
     #  _wait_until_submit_effect 直接测试
     # ------------------------------------------------------------------
     def test_url_change_returns_success(self) -> None:
-        """URL 变化 → 返回 "success"。"""
+        """URL 变化（干净的跳转地址、无负向信号）→ 返回 "success"。"""
         state = _ScriptResult()
         driver = _FakeDriver(state)
         # 在第一次轮询后改变 URL（模拟按钮点击后页面跳转）
@@ -114,6 +118,37 @@ class TestSubmitTriState(unittest.TestCase):
         threading.Thread(target=_change, daemon=True).start()
         result = _wait_until_submit_effect(driver, timeout=2.0)
         self.assertEqual(result, SUBMIT_SUCCESS)
+
+    def test_url_change_to_a_verification_page_is_unknown(self) -> None:
+        """v4.2（CODE_REVIEW_v4.0 P2）：跳到带验证特征的 URL ≠ 提交成功。
+
+        此前 URL 变化即判 success，滑块验证页/错误页会被记成成功份数。
+        URL 带验证词根 → 不再要求成功信号（它不会出现），轮询到超时按 unknown。
+        """
+        state = _ScriptResult()
+        driver = _FakeDriver(state)
+
+        def _change() -> None:
+            _time.sleep(0.2)
+            state.change_url("https://captcha.wjx.cn/verify.aspx")
+
+        threading.Thread(target=_change, daemon=True).start()
+        result = _wait_until_submit_effect(driver, timeout=0.8)
+        self.assertEqual(result, SUBMIT_UNKNOWN)
+
+    def test_url_change_with_negative_dom_signals_is_unknown(self) -> None:
+        """v4.2：跳转地址干净、但页面带负向信号（验证组件/错误文案）→ unknown。"""
+        state = _ScriptResult()
+        state.veto_reason = "error-text:出错了"
+        driver = _FakeDriver(state)
+
+        def _change() -> None:
+            _time.sleep(0.2)
+            state.change_url()
+
+        threading.Thread(target=_change, daemon=True).start()
+        result = _wait_until_submit_effect(driver, timeout=0.8)
+        self.assertEqual(result, SUBMIT_UNKNOWN)
 
     def test_success_text_returns_success(self) -> None:
         """出现"提交成功"关键词 → 返回 "success"。"""

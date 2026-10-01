@@ -486,6 +486,27 @@ def test_plan_is_built_once_and_covers_the_whole_batch(session) -> None:
     assert session.ensure_plan(qs) == [], "第二页再建会改掉已兑现的行"
 
 
+def test_weights_for_rejects_negative_weights(session) -> None:
+    """v4.2：负权重在计划侧回退等权 —— 此前只查正权和，负数会让 _quotas
+    产出负配额（base 全负 floor 后补不回来，且总和检查反而可能放行）。"""
+    cfg_mod.WEIGHT_CONFIG[1] = {"type": "single", "weights": [5.0, -5.0, 0.0]}
+    assert plan_session._weights_for(_single(1)) == [1.0, 1.0, 1.0]
+
+
+def test_weights_for_honors_the_anchor_contract(session) -> None:
+    """v4.2（CODE_REVIEW_v4.0 P2）：计划取数走锚定查表，与作答侧同一份契约 ——
+    带锚条目按题干+结构认领；认不到题时**绝不**退回答题号。"""
+    cfg_mod.WEIGHT_CONFIG[7] = {
+        "type": "single", "weights": [1.0, 0.0, 0.0],
+        "anchor": {"title": "您的性别", "signature": "single:3"},
+    }
+    anchored = {"q": 2, "type": "single", "choices": [1, 2, 3], "title": "您的性别"}
+    assert plan_session._weights_for(anchored) == [1.0, 0.0, 0.0]
+    # 题干对不上：条目带锚就不许按题号兜底（契约 1）
+    mismatched = {"q": 7, "type": "single", "choices": [1, 2, 3], "title": "您的年龄"}
+    assert plan_session._weights_for(mismatched) == [1.0, 1.0, 1.0]
+
+
 def test_next_survey_in_a_queue_gets_its_own_plan(session) -> None:
     """换一份问卷就得换一份计划（``--url-file`` 队列）。
 

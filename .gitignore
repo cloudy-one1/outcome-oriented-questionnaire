@@ -15,7 +15,6 @@ venv/
 # 带后缀的隔离环境（如 .venv310 —— 复现 CI 的 3.10 那条 leg 用）
 .venv*/
 env/
-.env
 
 # IDE
 .vscode/
@@ -23,6 +22,8 @@ env/
 *.swp
 *.swo
 *~
+# Qoder IDE 的本地 worktree 产物
+.qoder/
 
 # OS
 .DS_Store

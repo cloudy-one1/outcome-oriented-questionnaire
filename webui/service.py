@@ -92,6 +92,11 @@ _ROUND_LEVELS: dict[str, str] = {
     "aborted": "WARN",
 }
 
+#: 全量读明细的行数上限（与 src.reliability 的扫描上限同一口径：
+#: 100 份 × 60 题级别的批次必须在明细页与导出里完整 —— query_answers 默认 5000
+#: 是静默截断，缺行无提示）
+_ANSWER_SCAN_LIMIT = 1_000_000
+
 _QUESTION_COUNT_JS: str = (
     "return ("
     "document.querySelectorAll('input[type=\"radio\"], input[type=\"checkbox\"]').length"
@@ -110,8 +115,11 @@ _TYPE_LABELS: dict[str, str] = {
     "text": "填空",
     "matrix": "矩阵",
     "matrix_multi": "矩多",
+    "matrix_scale": "矩量",
     "sort": "排序",
 }
+# v4.2：与 webui/weights.TYPE_LABELS 对拍（后者 36 行有 matrix_scale，这里此前漏了，
+# 探测汇总不统计"矩量"题）—— 两个副本必须同步，或将来合并成单一真相。
 
 READY_STATUS = "就绪"
 DETECT_STATUS = "正在探测题目..."
@@ -184,6 +192,7 @@ class WebService:
         self._run_batch = run_batch_fn
         self._join_timeout = join_timeout
         self._db_cached: Any = None
+        self._db_init_lock = threading.Lock()   # get_db 懒构造的初始化锁（v4.1）
         self._state: RunState | None = None
         self._run_thread: threading.Thread | None = None
         # 「清理历史」的一次性凭据：预览发一张、确认用掉一张（见 purge_preview）
@@ -443,25 +452,31 @@ class WebService:
     # ------------------------------------------------------------ 历史库
 
     def get_db(self) -> Any | None:
-        """进程内唯一的 ``SubmissionHistory``（懒构造 + 缓存）。
+        """进程内唯一的 ``SubmissionHistory``（懒构造 + 缓存 + 初始化锁）。
 
         理由与它当初在桌面版里成立过的同一条：每个实例构造都要跑一遍含全表
         去重扫描的迁移，句柄不关就泄漏，而库里那把"串行化所有 DB 操作"的锁跨不了连接。
+        v4.1：构造本身也要进锁 —— 此前两个请求线程同时首调（如 /api/history/runs
+        与 /api/history/purge 同刻到达）会各建一个实例，后写的引用覆盖先写的，
+        先那个连接没人 close，且两把库内锁互不知晓，"串行化"成了空话。
         """
         if self._db_cached is not None:
             return self._db_cached
-        if not self.session.availability.history or self._history_db_cls is None:
-            return None
-        path = self.session.paths.history_db_path
-        try:
-            dirname = os.path.dirname(path)
-            if dirname and not os.path.exists(dirname):
-                os.makedirs(dirname, exist_ok=True)
-            self._db_cached = self._history_db_cls(path)
-            return self._db_cached
-        except Exception as e:
-            self._log(f"历史记录数据库打开失败: {type(e).__name__}: {e}", "WARN")
-            return None
+        with self._db_init_lock:
+            if self._db_cached is not None:          # 双重检查：等锁期间别人已建好
+                return self._db_cached
+            if not self.session.availability.history or self._history_db_cls is None:
+                return None
+            path = self.session.paths.history_db_path
+            try:
+                dirname = os.path.dirname(path)
+                if dirname and not os.path.exists(dirname):
+                    os.makedirs(dirname, exist_ok=True)
+                self._db_cached = self._history_db_cls(path)
+                return self._db_cached
+            except Exception as e:
+                self._log(f"历史记录数据库打开失败: {type(e).__name__}: {e}", "WARN")
+                return None
 
     def close_db(self) -> None:
         db, self._db_cached = self._db_cached, None
@@ -500,7 +515,10 @@ class WebService:
         if db is None:
             return []
         try:
-            return [dict(a) for a in db.query_answers(int(run_id))]
+            # v4.2：显式放大 limit —— query_answers 默认 5000 行静默截断，
+            # 大批次（100 份 × 60 题）的明细页/导出会缺行且无提示
+            return [dict(a) for a in
+                    db.query_answers(int(run_id), limit=_ANSWER_SCAN_LIMIT)]
         except Exception as e:
             self._log(f"读第 {run_id} 批明细失败: {type(e).__name__}: {e}", "FAIL")
             return []
@@ -522,7 +540,8 @@ class WebService:
                 for run in [dict(r) for r in db.query_runs(limit=10000)]:
                     try:
                         rows.extend(dict(a) for a in
-                                    db.query_answers(int(run["id"])))
+                                    db.query_answers(int(run["id"]),
+                                                     limit=_ANSWER_SCAN_LIMIT))
                     except Exception:
                         # 一批读不动不该毁掉整份导出（与桌面版同一条容错）
                         logger.debug("批次 %s 的明细读取失败（跳过）",
@@ -632,8 +651,9 @@ class WebService:
         self._sync_progress()
         self._log("═" * 40, "HEADER")
         if state.resume_start_idx > 1:
-            self._log(f"▶ 断点续传启动：从第 {state.resume_start_idx} 份 → "
-                      f"第 {state.total_target} 份（共 {state.attempts_cap} 份待跑）",
+            # v4.1：起点是"第几次尝试"（含已烧掉的失败轮），不再与"第几份"混称
+            self._log(f"▶ 断点续传启动：从第 {state.resume_start_idx} 次尝试 → "
+                      f"共 {state.attempts_cap} 次尝试（目标 {state.total_target} 份）",
                       "HEADER")
         else:
             self._log(f"▶ 开始执行，目标 {state.total_target} 份", "HEADER")
@@ -691,6 +711,10 @@ class WebService:
                                    f"uc={state.use_uc}")
         except Exception as e:
             self._log(f"运行异常: {type(e).__name__}: {e}", "FAIL")
+        except KeyboardInterrupt:
+            # v4.2：run_batch 不再吞 Ctrl+C（CLI 侧要非零退码）。Web 宿主的 worker
+            # 线程收不到真实 SIGINT，这只是防御 —— 收到时当一次正常收尾。
+            self._log("批次被中断（Ctrl+C）", "WARN")
         finally:
             self._finish_run()
 
@@ -754,7 +778,9 @@ class WebService:
             prev = db.find_resumable_run(url[:500])
             if prev is None:
                 return
-            done = int(prev["success_count"])
+            # v4.1：续传进度按逐份成败表算（history.resume_progress 单一真相），
+            # 硬崩后 runs.success_count 停在 0 的老洞由此关闭。
+            done, fail = db.resume_progress(int(prev["id"]))
             planned = int(prev["total_submissions"])
             if not 0 < done < planned:
                 return
@@ -771,22 +797,31 @@ class WebService:
                 self.restore_table_from_config(restored)
             msg = (f"检测到上次未完成的批次：\n\n"
                    f"  Run #{prev['id']} · 状态 = {prev['status']}\n"
-                   f"  已成功 {done} / {planned} 份\n"
+                   f"  已成功 {done} / {planned} 份"
+                   f"（另有 {fail} 次失败尝试）\n"
                    f"  开始时间 {str(prev['started_at'])[:19]}\n\n")
             if state.weight_config_snapshot:
                 msg += ("✅ 上次权重已自动恢复到表格，\n"
                         "    可在配置区检查 / 修改后再启动。\n\n")
-            msg += (f"是否从第 {done + 1} 份继续？"
+            msg += (f"是否从第 {done + fail + 1} 次尝试继续？"
                     "（取消则从第 1 份重新开始，但权重恢复仍生效）")
             if self._confirm("断点续传", msg):
-                state.resume_start_idx = done + 1
+                # 口径与 cli.run_batch 的 --resume 分支一致（v4.1 修正）：
+                # - 起点必须跳过全部已消费的尝试（成功 + 失败/unknown），
+                #   否则新份的 submission_index 撞上旧失败轮，
+                #   record_answer 的 INSERT OR REPLACE 会覆盖旧明细；
+                # - attempts_cap 必须减去 done+fail（此前只减 done，恢复后
+                #   会多跑 fail 份，与 cli.py 审查 P3-4 修过的同一个 bug）；
+                # - fail_count 必须恢复，否则收尾 finish_run 会把上批失败数清零。
+                state.resume_start_idx = done + fail + 1
                 state.run_id = int(prev["id"])
                 state.success_count = done      # 历史成功已计入，只用于进度显示
+                state.fail_count = fail
                 state.total_target = planned
-                state.attempts_cap = planned - done
+                state.attempts_cap = max(0, planned - (done + fail))
                 self._log(f"[续传] 恢复 Run #{state.run_id}：从第 "
-                          f"{state.resume_start_idx} 份继续（共 {planned} 份，"
-                          f"剩余 {state.attempts_cap} 份待跑）", "OK")
+                          f"{state.resume_start_idx} 次尝试继续（共 {planned} 份，"
+                          f"剩余 {state.attempts_cap} 次尝试）", "OK")
             else:
                 self._log("[续传] 已忽略上次中断批次，从第 1 份重新开始"
                           "（权重恢复仍生效）", "INFO")

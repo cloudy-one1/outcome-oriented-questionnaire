@@ -4,6 +4,137 @@
 
 ## [未发布]
 
+### 修复（CODE_REVIEW_v4.0 复审「中期」项与剩余 P2）
+
+**提交成功判定（P2，submit / manual_submit）**
+
+- 提交后 URL 变化不再**无条件**判成功 —— 跳到人机验证页/错误页同样是跳转，
+  此前会被记成成功份数。现按负向信号否决：URL 带验证词根，或跳转页上探测到
+  验证组件/错误文案（`submit_redirect_veto_script`）→ 继续观察到超时按 unknown；
+  干净跳转仍立即判成功（问卷星支持提交后跳自定义网址，强求成功文案会把真成功
+  判成 unknown → 下一轮重复提交，那个代价更大）。人工提交同判据，但否决后
+  **继续等**而不是收 unknown —— 人在场可能正在完成验证。
+- 多页问卷"下一页按钮认不出"与"已在最后一页"区分（`page_nav` 探测带上
+  "最后一个分页容器是否可见"）：中段按钮没认出来时判 failed 绝不提交，
+  此前两种形状混同，只答了前几页的问卷会被照常交上去。
+
+**身份证整条链接通（P1→P2，detection / answering_v2 / persona）**
+
+- `detection` 填空字段分类补 `idcard`（verify 属性与题干两条路）—— 此前含
+  "身份证"的填空题被填入随机中文短句，数据必废；
+- `answering_v2` 接线 `field == "idcard" → p.id_card` —— persona 精心生成的
+  ISO 7064 真校验位证件号当了三版死字段；
+- `persona` 新增 `birth_date` 字段：身份证出生段与 `birth_date_text()` 同源，
+  同卷的"身份证"与"出生日期"两题月日不再互相矛盾；出生日按真实月历抽
+  （此前恒 ≤28 号，29/30/31 从不出现）；
+- `_REGIONS` 名录直存 GB/T 2260 **真实 4 位市码** —— 此前 6 位区划 =
+  省码 + 截断名录下标+1，山东临沂曾拿到日照的 3711 段，批量数据可被区划码
+  反查识破。
+
+**浏览器层（P2，driver_factory / stealth）**
+
+- `WJX_BROWSER_BINARY` 等环境变量在 UC 分支同样生效（此前只由 Edge 与原生
+  Chrome 应用，容器里 use_uc=True 时静默失效）；
+- `--inprivate`/`--incognito` 只在**没给** `--profile-dir` 时启用 —— 隐私会话
+  不加载既有 profile 的登录态，两个一起给等于"跨批次复用登录态"永远失效；
+- `Sec-Fetch-*` 四件套移出全局追加头 —— setExtraHTTPHeaders 作用于每个请求，
+  真实浏览器对 XHR 发 empty/cors，全 document 头本身就是可检特征；
+- stealth 删除 contentWindow 全量劫持 —— 同源 iframe 的 self/parent/top 全错、
+  `contentWindow === window` 这个过强不变量本身就是检测点。
+
+**其余 P2/P3**
+
+- `plan._weights_for` 改走锚定查表（带锚条目按题干认领、认不到绝不退回答题号），
+  并拒负权重（此前负权重能让 `_quotas` 产出负配额）；计划 notes 增加取数口径声明。
+- `config_io.validate_weight_config` 新增锚点互撞检测（两条锚点认领同一道题时
+  配置期报出，此前运行期按文件序静默首中）；`scale_min` 非整数返回错误列表
+  而不是自己抛（公开契约修复）；`save_weight_config` 改为临时文件 + `os.replace`
+  原子写（此前"另存预设"中途被杀会毁掉用户已有配置）；`apply_weight_config(replace=True)`
+  组装后一次性 update（消除热更新 clear→refill 的中间态窗口）。
+- `reliability`：`implicit_dimension` 显式传扫描上限（此前静默吃 5000 行默认截断）；
+  反向题按**该题自身**观测值域翻转（此前用维度合并值域，混刻度时会越界）。
+- `reverse_fill.preflight` 增加 `with_columns` 开关：`begin_replay` 在探测发生前
+  不再输出列计划假警（此前每道题列都吃一条 blocked，训练用户忽略告警）。
+- `webui`：`get_db` 懒构造加初始化锁（此前并发首调会各建一个连接）；`get_log`
+  锁内取快照（此前直接迭代 deque，并发 append 会 RuntimeError → 500）；
+  `history_answers`/导出显式放大 `query_answers` limit（默认 5000 静默截断，
+  大批次明细缺行）；`_TYPE_LABELS` 补 `matrix_scale`。
+- `cli`：`-n` 改哨兵默认值（显式传恰好等于默认的份数不再被当成没传）；批次内
+  Ctrl+C 标记 interrupted 后**继续上抛**，main 以非零码退出（与预约等待期口径
+  一致，别让 cron 以为跑成了）。
+- `answering_v2`：`scale_max < scale_min` 时返回 `scale_min` 而不是
+  `random.choice([])` 崩溃；age 字段的 min/max 非数字回退默认档。
+- 工程面：`scripts/` 纳入 pyright 门禁（三个门禁脚本此前只有行为测试没有类型
+  检查，暴露的 4 条已修）；`webui/api.py` ROUTES 表缩进修正；ci.yml 注释的
+  "webui 那 8 项"更正为 10 项；tests/conftest.py 文档里"e2e job 现在是
+  continue-on-error"的过期表述更正。
+
+### 修复（CODE_REVIEW_v4.0 全量复审的落地）
+
+**P0 两条：信度计划与投递纠正接不到主流量**
+
+- single/multi（问卷上最常见两类题）的生成从 v1 `answering.build_answer_strategy`
+  切到 `answering_v2.generate_answer`（`question_stage._v2_selected`）。此前
+  `plan.forced_choice` 与 `distribution.adjust` 全仓库只接在 v2 上 ——
+  `--alpha-target` 为 single 精确建了配额、打印"计划已建"，配额却永不兑现；
+  `--drift-correct` 收了 single/multi 的统计却从不施加纠正。v1 模块与
+  `tests/test_answering.py` 随之退役，"两代生成器并存"这一结构性根因移除。
+- distribution 反馈环键域错位修复（`question_stage._distribution_picks`）：此前把
+  1-based 的选项 value / 量表分值直接喂给 `buffer_answer`，而 `adjust` 按 0-based
+  权重下标取数 —— 0 号选项恒被判"欠投"顶满 factor 上限、其余修正整体错一位、
+  末位份额永远丢弃。现统一换算（single/multi/dropdown 按 `choices.index`、量表按
+  `val - scale_min`）；矩阵与排序**不入账**（统计单位不同，宁可少纠正不可对错账）。
+
+**P1：续传链路（CLI 与 WebUI 同根的三个洞）**
+
+- 历史库新增 `submissions` 逐份成败表（`record_submission_result`），每份出结果
+  即写，不再依赖"批次收尾才落库"的 `runs.success_count` —— 此前进程硬崩后该列
+  停在 0，`--resume` 守卫恒假，结局是"按全新批次开始"把已提交的份数原样重交。
+  续传起点收敛为 `history.resume_progress()` 单一真相，老批次无逐份行时自动
+  退回收尾计数。
+- WebUI 续传口径补上 CLI 已修过的同款 bug（`service._apply_resumable_run`）：
+  `attempts_cap` 少减 fail（恢复后多跑 fail 份）、起点不跳失败轮（新份
+  `submission_index` 撞号，`INSERT OR REPLACE` 覆盖旧明细）、`fail_count` 不恢复
+  （收尾把上批失败数清零）。CLI 侧 `resume_start_idx` 同样补上 `+ fail`。
+- WebUI 起点横幅与确认框文案改为"第 N 次尝试"口径，不再与"第 N 份"混称。
+
+**P1：其它**
+
+- `webui/server.py`：`/api/events` SSE 分支此前在 `Api.handle` 的 Host/Origin
+  校验**之前**直接返回，是同源防线的唯一旁路 —— DNS rebinding 后攻击者页面可
+  持续读会话快照与日志流。现补齐同样的两道检查。
+- `cli.py` 多问卷队列退出码改用累计值 `total_fail`（此前用循环残留变量 `fail`，
+  前几批失败、最后一批全成时退 0）。
+- `verification.py`：关键词"请点击"移出 body 全文匹配 —— 题面含这条普通指令时
+  每 2 题一次的探测立即误判"有验证"，整批每份空等 120s 判失败；非 Windows 降级桩
+  从不可达的 `except ImportError` 改为 `sys.platform` 判定。
+- `detection.py` 已答扫描的填空分支补上与 `detect_questions` 相同的
+  `offsetParent === null` 守卫 —— 缺它时，真卷上装着量表标注文字的隐藏 textarea
+  会把未答量表题报成已答、被续填整题跳过。
+- `interactions/_scripts.py`：`fill_text_script` 补 maxlength 截断（超长文本此前
+  会被平台校验整格清掉、只能判 unknown）；`fill_sort_script` 删掉架空"认不出的项"
+  守卫的补齐循环 —— 此前 order 引用不存在的选项时静默错序并记成功。
+- `utils.weights_are_usable` 补负权重判定（混合正负此前穿透运行时防线：numpy
+  路径除零或抛 ValueError，random.choices 路径静默偏置）；`weight_text` 未知题型
+  兜底（matrix_scale 的主路径）补 `_bad_number` 检查。
+- `driver_factory.py`：`user-agent=` 启动参数补 `--` 前缀 —— Chromium 只把
+  `-`/`/` 开头的 token 当 switch，此前 UA 参数被当位置参数丢弃，UA 伪装实际全靠
+  CDP override 兜底且失败处无留痕。
+
+**低成本 P2/P3**
+
+- `webui/service.get_db` 懒构造加初始化锁（此前两个请求线程并发首调会各建一个
+  连接，一个被覆盖后无人 close，还绕过库内单连接锁）；`webui/api.get_log` 改为
+  锁内取快照（此前直接迭代 deque，并发 append 会 RuntimeError → 500）。
+- `.dockerignore` 新增：此前 `COPY . ./` 会把 `data/history.db`（含填空题原文
+  PII）、虚拟环境与 coverage 产物整棵打进镜像，而 docker-smoke 在干净 checkout
+  上构建结构性发现不了。
+- `ci.yml` 钉住 pyright 版本 1.1.414（pytest/ruff 都钉了，唯独这一步拉最新版，
+  一次上游发版就能让 0-error 门禁无因变红）。
+- 文档口径：`docs/cli.md` 导出文件名改为实际的 `history_answers.csv`；
+  `docs/config.md` 与 `examples/` 的 schema_version 示例升到 3.0；
+  `.gitignore` 补 `.qoder/`、去掉重复的 `.env`；删除 v4.0 遗留的 `gui/` 编译缓存。
+
 ### 门面口径
 
 - 四份门面文件（`CONTRIBUTING.md`、`SECURITY.md`、`.github/PULL_REQUEST_TEMPLATE.md`、

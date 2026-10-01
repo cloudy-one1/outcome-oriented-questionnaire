@@ -13,7 +13,10 @@
   // 0 error，只有 8 条"随环境变成冗余"的 ignore 注释 —— 正是上面那条陷阱的翻版，
   // 全部删掉而不是留着豁免（导出/另存默认那两处改成 `_save_ready` 返回函数本身，
   // 检查与调用从此是同一个对象）。
-  "include": ["src", "webui", "run_cli.py", "run_web.py", "conftest.py"],
+  // v4.2：scripts/ 纳入 —— 三个门禁脚本（coverage_doc / e2e_gate / ci_annotate）
+  // 自己写坏了类型只有跑起来才炸，行为测试兜不住类型面。tests/ 仍留门外：
+  // 1.2 万行测试的类型收益低、改动成本高，是记录在案的决策（见 test_ci_guards）。
+  "include": ["src", "webui", "scripts", "run_cli.py", "run_web.py", "conftest.py"],
   "exclude": ["**/__pycache__", ".pytest_cache", ".ruff_cache"],
   "typeCheckingMode": "basic",
   "pythonVersion": "3.10",
