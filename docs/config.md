@@ -31,7 +31,7 @@ WEIGHT_CONFIG = {
 
 ```json
 {
-  "schema_version": "2.0",
+  "schema_version": "3.0",
   "saved_at": "2026-07-04T20:50:00",
   "meta": {
     "name": "客户满意度预设",

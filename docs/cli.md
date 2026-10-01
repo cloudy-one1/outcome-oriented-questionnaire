@@ -173,7 +173,7 @@ python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 3 --manual-submit
 
 1. **Web 控制台** — 「📜 历史记录」页签：批次列表 → 点击查看答题明细 → 导出 CSV → 清理 7 天前数据（清理是两步确认）
 2. **CLI** — `--stats` 在运行结束后打印累计成功率等汇总
-3. **导出分析** — 界面里的「📤 导出 CSV」生成 `history_runs.csv` + `history_runs_answers.csv`，可直接用 Pandas 分析
+3. **导出分析** — 界面里的「📤 导出 CSV」生成 `history_runs.csv` + `history_answers.csv`，可直接用 Pandas 分析
 
 ## 隐私
 
