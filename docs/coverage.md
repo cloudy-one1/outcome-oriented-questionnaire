@@ -73,5 +73,5 @@ E2E job 说了算（v3.1 起它是**阻塞**的，而"驱动起不来 → 全 sk
 
 模块清单与缺口理由维护在 [`scripts/coverage_gaps.json`](../scripts/coverage_gaps.json)。
 能力边界（哪一类题型不支持逐行权重、哪一种投放形态未适配）不在这张表里，
-在 [README 的「不在本工具范围内」](../README.md#不在本工具范围内评估过明确不做) 与
+在 [scope.md 的范围边界](scope.md#范围边界评估过明确不做) 与
 [config.md 的已知边界](config.md#已知边界量表式矩阵不支持逐行权重)。

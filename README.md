@@ -113,6 +113,7 @@ JSON schema、题干锚点、各题型的关键字段、界面权重表的编辑
 | [docs/cli.md](docs/cli.md) | CLI 完整示例、参数一览、三态输出、断点续传、统计类开关、隐私 |
 | [docs/config.md](docs/config.md) | 权重配置：JSON schema、题干锚点、题型字段、界面编辑格式、已知边界 |
 | [docs/architecture.md](docs/architecture.md) | 工作原理全链路、分层、题型边界、探测的三道判据、术语表、落库结构 |
+| [docs/scope.md](docs/scope.md) | 范围边界：评估过、明确不做的事项与各自理由 |
 | [docs/coverage.md](docs/coverage.md) | 覆盖率口径与已知缺口（**生成物**，`--check` 是 CI 门禁） |
 | [CHANGELOG.md](CHANGELOG.md) | 按版本记的变更，每条带当时的取舍理由 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 环境、提交前必过的门禁、测试基座的几个坑、定版步骤 |
@@ -157,19 +158,10 @@ python -m ruff check . && npx pyright             # 静态检查 + 类型检查
 
 ---
 
-## 不在本工具范围内（评估过、明确不做）
+## 不在本工具范围内
 
-| 事项 | 为什么不做 |
-|---|---|
-| 代理 / IP 池 / 伪造 `X-Forwarded-For` | 平台计数走服务端真实 IP + cookie + 智能验证，XFF 只在特定反代配置下被采信 —— 效果不可靠，代价是风控 |
-| 并发 worker（同时开 N 个浏览器） | 稀释「正态分布的人类行为」，并让「人工介入验证码」这个单实例前提失效 |
-| 自动识别验证码 | 只检测、只请人帮忙；绕过验证码不是本项目要解决的问题 |
-| 大模型代答 / “人设化”答案 | 把「答案是谁写的」整体移出工具，还带上题干原文拼 prompt 的注入面（完整理由见 [CHANGELOG](CHANGELOG.md) 与 `docs/reviews/`） |
-| 移动端投放形态的作答 | 判据与注入要换一整套，PC 版链接是现成替代品；现在只诊断「换链接」，不往注入侧加代码 |
-| Web 控制台的无头 / 队列 / 时限 / 预约 | 控制台是“看着页面跑”的入口；无人值守是 CLI 的场景 |
-
-第二个平台（腾讯问卷 / 金数据 / Google Forms）也**没有**支持：`src/platforms.py`
-只是把问卷星专属选择器收成一张表，题型识别与作答注入仍是问卷星的 DOM 约定。
+代理与 IP 池、并发 worker、自动识别验证码、大模型代答、移动端投放形态、第二个平台——
+这些方向都评估过并明确不做，逐项理由见 [docs/scope.md](docs/scope.md)。
 
 ---
 

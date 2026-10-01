@@ -65,6 +65,7 @@ docs/*
 !docs/config.md
 !docs/architecture.md
 !docs/coverage.md
+!docs/scope.md
 
 # ---------- 运行产物：含 PII，绝不该进版本库 ----------
 # data/history.db 的 answers.text_answer 存填空题原文（姓名/手机/邮箱），
