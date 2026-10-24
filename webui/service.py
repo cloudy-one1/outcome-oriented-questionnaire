@@ -551,18 +551,19 @@ class WebService:
             raise ValidationError("未加载 src.history，无法导出历史记录")
         try:
             if kind == "answers":
+                # 两条整库查询（history.export_runs / export_answers，均无 LIMIT），
+                # 按 runs 的既有顺序分组合并 —— 此前写死 limit=10000（老库导出静默
+                # 缺行），且按 runs 逐批 query_answers 是 N+1（万级批次 = 万次查询）。
+                # 单条查询后"某一批明细读不动"这个失败模式不复存在：读不动就是整份
+                # 导出失败、走下面的统一报错 —— 那比静默缺行诚实。
+                by_run: dict[int, list[dict]] = {}
+                for a in db.export_answers():
+                    by_run.setdefault(int(a["run_id"]), []).append(dict(a))
                 rows: list[dict] = []
-                for run in [dict(r) for r in db.query_runs(limit=10000)]:
-                    try:
-                        rows.extend(dict(a) for a in
-                                    db.query_answers(int(run["id"]),
-                                                     limit=_ANSWER_SCAN_LIMIT))
-                    except Exception:
-                        # 一批读不动不该毁掉整份导出（与桌面版同一条容错）
-                        logger.debug("批次 %s 的明细读取失败（跳过）",
-                                     run.get("id"), exc_info=True)
+                for run in [dict(r) for r in db.export_runs()]:
+                    rows.extend(by_run.pop(int(run["id"]), []))
             else:
-                rows = [dict(r) for r in db.query_runs(limit=10000)]
+                rows = [dict(r) for r in db.export_runs()]
         except Exception as e:
             self._log(f"导出历史记录失败: {type(e).__name__}: {e}", "FAIL")
             raise ValidationError(f"导出失败：{type(e).__name__}: {e}") from e

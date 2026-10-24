@@ -4,7 +4,10 @@
   // 为什么现在能开：src/ 在 basic 模式下是 **0 error**（本轮把暴露出来的 10 条
   // 全部当真问题修掉了：sqlite3.Cursor.lastrowid 可能为 None 却直接 int()、
   // random 模块被当 random.Random 实例传递、可选 numpy 绑定的联合类型等）。
-  // 一条都不用豁免的门禁才有意义 —— 需要 baseline 的检查只会退化成装饰。
+  // 没有**baseline 豁免**（整类诊断对某些文件关闸）—— 那种检查只会退化成装饰。
+  // 全库仅存的 3 条 `# type: ignore[码]`（anchoring / detection / history，各 1 条）
+  // 是带错误码的**点位级**注记：reportUnnecessaryTypeIgnoreComment 会随上游变化
+  // 把已经不起作用的条目判错，它们不构成 baseline，也别拿它们当先例敞开新口子。
   //
   // gui/（Tkinter 宿主）曾于 v2.8 纳进来、45 条诊断全部清零 —— 那条判据留在这儿：
   // 需要豁免的门禁只会退化成装饰。宿主本体已在 v4.0 退役（设计稿 §10 第 7 步）。

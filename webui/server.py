@@ -50,6 +50,11 @@ STATIC_FILES: dict[str, tuple[str, str]] = {
 }
 MAX_SSE_CLIENTS = 4
 
+# POST 体读取的 socket 超时。本地控制面上没有合法的"慢"客户端：一次 8MB 的
+# 二维码上传在本机回环上也是瞬时的 —— 30s 还没到齐只有两种可能，进程卡死
+# 或连接半开，两种都该把线程还回去。
+_BODY_READ_TIMEOUT_SECONDS = 30.0
+
 # 浏览器主动断线时抛的三种形状：RST（关标签页 / keep-alive 空闲被掐）、
 # 写半边断了、以及 Windows 上"对端已重置"落到 accept 之后的 recv。
 # 共同点：请求已经处理完或还没开始，服务端没有任何东西要挽回。
@@ -127,7 +132,26 @@ class WebUIRequestHandler(BaseHTTPRequestHandler):
             self._send(Response.error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
                                       "请求体过大"))
             return
-        self._dispatch("POST", path, self.rfile.read(length) if length else b"")
+        body = b""
+        if length:
+            # 读体挂一个 socket 超时：声明了长度却迟迟不发字节的客户端（本机进程
+            # 卡死、半开连接）不该把这个处理线程永远占住。超时只罩住这一次读取，
+            # 完了恢复阻塞 —— SSE 长连接不经过这条路（它在 _serve_events 的
+            # 自己循环里）。读了一半的 body 无法与下一个请求区分，连接必须关。
+            try:
+                self.connection.settimeout(_BODY_READ_TIMEOUT_SECONDS)
+                body = self.rfile.read(length)
+            except OSError:
+                self._send(Response.error(HTTPStatus.REQUEST_TIMEOUT,
+                                          "请求体读取超时"))
+                self.close_connection = True
+                return
+            finally:
+                try:
+                    self.connection.settimeout(None)
+                except OSError:
+                    pass
+        self._dispatch("POST", path, body)
 
     # ------------------------------------------------------------ 内部
 

@@ -1801,7 +1801,7 @@ def test_purge_without_the_history_module_says_so(session) -> None:
 # 但"写了"不等于"对"：不测的话，谁把 return [] 改成 raise 也没人知道。
 
 class _RaisingHistory:
-    """每个方法都炸的历史库替身。``skip_answers`` 让明细单独炸。"""
+    """每个方法都炸的历史库替身。``skip_answers`` 让整库明细单独炸。"""
 
     def __init__(self, *, runs=None, skip_answers=()):
         self._runs = list(runs or [])
@@ -1809,6 +1809,16 @@ class _RaisingHistory:
 
     def query_runs(self, limit=50, status=None):
         return self._runs
+
+    def export_runs(self):
+        return self._runs
+
+    def export_answers(self):
+        if self._skip:
+            raise OSError("database disk image is malformed")
+        return [{"run_id": 1, "submission_index": 1, "question_number": 1,
+                 "question_type": "single", "options_selected": "[0]",
+                 "text_answer": None, "elapsed_ms": 5, "created_at": "t"}]
 
     def query_answers(self, run_id, limit=5000):
         if run_id in self._skip:
@@ -1843,18 +1853,19 @@ def test_a_malformed_db_empties_the_lists_and_says_so_instead_of_500(
                for row in sess.log_lines), "降级必须留痕，否则用户以为库是空的"
 
 
-def test_one_unreadable_run_does_not_void_the_whole_answers_export(session) -> None:
-    """一批明细炸掉不该毁掉整份导出 —— 那是"备份失败"级别的损失。"""
+def test_export_answers_failing_wholesale_is_a_readable_error(session) -> None:
+    """整库明细一条查询拿全（取代 N+1）之后，"某一批读不动跳过"这个容错不复存在：
+    读不动就是整份导出失败 —— 走统一报错，比静默缺行诚实。"""
     db = _RaisingHistory(runs=[{"id": 1}, {"id": 2}], skip_answers={2})
     _sess, svc = _raising_service(session, db)
-    name, data = svc.history_export("answers")
-    assert name == "history_answers.csv"
-    assert data.decode("utf-8-sig").strip().count("\n") == 1, "只导出能读的那一批"
+    with pytest.raises(ValidationError, match="导出失败"):
+        svc.history_export("answers")
+    assert any("导出历史记录失败" in row["text"] for row in _sess.log_lines)
 
 
 def test_an_export_that_cannot_even_list_runs_is_a_readable_error(session) -> None:
     class _NoRuns(_RaisingHistory):
-        def query_runs(self, limit=50, status=None):
+        def export_runs(self):
             raise OSError("locked")
 
     sess, svc = _raising_service(session, _NoRuns())

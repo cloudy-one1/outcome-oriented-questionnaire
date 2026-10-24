@@ -828,5 +828,44 @@ class TestPerSubmissionStatus(unittest.TestCase):
         self.assertEqual(int(left[0]["c"]), 0)
 
 
+class TestWholeLibraryExports(unittest.TestCase):
+    """v4.1 — 整库导出（export_runs / export_answers）：不带 LIMIT、单条查询。
+
+    服务层此前写死 query_runs(limit=10000)（老库导出静默缺行），且按 runs 逐批
+    query_answers 是 N+1 —— 万级批次等于万次查询。
+    """
+
+    def setUp(self) -> None:
+        self._tmpfd, self._tmppath = tempfile.mkstemp(suffix=".db")
+        os.close(self._tmpfd)
+        from src.history import SubmissionHistory  # type: ignore
+        self.db: Any = SubmissionHistory(self._tmppath)
+
+    def tearDown(self) -> None:
+        self.db.close()
+        if os.path.exists(self._tmppath):
+            os.unlink(self._tmppath)
+
+    def test_export_runs_returns_every_run_beyond_the_page_limit(self) -> None:
+        """界面分页有钳制是刻意的；导出没有 —— 3 批在 limit=2 的分页下只见 2，导出必须 3。"""
+        ids = [self.db.start_run(f"https://x/e{i}", 1, "edge", False)
+               for i in range(3)]
+        self.assertEqual(len(self.db.query_runs(limit=2)), 2)
+        got = [int(r["id"]) for r in self.db.export_runs()]
+        self.assertEqual(sorted(got), sorted(ids))
+
+    def test_export_answers_is_one_query_ordered_by_id(self) -> None:
+        rid = self.db.start_run("https://x/e9", 1, "edge", False)
+        for q in (3, 1, 2):
+            self.db.record_answer(
+                run_id=rid, submission_index=1, question_number=q,
+                question_type="single", options_selected=[0], elapsed_ms=5,
+            )
+        # ORDER BY id（插入序）—— 与逐批 query_answers 的口径一致，CSV 行序不变
+        rows = self.db.export_answers()
+        self.assertEqual([int(r["question_number"]) for r in rows], [3, 1, 2])
+        self.assertEqual({int(r["run_id"]) for r in rows}, {rid})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

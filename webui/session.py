@@ -271,7 +271,7 @@ class RunSession:
     def set_status(self, text: str) -> None:
         with self._lock:
             self.status = text
-        self.emit("status", {"text": text, "tone": STATUS_COLORS.get(text, "neutral")})
+        self.emit("status", self._status_event(text))
 
     def restore_idle_status(self, text: str) -> None:
         """后台命令收尾时把状态条还给「就绪」—— 但只在真的没在跑的时候还。
@@ -279,12 +279,19 @@ class RunSession:
         探测 worker 的 ``finally`` 要先 ``driver.quit()``（一到两秒），这条很容易
         落在用户已经点了「开始运行」之后，于是长跑期间状态条写着「就绪」。
         按钮的禁用态由 ``running`` 单独驱动，所以只有这一行文字在说谎 ——
-        比整块界面都不动更难发现。
+        比整块界面都不动更难发现。检查与写入必须在同一次加锁里完成：拆开时
+        "刚查完没在跑"和"真的写进去"之间可以插进一次 ``start_run``，
+        窗口内落到的那句「就绪」会盖掉「运行中...」直到下一帧事件。
         """
         with self._lock:
             if self.running:
                 return
-        self.set_status(text)
+            self.status = text
+        self.emit("status", self._status_event(text))
+
+    @staticmethod
+    def _status_event(text: str) -> dict[str, Any]:
+        return {"text": text, "tone": STATUS_COLORS.get(text, "neutral")}
 
     def begin_command(self, name: str) -> None:
         """替代 Tk 的"按钮 configure(disabled)"。"""

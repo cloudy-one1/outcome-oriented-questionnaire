@@ -34,7 +34,7 @@
   function cacheElements() {
     ["url", "count", "count-minus", "count-plus", "browser", "use-uc",
      "no-record-text", "manual-submit", "btn-detect", "btn-export", "btn-save-default",
-     "file-import", "file-qr", "settings-note", "table", "table-body", "table-empty",
+     "file-import", "file-qr", "settings-note", "table-body", "table-empty",
      "table-meta", "status", "status-text", "line-count", "log-scroll",
      "log-gutter", "log-lines", "btn-run", "btn-stop", "pct", "rounds",
      "progress", "progress-fill", "ok-count", "fail-count", "conn",

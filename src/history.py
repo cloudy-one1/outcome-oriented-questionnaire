@@ -714,6 +714,33 @@ class SubmissionHistory:
         params.append(int(limit))
         return self._query(sql, params)
 
+    # ------------------------------------------------------------------
+    # 整库导出：不带 LIMIT
+    # ------------------------------------------------------------------
+    def export_runs(self) -> list[sqlite3.Row]:
+        """整库 runs，按 started_at 倒序 —— 与 ``query_runs`` 同序，但没有 LIMIT。
+
+        导出是显式的"要整库"操作：静默截断（此前服务层写死 limit=10000）意味着
+        老库的导出无提示缺行，那比慢更糟。界面分页仍走 ``query_runs``（那边有
+        钳制是有意的，见 webui 的 history_runs）。
+        """
+        with self._locked():
+            return self._conn.execute(
+                "SELECT * FROM runs ORDER BY started_at DESC, id DESC"
+            ).fetchall()
+
+    def export_answers(self) -> list[sqlite3.Row]:
+        """整库 answers，单条查询 —— 取代"按 runs 逐批 query_answers"的 N+1。
+
+        每批一次往返在万级批次上是万次查询；一条 ``ORDER BY id`` 拿全后由调用方
+        按 runs 的顺序分组。整库一次读入内存与逐批读入的峰值同量级（行本来就是
+        全部要进 CSV 的），不新增风险。
+        """
+        with self._locked():
+            return self._conn.execute(
+                "SELECT * FROM answers ORDER BY id ASC"
+            ).fetchall()
+
     def stats_summary(self) -> dict[str, Any]:
         """全库统计：总运行数、总提交数、总成功率。"""
         with self._locked():

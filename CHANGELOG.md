@@ -4,6 +4,29 @@
 
 ## [未发布]
 
+### 修复（CODE_REVIEW_v4.0 剩余 P3 的第三批）
+
+- **历史导出的 10000 上限与 N+1 查询**：`history_export` 此前写死
+  `query_runs(limit=10000)` —— 批次过万的老库导出**静默缺行**；明细则按 runs
+  逐批 `query_answers`，万级批次等于万次查询。`history` 新增
+  `export_runs` / `export_answers`（无 LIMIT 的整库读取，界面分页仍走带钳制的
+  `query_runs`），服务层两条查询 + 按内存分组，CSV 行序与逐批版逐位一致。
+  连带翻转一条容错语义：单条查询后"某一批明细读不动就跳过"不再存在 —— 读不动
+  就是整份导出失败、走统一报错，比静默缺行诚实（测试随语义更新）。
+- **`restore_idle_status` 的 check-then-act 竞窗**：检查"没在跑"与写入状态原先
+  分两次加锁，探测收尾（`driver.quit()` 要一两秒）可以恰好在窗口内撞上一次
+  `start_run`，把「运行中...」盖回「就绪」直到下一帧事件。检查与写入收进同一把锁。
+- **POST 体读取无 socket 超时**：声明了 Content-Length 却迟迟不发字节的客户端
+  （本机进程卡死、半开连接）会把处理线程永远占住。读体挂 30s 超时（只罩这一次
+  读取，SSE 长连接不在此路），超时回 408 并关连接 —— 读了一半的 body 无法与
+  下一个请求区分。
+- **pyrightconfig 的"零豁免"叙事与现存 3 条 `# type: ignore` 并存且互不引用**：
+  注释改准 —— 没有 baseline 豁免（整类关闸），仅存的是 3 条带错误码的**点位级**
+  注记，且 `reportUnnecessaryTypeIgnoreComment` 会把失效条目判错，它们不构成
+  baseline，也别当先例敞新口子。
+- **app.js 的 `els.table` 缓存后零使用**：从缓存清单移除（DOM 节点与 `.table`
+  样式类不受影响）。
+
 ### 修复（CODE_REVIEW_v4.0 剩余 P3 的第二批）
 
 - **坏配置的两个入口结论相反**：`validate_weight_config` 返回的列表里全部是错误级
