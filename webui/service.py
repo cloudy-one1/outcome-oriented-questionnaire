@@ -639,6 +639,7 @@ class WebService:
             use_uc=self.session.use_uc,
             survey_url=url[:500],
             no_record_text=self.session.no_record_text,
+            manual_submit=self.session.manual_submit,
             weight_config_snapshot=RunState.snapshot_weight_config(
                 dict(cfg_module.WEIGHT_CONFIG)),
         )
@@ -657,6 +658,9 @@ class WebService:
                       "HEADER")
         else:
             self._log(f"▶ 开始执行，目标 {state.total_target} 份", "HEADER")
+        if state.manual_submit:
+            self._log("人工提交 : 每一份都停在提交按钮前，由你核对后自己点"
+                      "（超时没人点 = 这一份没交出去，计失败）", "WARN")
         self._log("═" * 40, "HEADER")
         self._run_thread = threading.Thread(target=self._run_loop, args=(state,),
                                             name="wjx-run", daemon=True)
@@ -703,6 +707,7 @@ class WebService:
                       history_db=self.get_db(),
                       weight_config=state.weight_config_snapshot,
                       no_record_text=state.no_record_text,
+                      manual_submit=state.manual_submit,
                       state=state,
                       on_round=on_round,
                       log=lambda msg: self._log(msg, "INFO"),

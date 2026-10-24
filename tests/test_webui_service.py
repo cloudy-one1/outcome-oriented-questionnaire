@@ -1141,6 +1141,35 @@ def test_start_run_hands_the_engine_the_same_arguments_tk_does(tmp_path):
     assert callable(calls["stop_check"]) and callable(calls["log"])
 
 
+def test_manual_submit_flows_from_the_form_into_the_engine(tmp_path):
+    """v4.1 人工提交：表单开关 → RunState → run_batch 参数，一条线全通。
+
+    它是 v3.3 已知限制里唯一记成「待办，不是取舍」的那条：CLI 有 --manual-submit，
+    Web 控制台却没有入口 —— 后端整条链一直在，缺的就是这段接线（与当年"扫码
+    没有按钮"同一个形状）。默认必须与 CLI 同一默认（关）。
+    """
+    sess, svc, calls, _db = make_runner(tmp_path)
+    assert sess.manual_submit is False
+    sess.set_field("url", "https://x.test/s")
+    sess.set_field("count", 2)
+    sess.set_field("manual_submit", True)
+    assert sess.manual_submit is True
+    svc.start_run()
+    assert svc.wait_for_run(5)
+    assert calls["manual_submit"] is True
+    assert calls["state"].manual_submit is True
+    # 开跑横幅要把这件事说出来 —— 等 180s 的人需要先知道自己在等什么
+    assert any(t == "WARN" and "人工提交" in x for t, x in logs_of(sess))
+
+
+def test_manual_submit_field_coerces_like_the_other_booleans(tmp_path):
+    sess, _svc, _calls, _db = make_runner(tmp_path)
+    sess.set_field("manual_submit", 1)
+    assert sess.manual_submit is True
+    sess.set_field("manual_submit", 0)
+    assert sess.manual_submit is False
+
+
 def test_round_callbacks_become_log_lines_and_progress(tmp_path):
     sess, svc, _calls, _db = make_runner(tmp_path, rounds=[
         FakeRound(1, "success", "第 1 份已提交"),

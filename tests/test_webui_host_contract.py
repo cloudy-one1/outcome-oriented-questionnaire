@@ -95,6 +95,7 @@ def test_the_form_becomes_exactly_this_run_state(tmp_path) -> None:
     session.set_field("browser", "chrome")
     session.set_field("use_uc", True)
     session.set_field("no_record_text", True)
+    session.set_field("manual_submit", True)
 
     args, kwargs = start(session)
     state = kwargs["state"]
@@ -104,11 +105,12 @@ def test_the_form_becomes_exactly_this_run_state(tmp_path) -> None:
     assert state.survey_url == URL
     assert state.success_count == 0 and state.fail_count == 0
     assert kwargs["no_record_text"] is True
+    assert kwargs["manual_submit"] is True, "人工提交必须真传进引擎，不能只改了界面"
     # 宿主标签是唯一一处刻意写进库里的宿主信息（runs.error_message 尾部）
     assert kwargs["error_suffix"] == "Web · browser=chrome uc=True"
     assert set(kwargs) == {
         "browser", "use_uc", "history_db", "weight_config", "no_record_text",
-        "state", "on_round", "log", "stop_check", "error_suffix",
+        "manual_submit", "state", "on_round", "log", "stop_check", "error_suffix",
     }, "交给引擎的关键字集合变了 —— 少一个参数就是少一条契约"
 
 

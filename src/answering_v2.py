@@ -332,14 +332,13 @@ def _generate_multi_blank_texts(question: dict) -> dict[str, str]:
     """
     blanks = list(question.get("blanks") or [])
     explicit = question.get("options") or _cfg_entry(question).get("options")
-    has_pool = isinstance(explicit, (list, tuple)) and len(explicit) > 0
     pool = random.sample(_SHORT_SENTENCES, len(_SHORT_SENTENCES))
     p = active_persona()
     texts: dict[str, str] = {}
     for i, blank in enumerate(blanks):
         entry = blank if isinstance(blank, dict) else {}
         slot = str(entry.get("id") or f"{question.get('q')}_{i}")
-        if has_pool:
+        if isinstance(explicit, (list, tuple)) and len(explicit) > 0:
             texts[slot] = str(random.choice(list(explicit)))
         else:
             field = str(entry.get("field") or "").lower() or None

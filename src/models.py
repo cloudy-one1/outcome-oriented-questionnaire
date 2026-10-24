@@ -484,6 +484,9 @@ class RunState:
     survey_url: str = ""                      # 问卷 URL（续传 find_resumable_run 已用）
     crash_message: Optional[str] = None       # 未捕获异常说明（非空 = 批次崩溃 → history 记 failed）
     no_record_text: bool = False              # 隐私保护：填空题答案不写入 SQLite（CLI 同名参数）
+    manual_submit: bool = False               # 人工提交：答完停在提交按钮前由人自己点
+                                              # （v4.1 Web 控制台接线；Web 宿主无无头形态，
+                                              #  CLI 那条与 --headless 的互斥在这里结构性成立）
 
     # ------------ 只读派生属性 ------------
     @property

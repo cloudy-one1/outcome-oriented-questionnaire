@@ -33,7 +33,7 @@
 
   function cacheElements() {
     ["url", "count", "count-minus", "count-plus", "browser", "use-uc",
-     "no-record-text", "btn-detect", "btn-export", "btn-save-default",
+     "no-record-text", "manual-submit", "btn-detect", "btn-export", "btn-save-default",
      "file-import", "file-qr", "settings-note", "table", "table-body", "table-empty",
      "table-meta", "status", "status-text", "line-count", "log-scroll",
      "log-gutter", "log-lines", "btn-run", "btn-stop", "pct", "rounds",
@@ -170,6 +170,7 @@
     setIfDifferent(els.count, String(form.count));
     setIfDifferent(els["use-uc"], form.use_uc);
     setIfDifferent(els["no-record-text"], form.no_record_text);
+    setIfDifferent(els["manual-submit"], form.manual_submit);
     if (els.browser.options.length === 0) {
       ["edge", "chrome"].forEach(function (b) {
         var opt = document.createElement("option");
@@ -599,6 +600,9 @@
     els["use-uc"].addEventListener("change", function () { sendField("use_uc", els["use-uc"].checked); });
     els["no-record-text"].addEventListener("change", function () {
       sendField("no_record_text", els["no-record-text"].checked);
+    });
+    els["manual-submit"].addEventListener("change", function () {
+      sendField("manual_submit", els["manual-submit"].checked);
     });
 
     els["count-minus"].addEventListener("click", function () { bumpCount(-1); });

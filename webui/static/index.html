@@ -72,6 +72,10 @@
               <input type="checkbox" id="no-record-text" checked>
               <span>🔒 不记录填空文本（保护隐私，历史库 text_answer 写 NULL）</span>
             </label>
+            <label class="check">
+              <input type="checkbox" id="manual-submit">
+              <span>✋ 人工提交（答完停在提交按钮前，由你核对后自己点；等 180s 没人点算这份失败——它没交出去，平台上不留记录）</span>
+            </label>
           </div>
           <div class="actions">
             <button type="button" class="btn btn-primary" id="btn-detect">🔍 探测题目</button>

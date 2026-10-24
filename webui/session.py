@@ -142,6 +142,10 @@ class RunSession:
         self.use_uc: bool = False
         # 与 Tk 宿主一致：GUI 侧默认**不**把填空题原文写进历史库（设计稿 §5「不碰」）
         self.no_record_text: bool = True
+        # 人工提交（v3.3 --manual-submit，v4.1 接进 Web 控制台）：答完停在提交按钮前，
+        # 由在场的人核对后自己点。默认关 —— 与 CLI 同一默认。Web 宿主没有无头形态
+        # （它存在的意义就是"看着窗口跑"），CLI 那条与 --headless 的互斥在这里结构性成立。
+        self.manual_submit: bool = False
 
         # ---- 运行态 ----
         self.status: str = "就绪"
@@ -214,6 +218,8 @@ class RunSession:
                 self.use_uc = bool(value)
             elif name == "no_record_text":
                 self.no_record_text = bool(value)
+            elif name == "manual_submit":
+                self.manual_submit = bool(value)
             else:
                 raise ValidationError(f"未知字段：{name}")
         self.emit_state()
@@ -257,6 +263,7 @@ class RunSession:
                 "browser": self.browser,
                 "use_uc": self.use_uc,
                 "no_record_text": self.no_record_text,
+                "manual_submit": self.manual_submit,
             }
 
     # ------------------------------------------------------------ 运行态

@@ -392,6 +392,23 @@ def test_an_unrelated_state_event_leaves_the_table_alone(page) -> None:
         "一条不带表变化的 state 事件把整张表重建了"
 
 
+def test_manual_submit_checkbox_survives_a_state_round_trip(page) -> None:
+    """v4.1 人工提交的入口曾经只在 CLI：后端整条链都在，页面上没有那个开关。
+
+    与扫码那条同一个教训 —— "控件缺失"对离线用例隐形，浏览器用例只会点页面上
+    **存在**的按钮。勾一下之后要等快照弹回来再看：后端没接住 manual_submit 时，
+    ``fillForm`` 会把它勾掉 —— 只断言"点完是勾上的"测不出接线断了。
+    """
+    box = page.find_element(By.ID, "manual-submit")
+    assert box.is_selected() is False, "默认必须与 CLI 同一默认（关）"
+    box.click()
+    WebDriverWait(page, 20).until(
+        lambda d: d.find_element(By.ID, "manual-submit").is_selected())
+    time.sleep(1.0)   # 给 SSE 整份快照留一个往返
+    assert page.find_element(By.ID, "manual-submit").is_selected(), \
+        "manual_submit 没有被后端收下 —— 快照回弹把它勾掉了"
+
+
 def test_a_qr_image_picked_in_the_page_fills_the_url_field(page, console) -> None:
     """扫码这条链，页面上曾经**根本没有入口**。
 
