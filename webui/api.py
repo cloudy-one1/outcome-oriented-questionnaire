@@ -25,6 +25,7 @@ import os
 import queue
 import re
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from urllib.parse import quote
@@ -422,21 +423,41 @@ class Broadcaster:
     def __init__(self, capacity: int = 500) -> None:
         self.capacity = capacity
         self._subs: list[queue.Queue] = []
+        # 订阅/退订/计数与 publish 跑在不同线程里（worker 广播、HTTP 线程进出），
+        # check-then-act（先查 client_count 再 subscribe）在两次调用之间不成立。
+        self._lock = threading.Lock()
 
     def subscribe(self) -> queue.Queue:
         sub: queue.Queue = queue.Queue(maxsize=self.capacity)
-        self._subs.append(sub)
+        with self._lock:
+            self._subs.append(sub)
+        return sub
+
+    def subscribe_capped(self, max_clients: int) -> queue.Queue | None:
+        """原子地「没满才订阅」：满了返回 ``None``。
+
+        检查与登记必须在同一次加锁里完成 —— 拆成"先查 ``client_count`` 再
+        ``subscribe``"两步时，两个页面同时刷新可以双双过检，上限短暂超 1~2 个。
+        """
+        sub: queue.Queue = queue.Queue(maxsize=self.capacity)
+        with self._lock:
+            if len(self._subs) >= max_clients:
+                return None
+            self._subs.append(sub)
         return sub
 
     def unsubscribe(self, sub: queue.Queue) -> None:
-        try:
-            self._subs.remove(sub)
-        except ValueError:
-            pass
+        with self._lock:
+            try:
+                self._subs.remove(sub)
+            except ValueError:
+                pass
 
     def publish(self, kind: str, payload: Any) -> None:
         item = (kind, payload)
-        for sub in list(self._subs):
+        with self._lock:
+            subs = list(self._subs)
+        for sub in subs:
             try:
                 sub.put_nowait(item)
             except queue.Full:
@@ -457,4 +478,5 @@ class Broadcaster:
 
     @property
     def client_count(self) -> int:
-        return len(self._subs)
+        with self._lock:
+            return len(self._subs)

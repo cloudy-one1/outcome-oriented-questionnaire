@@ -4,9 +4,9 @@
 
 这个模块**不 import tkinter、不 import http**：它只是被 HTTP 处理线程与
 Selenium worker 线程共同读写的状态容器，所有"要告诉界面一声"的动作都通过
-构造时注入的 ``emit(kind, payload)`` 走。Tk 宿主那边对应的是
-``SurveyGUI`` 的一堆 ``StringVar`` + ``root.after(0, ...)`` + 按钮 ``configure``，
-这三样在这里分别变成：普通字段、``emit``、``busy`` 集合。
+构造时注入的 ``emit(kind, payload)`` 走。（迁移时的对照物是 Tk 宿主的
+``StringVar`` + ``root.after(0, ...)`` + 按钮 ``configure``，三者在这里分别
+变成：普通字段、``emit``、``busy`` 集合 —— 该宿主 v4.0 已删除。）
 
 线程约定：worker 线程只允许调 ``log`` / ``set_status`` / ``finish_run`` /
 ``update_progress`` 与 ``emit``；表单字段只由 HTTP 处理线程写。

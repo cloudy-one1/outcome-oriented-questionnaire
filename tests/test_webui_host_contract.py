@@ -325,7 +325,7 @@ def test_importing_replaces_weights_and_says_this_number(tmp_path) -> None:
     assert session.weight_texts[9] == "0.5000,0.5000", "表上没有的行号也要记下"
     assert [r["q"] for r in session.table_rows()] == [1], "记下不等于凭空多一行"
     texts = [r["text"] for r in session.log_lines]
-    assert any("配置载入 · 校验警告 0 条" in t for t in texts), texts
+    assert any("配置载入 · 校验通过" in t for t in texts), texts
     assert any("配置 2 道 · 同步到表格 1 道" in t for t in texts), texts
     svc.close_db()
 

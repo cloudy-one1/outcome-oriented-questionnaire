@@ -300,11 +300,17 @@ def wait_for_manual_verification(
             if state is False:
                 print(f"    验证已通过（{waited}s），继续运行")
                 return True
-            if state is None:
-                print(f"    [{waited}s] 验证状态探测失败，继续等待（不判为已通过）")
 
+            # 探测失败（页面跳转中、JS 上下文正被跳转打断）可能连续多轮发生：
+            # 逐轮打印会把 120s 等待刷成 60 行，把"人在拉滑块"这件事从日志里埋掉。
+            # 与"仍在等待"共用同一条进度行、同一个 10s 节奏；判定语义不变 ——
+            # None 仍然只是继续等，绝不判成已通过。
             if waited % 10 == 0:
-                print(f"    [{waited}s / {timeout_seconds}s] 仍在等待验证...")
+                if state is None:
+                    print(f"    [{waited}s / {timeout_seconds}s] "
+                          "验证状态探测失败，继续等待（不判为已通过）")
+                else:
+                    print(f"    [{waited}s / {timeout_seconds}s] 仍在等待验证...")
 
         # 超时处理
         print("    验证等待超时，正在刷新页面...")

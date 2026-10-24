@@ -175,12 +175,15 @@ class WebUIRequestHandler(BaseHTTPRequestHandler):
 
     def _serve_events(self) -> None:
         api = self.api
-        if api.events.client_count >= MAX_SSE_CLIENTS:
+        # 检查与登记必须在同一次加锁里完成（subscribe_capped）：拆成"先查
+        # client_count 再 subscribe"两步时，两个页面同时刷新可以双双过检，
+        # 并发上限短暂超 1~2 个 —— 就是这个检查当初想防的事。
+        sub = api.events.subscribe_capped(MAX_SSE_CLIENTS)
+        if sub is None:
             self._send(Response.error(
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 f"已连接 {MAX_SSE_CLIENTS} 个页面，先关掉一个再刷新"))
             return
-        sub = api.events.subscribe()
         try:
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")

@@ -647,6 +647,20 @@ def test_qr_decoder_exception_is_reported_not_raised(session):
     assert sess.status == "就绪"
 
 
+def test_qr_import_while_busy_is_ignored(session):
+    """连点两次 = 两次并发解码、并发 set_field("url")，谁后到谁说了算 —— 拦一下。
+
+    begin_command 只做标记不拦人；守卫必须在它之前（与 detect_questions 的
+    is_busy("detect") 早退同一条形状）。
+    """
+    sess, _ = session
+    sess.begin_command("qr")
+    calls: list = []
+    make_service(sess, decode_qr=lambda p: calls.append(p) or None).import_qr("c.png")
+    assert calls == [], "上一张还在解析时不该再解码"
+    assert sess.is_busy("qr"), "在途的那一次照常占着 busy"
+
+
 def test_export_without_config_io_says_so(session):
     sess, _ = session
     sess.availability.config_io = False
@@ -791,18 +805,27 @@ def test_import_covers_existing_rows_and_remembers_the_rest(session, tmp_path):
     assert any("同步到表格 1 道" in x for _, x in logs_of(sess))
 
 
-def test_import_logs_every_validation_warning(session, tmp_path):
+def test_import_rejects_a_config_the_cli_would_reject(session, tmp_path):
+    """与 CLI --config 同一结论：校验列表里全部是错误级条目，拒绝而不是警告后照常载入。
+
+    此前同一份坏配置在 CLI 硬退 2、在 Web 控制台逐条 WARN 后照常 apply ——
+    两个入口对同一份配置结论相反。拒绝时现有配置必须原样不动。
+    """
     sess, _ = session
     cfg_file = tmp_path / "w.json"
     cfg_file.write_text("{}", encoding="utf-8")
-    make_service(
-        sess,
-        load=lambda p: ({1: {}}, {}),
-        validate=lambda cfg: ["A 有问题", "B 有问题"],
-    ).import_config(str(cfg_file))
+    cfg_module.WEIGHT_CONFIG.update({9: {"type": "single", "weights": [1, 1]}})
+    with pytest.raises(ValidationError) as rejected:
+        make_service(
+            sess,
+            load=lambda p: ({1: {}}, {}),
+            validate=lambda cfg: ["A 有问题", "B 有问题"],
+        ).import_config(str(cfg_file))
+    assert "已拒绝载入" in str(rejected.value)
     texts = [x for _, x in logs_of(sess)]
-    assert "[校验警告] A 有问题" in texts
-    assert "配置载入 · 校验警告 2 条" in texts
+    assert "[校验拒绝] A 有问题" in texts
+    assert "[校验拒绝] B 有问题" in texts
+    assert set(cfg_module.WEIGHT_CONFIG) == {9}, "拒绝载入时现有配置不能被动"
 
 
 def test_import_reports_a_structurally_broken_file(session, tmp_path):

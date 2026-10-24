@@ -459,6 +459,40 @@ def test_unsubscribing_the_same_client_twice_is_harmless():
     assert bus.client_count == 0
 
 
+def test_subscribe_capped_never_overbooks():
+    """满了返回 None；已登记的个数就是上限。"""
+    bus = Broadcaster()
+    subs = [s for s in (bus.subscribe_capped(2) for _ in range(6)) if s is not None]
+    assert len(subs) == 2
+    assert bus.client_count == 2
+
+
+def test_subscribe_capped_survives_a_concurrent_race():
+    """检查与登记拆成两步时，并发刷新可以双双过检 —— 上限短暂超 1~2 个。
+
+    这个测试在旧实现（server 先查 client_count 再 subscribe）下天然通过，
+    因为竞争点在 server 那一侧；它钉的是 Broadcaster 自己的原子原语：
+    8 个线程同时抢 4 个坑，进来的必须恰好 4 个。
+    """
+    import threading
+
+    bus = Broadcaster()
+    results: list = []
+    barrier = threading.Barrier(8)
+
+    def worker() -> None:
+        barrier.wait()
+        results.append(bus.subscribe_capped(4))
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sum(1 for r in results if r is not None) == 4
+    assert bus.client_count == 4
+
+
 def test_qr_temp_files_are_cleaned_even_when_the_cleanup_itself_fails(api, monkeypatch):
     """临时文件删不掉是环境问题，不该把一次成功的解析报成失败。"""
     import webui.api as api_mod

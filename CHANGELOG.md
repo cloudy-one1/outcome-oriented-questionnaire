@@ -4,6 +4,30 @@
 
 ## [未发布]
 
+### 修复（CODE_REVIEW_v4.0 剩余 P3 的第二批）
+
+- **坏配置的两个入口结论相反**：`validate_weight_config` 返回的列表里全部是错误级
+  条目（结构非法 / 全零权重 / NaN / 长度不匹配），没有纯劝告类。CLI 对同一份配置
+  硬退 2，Web 控制台却逐条 WARN 后**照常载入** —— 而启动期 `auto_load_default_config`
+  走的正是这条路，坏掉的默认配置会静默生效。现同判据拒绝载入、现有配置一字不动
+  （抛 `ValidationError` → api 层翻 400；启动期的自动载入自带 try/except，不拦启动）。
+- **`import_qr` 无忙互斥**：`begin_command` 只做标记不拦人，两次快速导入会并发解码、
+  并发 `set_field("url")`，谁后到谁说了算。补上与 `detect_questions` 同一条
+  `is_busy` 早退守卫。
+- **SSE 并发上限的检查-订阅竞态**：`_serve_events` 先查 `client_count` 再
+  `subscribe`，两个页面同时刷新可以双双过检，上限短暂超 1~2 个 —— 恰是这个
+  检查想防的事。`Broadcaster` 上锁并新增原子的 `subscribe_capped`（检查与登记在
+  同一次加锁里完成），publish / 退订 / 计数同步走锁。
+- **注解脚本 `counts()` 把 error 算成 ran**：fixture 在 setup 就炸的用例根本没进到
+  被测代码。`ran` 现在只数真正跑到 call 阶段的；error / failure 个数在 notice 里
+  本来就单列，不受影响。
+- **验证码等待的探测失败提示逐轮刷屏**：页面跳转中探测可能连续多轮失败，每 2s 一行
+  会把 120s 等待刷成 60 行，把"人在拉滑块"从日志里埋掉。改与"仍在等待"共用同一条
+  进度行、同一个 10s 节奏；判定语义不变 —— None 仍然绝不判成已通过。
+- **webui 两处模块 docstring 仍把已删除的 Tk 宿主写成现在时对照物** —— 改成
+  "迁移时的设计依据，该宿主 v4.0 已删除"。其余几十处 Tk 引用是历史出处性质
+  （"当时为了 X 才这样"），语义成立，保留。
+
 ### 修复（CODE_REVIEW_v4.0 剩余 P3 的第一批）
 
 - **webui `format_weights_for_entry`**：`row_weights` 的键域有两种 —— GUI/JSON 写的

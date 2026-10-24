@@ -75,12 +75,17 @@ def test_the_body_is_escaped_not_reformatted(tmp_path, capsys) -> None:
 
 
 def test_skips_are_counted_because_the_api_cannot_see_them(tmp_path, capsys) -> None:
-    """降级成 skip 的那几条只在日志里，匿名 API 看不见 —— 计数行就是为它准备的。"""
+    """降级成 skip 的那几条只在日志里，匿名 API 看不见 —— 计数行就是为它准备的。
+
+    ``ran`` 也不含挂 <error> 的那条（fixture 在 setup 就炸了，没进到被测代码）：
+    PROBE 三条是 1 failure + 1 error + 1 skip → ran=1。此前 error 被算进 ran。
+    """
     assert main([_junit(tmp_path)]) == 0
     notice = [ln for ln in capsys.readouterr().out.splitlines()
               if ln.startswith("::notice")]
     assert len(notice) == 1
-    assert "case=3" in notice[0] and "skipped=1" in notice[0] and "ran=2" in notice[0]
+    assert "case=3" in notice[0] and "skipped=1" in notice[0] and "ran=1" in notice[0]
+    assert "error=1" in notice[0] and "failure=1" in notice[0]
 
 
 def test_a_missing_junit_is_itself_reported_and_exits_zero(tmp_path, capsys) -> None:

@@ -503,16 +503,18 @@ def test_transient_probe_error_keeps_waiting_instead_of_declaring_pass(
     "验证已通过"并**释放 ManualHoldLock** —— 用户手上的滑块还没拉完，流程就继续
     撞进一个仍被挡住的页面，下一轮 SUBMIT_FAILED。
     现在探测失败是三态里的 None：继续等，上限仍是 timeout_seconds，最终走超时分支。
+    提示按 10s 节奏出声（此前逐轮打印会把 120s 等待刷成 60 行）。
     """
     lock = ManualHoldLock()
     d = FakeDriver(raises=("probe-dom",))
     assert verification.wait_for_manual_verification(
-        d, timeout_seconds=6, hold_lock=lock
+        d, timeout_seconds=20, hold_lock=lock
     ) is False
-    assert d.count("probe-dom") == 3, "6 秒预算 = 3 轮，每轮都因探测失败继续等"
+    assert d.count("probe-dom") == 10, "20 秒预算 = 10 轮，每轮都因探测失败继续等"
     out = capsys.readouterr().out
     assert "验证已通过" not in out, "探测失败被当成了放行信号"
-    assert "探测失败" in out, "继续等的原因要可见，否则像是在空转"
+    assert "探测失败" in out, "继续等的原因要可见（按 10s 节奏），否则像是在空转"
+    assert out.count("探测失败") == 2, "20s 里只在 10s/20s 两个节拍上出声，不许逐轮刷屏"
     assert lock.is_holding is False, "超时收尾仍必须释放锁，否则整批挂死"
 
 

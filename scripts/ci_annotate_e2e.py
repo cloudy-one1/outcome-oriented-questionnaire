@@ -70,9 +70,16 @@ def findings(junit: Path) -> list[tuple[str, str, str]]:
 
 
 def counts(junit: Path) -> tuple[int, int, int]:
+    """(case 总数, 真跑到 call 阶段的条数, skip 条数) —— 展示口径。
+
+    ``ran`` 不含挂 ``<error>`` 的用例：error 是 fixture 在 setup/teardown 就炸了，
+    那条根本没进到被测代码。error/failure 的个数在下面的 notice 里单列，
+    这里只把"真正跑过的"算进 ran。
+    """
     root = ET.parse(junit).getroot()
     cases = list(root.iter("testcase"))
-    ran = sum(1 for c in cases if not c.findall("skipped"))
+    ran = sum(1 for c in cases
+              if not c.findall("skipped") and not c.findall("error"))
     skipped = sum(1 for c in cases if c.findall("skipped"))
     return len(cases), ran, skipped
 

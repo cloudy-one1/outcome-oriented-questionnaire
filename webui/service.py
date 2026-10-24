@@ -1,6 +1,7 @@
-"""``webui`` 的命令层 —— 由 ``gui/controller.py`` 的 7 个命令改写而来。
+"""``webui`` 的命令层 —— 由已退役的 ``gui/controller.py``（Tk 宿主）的 7 个命令改写而来。
 
-设计稿：``docs/design/DESIGN_webui.md`` §3。
+设计稿：``docs/design/DESIGN_webui.md`` §3。Tk 宿主 v4.0 已整树删除，下文提到它的
+地方都是**当时的设计依据**，不是现存对照物。
 
 与 Tk 宿主的三处结构性差异，都是"宿主不同"而非"行为不同"：
 
@@ -15,9 +16,9 @@
 ``spawn`` / ``build_config`` …），默认值才是真实现 —— Tk 那份是模块级 try 导入 +
 运行时判空，测的时候只能 monkeypatch 全局，这里不用。
 
-**``_QUESTION_COUNT_JS`` 与 ``_TYPE_LABELS`` 刻意复制一份而不是 import gui 那份**：
-本轮 Tk 是参照实现，共用常量就等于让对拍提前失去独立性（设计稿 §10 步骤 4 的教训）。
-两份不一致会被步骤 8 的对拍测试抓出来。
+**``_QUESTION_COUNT_JS`` 与 ``_TYPE_LABELS`` 刻意复制一份而不是共享**：迁移时 Tk
+是参照实现，共用常量等于让对拍提前失去独立性（设计稿 §10 步骤 4 的教训）。
+Tk 删除后两份仍各自维护——webui 这份有 ``_TYPE_LABELS`` 的契约测试盯着。
 """
 
 from __future__ import annotations
@@ -289,10 +290,19 @@ class WebService:
             self._log(f"读取配置失败: {type(e).__name__}: {e}", "FAIL")
             return
 
-        warnings = self._validate_wc(cfg) if self._validate_wc else []
-        for w in warnings:
-            self._log(f"[校验警告] {w}", "WARN")
-        self._log(f"配置载入 · 校验警告 {len(warnings)} 条", "INFO")
+        problems = self._validate_wc(cfg) if self._validate_wc else []
+        if problems:
+            # 与 CLI --config 同一结论：validate_weight_config 返回的列表里全部是
+            # 错误级条目（结构非法 / 全零权重 / NaN / 长度不匹配 —— 都会破坏运行时），
+            # 没有纯劝告类。CLI 对同一份配置硬退 2，这里此前却逐条 WARN 后照常载入
+            # —— 两个入口对同一份坏配置结论相反。拒绝且不动现有配置；启动期的
+            # auto_load_default_config 自有 try/except，不会因此起不来。
+            for p in problems[:10]:
+                self._log(f"[校验拒绝] {p}", "FAIL")
+            raise ValidationError(
+                f"配置校验未通过（{len(problems)} 项），已拒绝载入 —— "
+                "现有配置未动；修正 JSON 后重新导入")
+        self._log("配置载入 · 校验通过", "INFO")
 
         # 整体替换语义（与 CLI --config 同一份实现）：合并会让上一份配置里
         # 本份没有的题号静默残留，于是"载入配置"的结果取决于你之前载入过什么。
@@ -333,6 +343,11 @@ class WebService:
     def import_qr(self, filepath: str) -> None:
         if self._decode_qr is None:
             self._log("二维码模块未加载，无法导入", "FAIL")
+            return
+        # 与 detect_questions 同一条守卫：begin_command 只做标记不拦人，两次快速
+        # 导入会并发解码、并发 set_field("url")，谁后到谁说了算 —— 拦一下。
+        if self.session.is_busy("qr"):
+            self._log("上一张二维码还在解析，忽略这次导入", "WARN")
             return
         self.session.begin_command("qr")
         self.session.set_status(QR_STATUS)
