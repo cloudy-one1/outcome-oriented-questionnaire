@@ -30,11 +30,12 @@ jobs:
 
       - name: Import smoke
         # 绕过 ENTRYPOINT 直接 import 引擎链路，确认 pip install --no-deps . 真的
-        # 把包连同 src/ 装进了镜像（漏 COPY 目录是最常见的一种自毁）
-        run: >
-          docker run --rm --entrypoint python wjx-autofill:smoke
-          -c "import src.cli, src.pipeline, src.browser.driver_factory as m;
-              print('import ok', m.__name__)"
+        # 把包连同 src/ 装进了镜像（漏 COPY 目录是最常见的一种自毁）。
+        # 命令必须写在同一行：YAML 的 > 折叠标量对**更缩进**的续行保留换行与缩进，
+        # 此前 print 那行缩得比上一行深，python 收到带缩进的第二行 →
+        # IndentationError，本步骤自 2026-09-28 起连红四周（镜像与代码都没有问题，
+        # 本地原样复跑同一条命令是通过的 —— 别再往镜像内容上找原因）。
+        run: docker run --rm --entrypoint python wjx-autofill:smoke -c "import src.cli, src.pipeline, src.browser.driver_factory as m; print('import ok', m.__name__)"
 
       - name: Report image size
         run: docker image inspect wjx-autofill:smoke --format 'size={{.Size}} bytes'
