@@ -1,9 +1,10 @@
 # V2.4 新增：ruff 配置（配合 .github/workflows/ci.yml 使用）
 # 策略：只启用"确定性正确"的检查（语法错误 / 未定义名 / 无效转义 / 未使用名），
 # 不引入格式风格类规则（E1-E5 缩进换行、W 系列、命名），避免对既有代码产生噪音。
-line-length = 100
-# 真实下限是 3.10：src/models.py 用了 @dataclass(slots=True)。
-# 此前写 py39 与 README 的"3.9+"一起是失实的（见 README 环境要求）。
+# line-length 刻意不设：没有 E501 也没有 formatter 时它没有任何执行者 —— 等真
+# 引入其中之一时再加回来，别让配置看起来管着其实没人管的东西。
+# 测试文件里大量 `# noqa: E402` 注释对 ruff 同样无效（E402 未启用），但它们
+# 标记的是"先塞 sys.path 再 import"这个刻意动作本身，留给人看，不清。
 target-version = "py310"
 
 [lint]
@@ -20,8 +21,4 @@ select = [
     "F841",  # 赋值后从未使用的局部变量（--resume 类接线断裂的信号）
     "F541",  # 无占位符的 f-string（print 文案里的假 f-string）
 ]
-
-[lint.per-file-ignores]
-# E2E 用例要先塞 sys.path 再 import selenium，模块级导入必然不在顶部
-"tests/test_e2e_integration.py" = ["E402"]
 

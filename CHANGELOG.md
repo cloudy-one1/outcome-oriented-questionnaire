@@ -4,6 +4,30 @@
 
 ## [未发布]
 
+### 修复（CODE_REVIEW_v4.0 剩余 P3 的第一批）
+
+- **webui `format_weights_for_entry`**：`row_weights` 的键域有两种 —— GUI/JSON 写的
+  行号（`"1"`、`2`）与矩阵量表探测记下的提交槽名（`"q3_0"`）。两种键混在一份配置里时
+  `sorted()` 拿 int 对 str 互比 → TypeError，整张权重表的渲染死在这一格。现按
+  「数字键在前按数值、槽名键在后按字典序」排 —— 排序只是为了显示稳定，两种形状都认。
+- **历史页「interrupted」状态字没有配色**（`styles.css` 只写了 finished/failed/running
+  三个类，而历史行的类名是 `st-<status>` 动态拼的）。补 `.st-interrupted`：同样的
+  warn 色、不加粗 —— 中断比失败轻（`--resume` 能接着跑）、比在跑重（要人来决定）。
+- **`e2e_gate` 感知 junit 的 `<error>`**：报错中断的用例此前被算成 ran，"在真浏览器里
+  跑过"的门禁会被一批起不来的用例糊弄过去。CI 现在用 `&&` 串接、pytest 非 0 时进不了
+  本脚本，但脚本独立复跑报告时也要守同一语义 —— suite 级 `errors` 与逐用例
+  `<error>` 都不再算 ran，`--require-file` 的判词同步区分 skip 与 error。
+- **`coverage_doc` 退出码契约**：`docs/coverage.md` 或缺口清单被删此前以裸
+  FileNotFoundError 退出 —— 未捕获异常的退出码是 1，与"口径漂移"同码，CI 分不清是
+  有人手改了数字还是文件没了。两者现都走 `usage_fail` 退 2；报错路径自己的
+  `relative_to` 也不再对外部路径抛 ValueError。
+- **`ruff.toml` 清死配置**：E402 未启用，`per-file-ignores` 的 E402 豁免与
+  `line-length`（没有 E501 也没有 formatter，无执行者）都只是看起来在管事。
+  测试文件里约百处 `# noqa: E402` 对 ruff 同样无效，但它们标记的是"先塞 sys.path
+  再 import"这个刻意动作本身 —— 留给人看，不清。
+- **`ci.yml` 加 concurrency 组**：同分支新推送取消在途旧跑（Windows runner 起一次
+  要几分钟，连推几个修复时旧结果只剩占队列的意义）。
+
 ### 修复（CI：docker-smoke 的「Import smoke」连红四周）
 
 - 周一定时门禁自 2026-09-28 起每周都红在 Import smoke，而 Build 与 `--help` 两步都绿。

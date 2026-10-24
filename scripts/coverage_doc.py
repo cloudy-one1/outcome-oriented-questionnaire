@@ -241,11 +241,27 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--write", action="store_true", help="把生成结果写回 docs/coverage.md")
     args = parser.parse_args(argv)
 
+    # 落点被删也必须走 usage_fail：未捕获异常的退出码是 1，与"口径漂移"同码 ——
+    # 而"文档没了"是跑不动，不是漂移，门禁语义完全不同。放在最前：两种模式都
+    # 需要它（--write 的 splice 也要读旧内容），后面的检查才不必被它拖着重排。
+    if not DOC.exists():
+        # relative_to 只在 DOC 真在仓库内时可行（测试会把它指到别处）；
+        # 报错路径自己再抛 ValueError 就把"跑不动=2"变成了裸异常退 1。
+        try:
+            where = DOC.relative_to(ROOT).as_posix()
+        except ValueError:
+            where = DOC.as_posix()
+        usage_fail(
+            f"FAIL: 找不到 {where} —— 生成块的落点文件没了，"
+            "从 git 恢复（git checkout -- docs/coverage.md）或先跑 --write 重建"
+        )
     if not args.coverage.exists():
         usage_fail(
             f"FAIL: 找不到 {args.coverage}，先跑：pytest tests/ -m \"not integration\" "
             f"--cov=src --cov=webui --cov-report=json"
         )
+    if not args.spec.exists():
+        usage_fail(f"FAIL: 找不到 {args.spec}，缺口清单没了 —— 从 git 恢复它")
     if args.write and not args.force_env:
         extras = optional_deps_present()
         if extras:

@@ -5,6 +5,13 @@ on:
     branches: [main, release/**]
   pull_request:
 
+# 同分支新推送取消在途旧跑：Windows runner 起一次要几分钟，连推几个修复时
+# 旧结果只剩占队列的意义。每周定时那条独立 workflow 不受影响 —— 它一周一跑，
+# 没有"被新推送挤掉"的问题，也不该被挤掉。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     # 项目面向 Windows（Edge 驱动 / MessageBox 人工介入），与开发机保持一致。

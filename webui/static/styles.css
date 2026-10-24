@@ -443,6 +443,10 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: 
 .st-finished { color: var(--ok); font-weight: 700; }
 .st-failed { color: var(--fail); font-weight: 700; }
 .st-running { color: var(--warn); font-weight: 700; }
+/* 中断（Ctrl+C / 停止按钮 / 到时限优雅停止）既不是失败也不是在跑：
+   用同样的 warn 色但不加粗 —— 它比"失败"轻（--resume 能接着跑），
+   比在跑重（需要人来决定要不要续）。app.js 按历史行的 status 拼 `st-<status>`。 */
+.st-interrupted { color: var(--warn); }
 
 /* 确认对话框：内容由服务端快照驱动（webui/confirm.py），所以这里只管外观 */
 .confirm {

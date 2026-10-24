@@ -20,30 +20,38 @@ if ROOT not in sys.path:
 from scripts.e2e_gate import main, module_of  # noqa: E402
 
 
-def _report(tmp_path: Path, cases: list[tuple[str, str, bool]],
+def _report(tmp_path: Path, cases: list[tuple[str, str, str]],
             filename: str = "e2e-junit.xml") -> str:
-    """按 pytest 的 junit 形状拼一份报告（classname 是点号的模块路径）。"""
+    """按 pytest 的 junit 形状拼一份报告（classname 是点号的模块路径）。
+
+    第三列是结局：``"run"`` / ``"skip"``（挂 <skipped>）/ ``"error"``
+    （挂 <error>，对应 suite 级 errors 属性 —— 报错中断的用例）。
+    """
     rows = []
-    skipped = 0
-    for classname, name, is_skip in cases:
-        if is_skip:
+    skipped = errors = 0
+    for classname, name, status in cases:
+        if status == "skip":
             skipped += 1
             rows.append(f'<testcase classname="{classname}" name="{name}">'
                         '<skipped type="pytest.skip" message="driver"/></testcase>')
+        elif status == "error":
+            errors += 1
+            rows.append(f'<testcase classname="{classname}" name="{name}">'
+                        '<error type="RuntimeError" message="driver died"/></testcase>')
         else:
             rows.append(f'<testcase classname="{classname}" name="{name}" '
                         'time="0.1" />')
     total = len(cases)
     xml = (f'<testsuites name="pytest tests"><testsuite name="pytest" '
-           f'errors="0" failures="0" skipped="{skipped}" tests="{total}" '
+           f'errors="{errors}" failures="0" skipped="{skipped}" tests="{total}" '
            f'time="1.0">{"".join(rows)}</testsuite></testsuites>')
     path = tmp_path / filename
     path.write_text(xml, encoding="utf-8")
     return str(path)
 
 
-BOTH = ([("tests.test_e2e_integration", f"test_round_{i}", False) for i in range(3)]
-        + [("tests.test_webui_e2e", f"test_console_{i}", False) for i in range(2)])
+BOTH = ([("tests.test_e2e_integration", f"test_round_{i}", "run") for i in range(3)]
+        + [("tests.test_webui_e2e", f"test_console_{i}", "run") for i in range(2)])
 
 REQUIRED = ["--require-file", "tests/test_e2e_integration.py",
             "--require-file", "tests/test_webui_e2e.py"]
@@ -58,7 +66,14 @@ def test_a_real_browser_run_passes(tmp_path, capsys) -> None:
 
 def test_everything_skipped_is_a_fail_not_a_green(tmp_path) -> None:
     """pytest 全 skip 时退出码仍是 0 —— 这个脚本存在的第一条理由。"""
-    assert main([_report(tmp_path, [(c, n, True) for c, n, _ in BOTH])]) == 1
+    assert main([_report(tmp_path, [(c, n, "skip") for c, n, _ in BOTH])]) == 1
+
+
+def test_everything_errored_is_also_a_fail_not_a_green(tmp_path, capsys) -> None:
+    """<error> 与 skip 同罪：报错中断的用例什么都没证明，不许算成 ran。"""
+    assert main([_report(tmp_path, [(c, n, "error") for c, n, _ in BOTH])]) == 1
+    out = capsys.readouterr().out
+    assert "errored=5" in out and "ran=0" in out
 
 
 def test_an_empty_report_is_a_fail(tmp_path) -> None:
@@ -91,13 +106,24 @@ def test_required_file_fully_skipped_fails_even_though_ran_is_positive(tmp_path,
                                                                        capsys) -> None:
     """25 项跑了、webui 那几项全被 conftest 吞成 skip：全局计数看不出来。"""
     report = _report(tmp_path, [
-        ("tests.test_e2e_integration", "test_round_0", False),
-        ("tests.test_e2e_integration", "test_round_1", False),
-        ("tests.test_webui_e2e", "test_console_0", True),
-        ("tests.test_webui_e2e", "test_console_1", True)])
+        ("tests.test_e2e_integration", "test_round_0", "run"),
+        ("tests.test_e2e_integration", "test_round_1", "run"),
+        ("tests.test_webui_e2e", "test_console_0", "skip"),
+        ("tests.test_webui_e2e", "test_console_1", "skip")])
     assert main([report] + REQUIRED) == 1
     out = capsys.readouterr().out
     assert "required file never ran" in out and "tests/test_webui_e2e.py" in out
+
+
+def test_required_file_all_errored_fails_too(tmp_path, capsys) -> None:
+    """required 文件两条全挂 <error>：与全 skip 同判 —— 报错中断不算跑过。"""
+    report = _report(tmp_path, [
+        ("tests.test_e2e_integration", "test_round_0", "run"),
+        ("tests.test_webui_e2e", "test_console_0", "error"),
+        ("tests.test_webui_e2e", "test_console_1", "error")])
+    assert main([report] + REQUIRED) == 1
+    out = capsys.readouterr().out
+    assert "tests/test_webui_e2e.py" in out and "errored=2" in out
 
 
 def test_required_file_absent_from_the_report_fails(tmp_path, capsys) -> None:
@@ -110,9 +136,9 @@ def test_required_file_absent_from_the_report_fails(tmp_path, capsys) -> None:
 def test_a_partially_skipped_required_file_still_passes(tmp_path) -> None:
     """只要求"至少一条真跑过"，否则一次正常抖动就会红掉整条 leg。"""
     report = _report(tmp_path, [
-        ("tests.test_e2e_integration", "test_round_0", False),
-        ("tests.test_webui_e2e", "test_console_0", True),
-        ("tests.test_webui_e2e", "test_console_1", False)])
+        ("tests.test_e2e_integration", "test_round_0", "run"),
+        ("tests.test_webui_e2e", "test_console_0", "skip"),
+        ("tests.test_webui_e2e", "test_console_1", "run")])
     assert main([report] + REQUIRED) == 0
 
 
@@ -127,8 +153,8 @@ def test_both_path_shapes_are_accepted(tmp_path) -> None:
 def test_a_sibling_module_with_the_same_prefix_is_not_counted(tmp_path, capsys) -> None:
     """``tests/test_webui_e2e_extra.py`` 不算 ``tests/test_webui_e2e.py`` 跑过。"""
     report = _report(tmp_path, [
-        ("tests.test_e2e_integration", "test_round_0", False),
-        ("tests.test_webui_e2e_extra", "test_console_0", False)])
+        ("tests.test_e2e_integration", "test_round_0", "run"),
+        ("tests.test_webui_e2e_extra", "test_console_0", "run")])
     assert main([report] + REQUIRED) == 1
     assert "contributed no testcases" in capsys.readouterr().out
 

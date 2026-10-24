@@ -853,6 +853,17 @@ def test_format_weights_renders_matrix_rows_sorted_numerically():
     assert format_weights_for_entry(cfg) == "1:1,1 | 2:0,1 | 10:1,0"
 
 
+def test_format_weights_survives_mixed_numeric_and_slot_keys():
+    """行号键与矩阵量表的提交槽名键混在一份配置里时不能炸。
+
+    row_weights 的键域有两种：GUI/JSON 写的行号（"1"、2）与探测记下的槽名
+    （"q3_0"）。此前 sorted() 直接对两种键互比 → TypeError，
+    整张权重表的渲染（format_weights_for_entry 的调用方）死在这一格。
+    """
+    cfg = {"row_weights": {"q3_1": [0, 1], 2: [1, 0], "q3_0": [1, 1], "10": [0, 0]}}
+    assert format_weights_for_entry(cfg) == "2:1,0 | 10:0,0 | q3_0:1,1 | q3_1:0,1"
+
+
 def test_format_weights_of_an_empty_entry_is_blank():
     assert format_weights_for_entry({}) == ""
     assert format_weights_for_entry({"row_weights": {}}) == ""

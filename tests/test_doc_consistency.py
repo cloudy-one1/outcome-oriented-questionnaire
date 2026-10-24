@@ -135,6 +135,29 @@ def test_coverage_gate_script_distinguishes_usage_from_drift(tmp_path: Path) -> 
     assert "coverage.json" in result.stderr + result.stdout
 
 
+def test_coverage_gate_script_missing_doc_or_spec_is_exit_2(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """落点文档被删 / 缺口清单被删都是"跑不动"（2），不是"漂移"（1）。
+
+    此前两者都以裸 FileNotFoundError 退出 —— 未捕获异常的退出码是 1，与口径漂移
+    同码，CI 上分不清是"有人手改了数字"还是"文件没了"。
+    """
+    real_doc = rc.DOC
+    monkeypatch.setattr(rc, "DOC", tmp_path / "no-such-coverage.md")
+    with pytest.raises(SystemExit) as deleted_doc:
+        rc.main(["--check"])
+    assert deleted_doc.value.code == 2
+
+    fake_coverage = tmp_path / "fake-coverage.json"
+    fake_coverage.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(rc, "DOC", real_doc)
+    with pytest.raises(SystemExit) as deleted_spec:
+        rc.main(["--check", "--coverage", str(fake_coverage),
+                 "--spec", str(tmp_path / "no-such-gaps.json")])
+    assert deleted_spec.value.code == 2
+
+
 def test_generated_block_matches_coverage_when_present() -> None:
     coverage = ROOT / "coverage.json"
     if not coverage.exists():

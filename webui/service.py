@@ -847,9 +847,15 @@ def format_weights_for_entry(qcfg: dict) -> str:
         return ",".join(str(x) for x in options)
     row_weights = qcfg.get("row_weights")
     if isinstance(row_weights, dict) and row_weights:
+        # 键域有两种：GUI/JSON 配置的行号（"1"、2）与矩阵量表的提交槽名（"q3_0"）。
+        # 直接 sorted() 在两种键混用时 int 对 str 互比 → TypeError，整张表渲染死掉。
+        # 排序只为了显示稳定：数字键在前按数值、槽名键在后按字典序。
         lines = [
             f"{rk}:{','.join(str(x) for x in row_weights[rk])}"
-            for rk in sorted(row_weights, key=lambda k: int(k) if str(k).isdigit() else k)
+            for rk in sorted(
+                row_weights,
+                key=lambda k: (0, int(k)) if str(k).isdigit() else (1, str(k)),
+            )
         ]
         return " | ".join(lines)
     return ""
