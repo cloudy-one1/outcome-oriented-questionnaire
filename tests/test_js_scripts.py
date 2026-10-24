@@ -117,6 +117,28 @@ def test_fill_option_blank_uses_the_shared_locator() -> None:
 
 
 # ---------------------------------------------------------------------------
+#  text.fill_multi_text_script — 多空填空（v4.1 平台 type=9）
+# ---------------------------------------------------------------------------
+def test_fill_multi_text_injects_slots_via_json() -> None:
+    """槽名与文本必须整体经 json.dumps 进脚本，不许走 f-string 拼接。"""
+    texts = {"q14_0": "张三", "q14_1": 'he said "hi"'}
+    out = S.fill_multi_text_script(q=14, texts=texts)
+    payload = json.dumps(
+        [{"slot": k, "text": v} for k, v in texts.items()], ensure_ascii=False
+    )
+    assert payload in out, "逐格载荷必须 json.dumps 序列化"
+    assert "getElementById(item.slot)" in out, "逐格定位必须按探测记下的槽名"
+
+
+def test_fill_multi_text_gates_on_every_box_and_maxlength() -> None:
+    """全部写上才返回 true；程序赋值不受 maxlength 约束，必须自己截断。"""
+    out = S.fill_multi_text_script(q=14, texts={"q14_0": "a", "q14_1": "b"})
+    assert "var allOk = items.length > 0;" in out, "空载荷不许谎报成功"
+    assert "if (!(el.value || '').length) allOk = false;" in out, "写空了必须算失败"
+    assert "maxlength" in out and "txt.substring(0, limit)" in out
+
+
+# ---------------------------------------------------------------------------
 #  text.fill_text_script — JSON/text 转义正确性（第六章重点）
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("dangerous_text", [
@@ -313,6 +335,10 @@ def _script_cases() -> dict[str, str]:
         ),
         "fill_text_script__quotes": S.fill_text_script(q=2, text='he said "hi"\n\t</script>'),
         "fill_text_script__empty": S.fill_text_script(q=2, text=""),
+        "fill_multi_text_script__basic": S.fill_multi_text_script(
+            q=14, texts={"q14_0": "张三", "q14_1": 'he said "hi"\n\t</script>'}
+        ),
+        "fill_multi_text_script__empty": S.fill_multi_text_script(q=14, texts={}),
         "set_scale_script__none_max": S.set_scale_script(q=4, value=3, scale_max=None),
         "set_scale_script__int_max": S.set_scale_script(q=4, value=3, scale_max=5),
         "set_scale_script__min_2": S.set_scale_script(

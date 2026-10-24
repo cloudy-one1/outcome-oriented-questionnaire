@@ -171,6 +171,14 @@ def detect_questions(driver: Any) -> list[dict]:
           {"q": 15, "type": "text", "field": "date", "date_kind": "date"}
           {"q": 16, "type": "text", "field": "region"}
 
+          # 多空填空（平台 type=9）：一题多个可见框，一空一框（真卷 2026-09-22
+          # Q14 的形态）。顶层不再有 field，每格的字段类型与提交槽名记在 blanks
+          # 里，作答逐框写文本；结构签名是 text:Nblanks（N = 格数），与单框填空
+          # 的 "text" 区分开。
+          {"q": 14, "type": "text",
+           "blanks": [{"id": "q14_0", "field": "name"},
+                      {"id": "q14_1", "field": "phone"}]}
+
           # 排序题：items 是选项值（DOM 顺序），sort_mode 区分两种控件形态 ——
           # "value" 是老页面那种一个隐藏域装逗号串，"click" 是真卷那种
           # **排名只写在 li 的 DOM 顺序里**、只能按序点击的形态。作答走
@@ -347,6 +355,52 @@ return (function() {
         });
     })();
 
+    // ---------- 工具：字段类型的两条判定路（第 4 步与 5d 共用，必须同源） ----------
+    // 先问平台的 verify 属性（问卷星明写在输入框上的校验语义），再用文本线索猜。
+    // 两条路拆成两个函数：多空填空的每一格都要各判一次，而"行标签"与"题干"
+    // 必须分开猜 —— 行标签混进题干一起 match，"姓名"行会吃到同一题另一格
+    // "手机号"的关键词（猜的顺序里姓名在前）。
+    function verifyFieldOf(el) {
+        var verify = (el.getAttribute('verify') || '').trim();
+        var cls = (el.className || '').toString();
+        var isDate = /(^|\s)datebox(\s|$)/.test(cls)
+                  || el.getAttribute('data-role') === 'datebox'
+                  || /日期|时间/.test(verify);
+        var field = null;
+        if (isDate || /日期|时间/.test(verify)) field = 'date';
+        else if (/邮箱/.test(verify)) field = 'email';
+        else if (/手机|电话/.test(verify)) field = 'phone';
+        else if (/身份证|证件/.test(verify)) field = 'idcard';
+        else if (/数字|数值/.test(verify)) field = 'age';   // 纯数字框：按年龄档生成最安全
+        if (field === null) {
+            // 地区题的三条平台侧信号（同类项目在 HTML 里就是靠这三条认的）：
+            // 控件类名 get_Local、onclick 打开城市选择器 opencitybox、
+            // verify 写着省市/地区语义。判成 region 才能只交"省 市"，
+            // 判成 address 会把整条街道门牌塞进级联框。
+            var onclick = el.getAttribute('onclick') || '';
+            var isRegion = (el.classList && el.classList.contains('get_Local'))
+                || /opencitybox/i.test(onclick)
+                || /地图|省市|省份|城市|地区|区县/.test(verify);
+            if (isRegion) field = 'region';
+        }
+        return field;
+    }
+    function guessTextFieldFromText(txt) {
+        txt = String(txt || '').toLowerCase();
+        // 身份证放在最前：题干必然含"身份证/证件号"， specificity 最高；
+        // 漏了它 answer 侧会落到自由短句兜底 —— 18 位证件号的位置出现
+        // 一句"整体体验非常不错"，这份数据必废（v4.2 前正是这个形状）。
+        if (/身份证|证件号|证件号码/.test(txt)) return 'idcard';
+        if (/姓名|名字|name|您的称呼|称呼/.test(txt)) return 'name';
+        if (/手机|电话|mobile|phone|tel|联系方式/.test(txt)) return 'phone';
+        if (/邮箱|e-mail|email|mail/.test(txt)) return 'email';
+        if (/地址|住址|addr|address/.test(txt)) return 'address';
+        if (/所在地区|所在区域|省市|户籍地|现居住地区/.test(txt)) return 'region';
+        if (/年龄|岁数|age/.test(txt)) return 'age';
+        if (/公司|单位|学校|工作|org|company/.test(txt)) return 'company';
+        return null;
+    }
+
     // ---------- 4. 填空（text / textarea / input[type=text]#qN） ----------
     (function() {
         var fillables = document.querySelectorAll(
@@ -396,44 +450,14 @@ return (function() {
             // 字段类型先问平台，再猜题干：``verify`` 是问卷星明写在输入框上的
             // 校验语义（真卷上见到 "日期"，同类项目还见过 "城市单选"）。
             // 题干正则留着兜底 —— 大多数填空框根本没有 verify 属性。
-            var field = null;
-            if (isDate || /日期|时间/.test(verify)) field = 'date';
-            else if (/邮箱/.test(verify)) field = 'email';
-            else if (/手机|电话/.test(verify)) field = 'phone';
-            else if (/身份证|证件/.test(verify)) field = 'idcard';
-            else if (/数字|数值/.test(verify)) field = 'age';   // 纯数字框：按年龄档生成最安全
-
-            // 地区题的三条平台侧信号（同类项目在 HTML 里就是靠这三条认的）：
-            // 控件类名 get_Local、onclick 打开城市选择器 opencitybox、
-            // verify 写着省市/地区语义。判成 region 才能只交"省 市"，
-            // 判成 address 会把整条街道门牌塞进级联框。
-            var onclick = el.getAttribute('onclick') || '';
-            var isRegion = (el.classList && el.classList.contains('get_Local'))
-                || /opencitybox/i.test(onclick)
-                || /地图|省市|省份|城市|地区|区县/.test(verify);
-            if (field === null && isRegion) field = 'region';
-
-            // 猜字段类型：从 placeholder / 标签文字 / 前导 label
+            var field = verifyFieldOf(el);
             var txt = (el.placeholder || '') + '|' +
                       (el.getAttribute('aria-label') || '') + '|';
             // 往上找题目文字
             var wrap = el.closest ? el.closest('.field,.div_question,.q-item,li,.question') : null;
             if (wrap) txt += (wrap.textContent || '').substring(0, 80);
-            txt = txt.toLowerCase();
 
-            if (field === null) {
-                // 身份证放在最前：题干必然含"身份证/证件号"， specificity 最高；
-                // 漏了它 answer 侧会落到自由短句兜底 —— 18 位证件号的位置出现
-                // 一句"整体体验非常不错"，这份数据必废（v4.2 前正是这个形状）。
-                if (/身份证|证件号|证件号码/.test(txt)) field = 'idcard';
-                else if (/姓名|名字|name|您的称呼|称呼/.test(txt)) field = 'name';
-                else if (/手机|电话|mobile|phone|tel|联系方式/.test(txt)) field = 'phone';
-                else if (/邮箱|e-mail|email|mail/.test(txt)) field = 'email';
-                else if (/地址|住址|addr|address/.test(txt)) field = 'address';
-                else if (/所在地区|所在区域|省市|户籍地|现居住地区/.test(txt)) field = 'region';
-                else if (/年龄|岁数|age/.test(txt)) field = 'age';
-                else if (/公司|单位|学校|工作|org|company/.test(txt)) field = 'company';
-            }
+            if (field === null) field = guessTextFieldFromText(txt);
             s.field = field;
 
             if (field === 'date') {
@@ -544,6 +568,72 @@ return (function() {
             delete s.scale_min;
             delete s.choices;
             delete s.blank_options;
+        });
+    })();
+
+    // ---------- 5d. 多空填空（平台 type=9：一题多个可见 textarea，逐框写文本） ----------
+    // 结构（2026-09-22 真卷 Q14 实测）：两个**可见**的 textarea#q14_0 / #q14_1
+    // （一空一框，readOnly=false），外层 table.matrix-rating 的 class 含 "rating"
+    // —— 会被第 3 步的量表分支先抢走；而它既没有 tr[tp="d"][fid] 也没有 a[dval]，
+    // 矩阵量表分支（5c）接不住它。于是它顶着 scale 的判定被按量表作答，
+    // 答案写错地方 —— 这是"探测自己判错题型"锚定看不穿的又一例（签名跟着探测走）。
+    //
+    // 认领条件刻意收窄：**同题 ≥2 个**可见、可写、id/name 形如 qN_M 的 textarea，
+    // 且只从 scale / text 手里抢（那是两类已知错判）。矩阵量表的提交槽
+    // （input#qN_M）不是 textarea，不会误伤；"其他____"的选项框（qN_M_text）
+    // 被 $ 锚定与 isOptionLevelBlank 挡掉；只剩一框的不抢 —— 单框走第 4 步的
+    // 填空路径，fill_text 的宽松 id 兜底本来就够得着它。
+    (function() {
+        var boxes = {};   // qN -> [{token, el}]
+        document.querySelectorAll('textarea').forEach(function(el) {
+            if (el.disabled || el.readOnly) return;
+            if (pageHidden(el)) return;
+            if (el.offsetParent === null) return;
+            if (isOptionLevelBlank(el)) return;
+            var m = (el.id || '').match(/^q(\d+)_(\d+)$/)
+                 || (el.name || '').match(/^q(\d+)_(\d+)$/);
+            if (!m) return;
+            var qn = parseInt(m[1]);
+            if (!boxes[qn]) boxes[qn] = [];
+            boxes[qn].push({ token: el.id || el.name, el: el });
+        });
+        Object.keys(boxes).forEach(function(qN) {
+            if (boxes[qN].length < 2) return;
+            var qi = parseInt(qN);
+            var existing = map[qi];
+            if (existing && existing.type && existing.type !== 'scale'
+                    && existing.type !== 'text') return;
+
+            var s = slot(qi);
+            s.type = 'text';
+            // 每格的字段类型单独判：先问这一格自己的 verify，再猜它所在**行**的
+            // 标签文字，最后才退到题干 —— 行标签必须与题干分开猜，否则"姓名"行
+            // 会吃到同一题另一格"手机号"的关键词（猜的顺序里姓名在前）。
+            s.blanks = boxes[qN].map(function(b) {
+                var field = verifyFieldOf(b.el);
+                if (field === null) {
+                    var rowTxt = '';
+                    var row = b.el.closest ? b.el.closest('tr') : null;
+                    if (row) {
+                        var cells = row.querySelectorAll('td, th');
+                        for (var ci = 0; ci < cells.length; ci++) {
+                            if (cells[ci].contains(b.el)) continue;
+                            rowTxt += (cells[ci].textContent || '') + '|';
+                        }
+                    }
+                    if (rowTxt) field = guessTextFieldFromText(rowTxt);
+                }
+                if (field === null) {
+                    var wrap = b.el.closest ? b.el.closest('.field,.div_question,.q-item,.question') : null;
+                    if (wrap) field = guessTextFieldFromText(wrap.textContent || '');
+                }
+                return { id: String(b.token), field: field };
+            });
+            // 量表分支的残留必须清掉（签名与作答都读它们）；顶层 field 是
+            // "单框"时代的语义，多框时以每格的为准，留着会误导配置与显示。
+            delete s.scale;
+            delete s.scale_min;
+            delete s.field;
         });
     })();
 
@@ -844,6 +934,7 @@ return (function() {
     var fillables = document.querySelectorAll(
         'input[type="text"], input[type="tel"], input[type="number"], input:not([type]), textarea'
     );
+    var blankMulti = {};   // 多空填空（qN_M 文本框）：qN -> {total, filled}，循环后整题判定
     fillables.forEach(function(el) {
         if (el.disabled || el.readOnly) return;
         // v4.1：不可见的文本控件不是给人填的 —— 与 detect_questions 的同一条
@@ -856,6 +947,21 @@ return (function() {
         // 就把整题报成已答 —— 而那一格属于哪个选项、有没有被勾中，全没人看。
         if (isOptionLevelBlank(el)) return;
         var id = el.id || '', name = el.name || '';
+        // 多空填空的框（id/name 形如 q14_0）不能走下面那条宽松链：
+        // /q(\d+)/ 会把它归给第 14 题，"第 0 格有字"就把整题报成已答 ——
+        // 而平台对多空必答是**逐格**校验的。先按严格形态收进 blankMulti，
+        // 循环结束后按"全部非空才算已答"整题判定（与矩阵的整题口径同形）。
+        var mb = id.match(/^q(\d+)_(\d+)$/) || name.match(/^q(\d+)_(\d+)$/);
+        if (mb) {
+            var mq = parseInt(mb[1]);
+            if (!blankMulti[mq]) blankMulti[mq] = { total: 0, filled: 0 };
+            blankMulti[mq].total += 1;
+            var mval = el.isContentEditable
+                ? (el.innerText || '').trim()
+                : (el.value || '').toString().trim();
+            if (mval) blankMulti[mq].filled += 1;
+            return;
+        }
         var m = id.match(/^q(\d+)$/) || id.match(/^answerq(\d+)$/) ||
                 name.match(/^q(\d+)$/) || id.match(/q(\d+)/);
         if (!m) {
@@ -875,6 +981,21 @@ return (function() {
             val = (el.value || '').toString().trim();
         }
         if (val) {
+            answered[q] = true;
+        }
+    });
+
+    // ---------- 4b. 多空填空：≥2 框必须**全部**非空才算整题已答 ----------
+    // 部分填过反而要 delete：续填语义是"整题重填"，留着半填的题去提交，
+    // 换回来的是平台一句"第 N 题未答"。单框（total<2，如矩阵填空单行）保持
+    // 第 4 步的逐框语义，不在这里改判。
+    Object.keys(blankMulti).forEach(function(qs) {
+        var q = parseInt(qs);
+        var g = blankMulti[qs];
+        if (g.total >= 2) {
+            if (g.filled === g.total) answered[q] = true;
+            else delete answered[q];
+        } else if (g.filled > 0) {
             answered[q] = true;
         }
     });

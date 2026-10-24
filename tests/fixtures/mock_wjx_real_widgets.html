@@ -87,6 +87,30 @@
   <input type="text" id="q3_0" name="q3_0"><input type="text" id="q3_1" name="q3_1">
 </div>
 
+<!-- Q4 多空填空（平台 type=9）：2026-09-22 真卷 Q14 的形态。两个可见的
+     textarea#q4_0 / #q4_1（一空一框），外层 table 的 class 含 "rating" ——
+     修复前它被量表分支先抢走判成 scale，答案写错地方；它没有 tr[tp=d][fid]
+     也没有 a[dval]，矩阵量表分支接不住。行标签（姓名/手机号）是真卷多空题
+     的常规画法，用来钉"逐格字段判定与题干分开猜"这条。 -->
+<div id="div4" class="field ui-field-contain" topic="4" type="9" req="1">
+  <div class="field-label"><span class="req">*</span><div class="topicnumber">4.</div>
+    <div class="topichtml">请填写您的联系信息（多空填空）：</div></div>
+  <div class="tableWrap scaletablewrap">
+    <table class="matrix-rating matrixtable" id="divRefTab4">
+      <tbody>
+        <tr>
+          <td class="scalerowtitletd"><span class="itemTitleSpan">姓名</span></td>
+          <td><textarea id="q4_0" name="q4_0"></textarea></td>
+        </tr>
+        <tr>
+          <td class="scalerowtitletd"><span class="itemTitleSpan">手机号</span></td>
+          <td><textarea id="q4_1" name="q4_1"></textarea></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
 <script>
 // ---- jqmobo2.js 点击行为的复刻：点未勾项 → 挪到已勾块末尾（名次=DOM 顺序）；
 //      点已勾项 → 取消并退到未勾块。名次统一按"已勾项的 DOM 顺序"重写进 .sortnum。

@@ -327,6 +327,68 @@ def fill_text_script(q: int, text: str) -> str:
 
 
 # ============================================================================
+#  多空填空（平台 type=9）：一题多个可见框，逐框写入
+# ============================================================================
+
+def fill_multi_text_script(q: int, texts: dict) -> str:
+    """多空填空逐框写入的 JS：``texts`` 是 {提交槽名: 文本}。
+
+    槽名是探测记下的框 id / name（真卷形态 ``q14_0`` / ``q14_1``）。**全部写上才
+    返回 true**：平台对必答多空题逐格校验，漏一格整题就会被弹回来，返回值必须
+    如实反映 —— 否则"报了成功、页面只答了一半"。
+
+    事件链与 :func:`fill_text_script` 同一套（focus → 赋值 → 假键盘 →
+    input/change → blur），但定位不走 ``#q{q}`` 那条单框路径 —— 多空填空的框
+    id 带 ``_序号`` 后缀，宽松的 ``id*='q14'`` 匹配只会够到第一格。
+    """
+    payload = json.dumps(
+        [{"slot": str(k), "text": str(v)} for k, v in texts.items()],
+        ensure_ascii=False,
+    )
+    return f"""
+        var q = {q};
+        var items = {payload};
+        var allOk = items.length > 0;
+
+        items.forEach(function(item, idx) {{
+            var el = document.getElementById(item.slot)
+                  || document.querySelector('textarea[name="' + item.slot + '"]');
+            if (!el || el.disabled || el.readOnly) {{ allOk = false; return; }}
+
+            var wrap = el.closest('.field, .div_question, .q-item, li, label, tr, div') || el;
+            if (idx === 0) {{
+                wrap.scrollIntoView({{behavior: 'instant', block: 'center'}});
+            }}
+
+            try {{ el.focus(); }} catch(_) {{}}
+            try {{ el.dispatchEvent(new Event('focus', {{ bubbles:true }})); }} catch(_) {{}}
+
+            // 按 maxlength 截断：程序赋值不受 maxlength 约束，超长文本会被平台
+            // 长度校验整格清掉（与 fill_text_script 同一条教训）
+            var txt = item.text;
+            try {{
+                var limit = parseInt(el.getAttribute('maxlength'));
+                if (limit > 0 && txt.length > limit) txt = txt.substring(0, limit);
+            }} catch(_) {{}}
+            el.value = txt;
+
+            try {{
+                for (var k = 0; k < Math.min(txt.length, 6); k++) {{
+                    el.dispatchEvent(new Event('keydown', {{ bubbles:true }}));
+                }}
+            }} catch(_) {{}}
+            try {{ el.dispatchEvent(new Event('input',  {{ bubbles:true }})); }} catch(_) {{}}
+            try {{ el.dispatchEvent(new Event('change', {{ bubbles:true }})); }} catch(_) {{}}
+            try {{ el.dispatchEvent(new Event('blur',   {{ bubbles:true }})); }} catch(_) {{}}
+            try {{ el.blur(); }} catch(_) {{}}
+
+            if (!(el.value || '').length) allOk = false;
+        }});
+        return allOk;
+    """
+
+
+# ============================================================================
 #  scale 模块：量表打分
 # ============================================================================
 

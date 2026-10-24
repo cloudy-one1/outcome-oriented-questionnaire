@@ -83,6 +83,12 @@ def question_signature(q: dict) -> str:
         n_cols = len(q.get("cols") or [])
         return f"{qtype}:{n_rows}x{n_cols}"
     if qtype == "text":
+        # 多空填空（v4.1，平台 type=9）：格数进签名 —— 一题两格与一题三格
+        # 是不同的结构，作者加/删一格就该让旧锚点脱钩。单框保持裸 "text"，
+        # 老配置里已存的 text 锚点不受影响。
+        blanks = q.get("blanks") or []
+        if len(blanks) >= 2:
+            return f"text:{len(blanks)}blanks"
         return "text"
     if qtype == "sort":
         return f"sort:{len(q.get('items') or [])}"

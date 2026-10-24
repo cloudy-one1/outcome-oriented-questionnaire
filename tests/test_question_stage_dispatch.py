@@ -336,3 +336,52 @@ def test_replayed_text_lands_in_the_dom_and_history(monkeypatch) -> None:
     ) is True
     assert filled == [(3, "李娜")], filled
     assert recorded and recorded[0]["text_answer"] == "李娜", recorded
+
+
+def test_multi_blank_dispatches_to_the_per_box_filler(monkeypatch) -> None:
+    """多空填空（v4.1 平台 type=9）必须走逐框填充器，且不许再碰单框路径。
+
+    新题型最容易忘的恰好是这条接线：探测与生成器各自都对，中间的
+    ``elif ans_type`` 漏了，题目就静默走"单框填 #qN"—— 而多空题根本没有
+    #qN 这个框，宽松的 id 兜底只会够到第一格。
+    """
+    fills: list[tuple[int, dict]] = []
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.js_fill_multi_text",
+        lambda _d, qnum, texts: fills.append((qnum, dict(texts))) or True,
+    )
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.js_fill_text",
+        lambda *_a, **_k: pytest.fail("多空填空不该走单框填充器"),
+    )
+    recorded: list = []
+
+    class _Db:
+        def record_answer(self, **kw):
+            recorded.append(kw)
+            return 1
+
+    q = {"q": 14, "type": "text",
+         "blanks": [{"id": "q14_0", "field": None}, {"id": "q14_1", "field": None}]}
+    assert _answer_one_question(RecordingDriver(), q, history_db=_Db(),
+                                run_id=1, submission_index=1) is True
+    assert len(fills) == 1
+    qnum, texts = fills[0]
+    assert qnum == 14
+    assert set(texts) == {"q14_0", "q14_1"}, f"两格都得有值: {texts}"
+    assert texts["q14_0"] != texts["q14_1"], "同题两格一字不差是异常特征"
+    # 落库明细：各格摊平成一列，题型仍归 text（no_record_text 的既有口径跟着覆盖）
+    row = recorded[0]
+    assert row["question_type"] == "text", row
+    assert texts["q14_0"] in row["text_answer"] and texts["q14_1"] in row["text_answer"]
+
+
+def test_multi_blank_partial_failure_flips_question_to_failed(monkeypatch) -> None:
+    """逐框填充器报 False（漏一格）→ 本题计失败，不许顶着半份答案交上去。"""
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.js_fill_multi_text",
+        lambda *_a, **_k: False,
+    )
+    q = {"q": 14, "type": "text",
+         "blanks": [{"id": "q14_0", "field": None}, {"id": "q14_1", "field": None}]}
+    assert _answer_one_question(RecordingDriver(), q) is False

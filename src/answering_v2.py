@@ -15,6 +15,8 @@
     # 量表 / 填空
     {"type": "scale",        "value": int_1_to_N}
     {"type": "text",         "text": "具体内容", "field": "name"|"phone"|...|"idcard"|None}
+    # 多空填空（平台 type=9，v4.1）：键是提交槽名（探测 blanks 里的 id）
+    {"type": "text",         "texts": {"q14_0": "张三", "q14_1": "138..."}}
 
     # 矩阵
     {"type": "matrix_single","rows": {row_idx: col_idx, ...}}
@@ -281,6 +283,75 @@ def _row_weight_map(raw: Any) -> dict:
     return out
 
 
+def _text_for_field(field: Optional[str], question: dict, p: Persona) -> str:
+    """按字段类型生成一格文本（单框填空与多空填空共用，v4.1 从 generate_answer 抽出）。
+
+    字段语义与探测侧 ``guessTextFieldFromText`` / ``verifyFieldOf`` 的取值域一致；
+    兜底是自由短句 —— 那是"认不出这是什么格"时的最后一档，别在这里伪装成
+    语义相关的答案。
+    """
+    if field == "name":
+        return p.name
+    if field in ("phone", "mobile", "tel"):
+        return p.phone
+    if field == "email":
+        return p.email
+    if field == "idcard":
+        # v4.2 接线：detection 认出身份证题 → 填画像的真校验位证件号。
+        # 此前这条链断在中间（persona.id_card 生成后零消费），
+        # 证件号的位置落的是 _random_sentence() 的随机短句。
+        # 出生段与 birth_date_text 同源（Persona.birth_date），生日题
+        # 与身份证题同卷出现时月日不再互相矛盾。
+        return p.id_card
+    if field in ("address", "addr"):
+        return p.address_text
+    if field in ("region", "area", "local"):
+        return p.region()
+    if field in ("age", "number"):
+        # 画像的年龄优先；只有它落在题目 min/max 之外才夹回去 —— 夹完仍是个
+        # 合法年龄，只是这一格与身份证 / 生日的自洽性弱一档。
+        # v4.2：页面把 "18人" 这类非数字塞进 dataset 时不裸抛，回退默认档。
+        try:
+            lo, hi = int(question.get("min", 16)), int(question.get("max", 70))
+        except (TypeError, ValueError):
+            lo, hi = 16, 70
+        return str(min(max(p.age, min(lo, hi)), max(lo, hi)))
+    if field == "date":
+        return _birth_or_window_date(question, p)
+    if field in ("company", "org"):
+        return p.company
+    return _random_sentence()
+
+
+def _generate_multi_blank_texts(question: dict) -> dict[str, str]:
+    """多空填空（平台 type=9）逐框生成；返回 ``{提交槽名: 文本}``。
+
+    槽名与每格的字段类型来自探测的 ``blanks``；字段认不出的格从短句池里
+    **不放回**地取 —— 同一题两格一字不差本身就是异常特征。配置里给了显式
+    候选池（``options``）时每格独立随机取，与单框填空的语义一致。
+    """
+    blanks = list(question.get("blanks") or [])
+    explicit = question.get("options") or _cfg_entry(question).get("options")
+    has_pool = isinstance(explicit, (list, tuple)) and len(explicit) > 0
+    pool = random.sample(_SHORT_SENTENCES, len(_SHORT_SENTENCES))
+    p = active_persona()
+    texts: dict[str, str] = {}
+    for i, blank in enumerate(blanks):
+        entry = blank if isinstance(blank, dict) else {}
+        slot = str(entry.get("id") or f"{question.get('q')}_{i}")
+        if has_pool:
+            texts[slot] = str(random.choice(list(explicit)))
+        else:
+            field = str(entry.get("field") or "").lower() or None
+            if field is not None:
+                texts[slot] = _text_for_field(field, question, p)
+            elif i < len(pool):
+                texts[slot] = pool[i]
+            else:
+                texts[slot] = _random_sentence()
+    return texts
+
+
 # ============================================================================
 #  Public API
 # ============================================================================
@@ -357,6 +428,13 @@ def generate_answer(question: dict) -> dict[str, Any]:
     if qtype in ("text", "input", "textarea", "fillblank"):
         field = str(question.get("field", "")).lower() or None
 
+        # 多空填空（平台 type=9，v4.1）：一题多个可见框，逐框生成。
+        # 探测把每格的提交槽名与字段类型记在 blanks 里；字段类型为 None 的格
+        # 各取不同的短句 —— 同一题两格一字不差本身就是异常特征。
+        blanks = question.get("blanks") or []
+        if len(blanks) >= 2:
+            return {"type": "text", "texts": _generate_multi_blank_texts(question)}
+
         # 如果给出显式选项池 → 从池中随机。
         # v3.0：候选词也能只写在权重配置里（GUI 表格 / JSON 的 "options"）——
         # 此前只看 question["options"]，而探测回来的题目**永远没有**这个键，
@@ -366,40 +444,7 @@ def generate_answer(question: dict) -> dict[str, Any]:
             picked = random.choice(list(explicit_options))
             return {"type": "text", "text": str(picked), "field": field}
 
-        p = active_persona()
-        if field == "name":
-            text = p.name
-        elif field in ("phone", "mobile", "tel"):
-            text = p.phone
-        elif field == "email":
-            text = p.email
-        elif field == "idcard":
-            # v4.2 接线：detection 认出身份证题 → 填画像的真校验位证件号。
-            # 此前这条链断在中间（persona.id_card 生成后零消费），
-            # 证件号的位置落的是 _random_sentence() 的随机短句。
-            # 出生段与 birth_date_text 同源（Persona.birth_date），生日题
-            # 与身份证题同卷出现时月日不再互相矛盾。
-            text = p.id_card
-        elif field in ("address", "addr"):
-            text = p.address_text
-        elif field in ("region", "area", "local"):
-            text = p.region()
-        elif field in ("age", "number"):
-            # 画像的年龄优先；只有它落在题目 min/max 之外才夹回去 —— 夹完仍是个
-            # 合法年龄，只是这一格与身份证 / 生日的自洽性弱一档。
-            # v4.2：页面把 "18人" 这类非数字塞进 dataset 时不裸抛，回退默认档。
-            try:
-                lo, hi = int(question.get("min", 16)), int(question.get("max", 70))
-            except (TypeError, ValueError):
-                lo, hi = 16, 70
-            text = str(min(max(p.age, min(lo, hi)), max(lo, hi)))
-        elif field == "date":
-            text = _birth_or_window_date(question, p)
-        elif field in ("company", "org"):
-            text = p.company
-        else:
-            text = _random_sentence()
-
+        text = _text_for_field(field, question, active_persona())
         return {"type": "text", "text": text, "field": field}
 
     # --- 5. 矩阵单选 ---------------------------------------------------

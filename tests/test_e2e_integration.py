@@ -1085,6 +1085,70 @@ def test_matrix_scale_fill_reports_missing_rows(driver):
     assert js_fill_matrix_scale(driver, 3, {"q9_9": 3}) is False      # 根本没有这一行
 
 
+def test_multi_blank_is_detected_as_text_and_filled_box_by_box(driver):
+    """真卷 type=9 多空填空（v4.1）：外层 matrix-rating 表先被量表分支抢走，5d 必须抢回来。
+
+    修复前它顶着 scale 的判定被按量表作答 —— 答错地方，而 [完整度] 不拦、
+    只有 [对拍] 说（探测到了、只是判错型，签名跟着探测走所以锚定也看不穿）。
+    这条锁四件事：
+      1. 探测最终落在 text + 逐格 blanks，量表/单框的残留清干净；
+      2. 行标签（姓名/手机号）决定每格字段类型，且与题干分开猜；
+      3. 作答逐框写进对应 textarea，漏一格必须返回 False；
+      4. [对拍] 闭嘴 —— 码表 9 本来就接受 text。
+    """
+    from src.answering_v2 import generate_answer
+    from src.crosscheck import crosscheck_questions
+    from src.detection import (
+        detect_answered_questions,
+        detect_platform_questions,
+        detect_questions,
+    )
+    from src.interactions.text import js_fill_multi_text
+    from src.persona import active_persona, new_persona
+    from src.platforms import WJX
+
+    _load_real_widgets(driver)
+    new_persona()
+    p = active_persona()
+
+    q4 = next(q for q in detect_questions(driver) if q["q"] == 4)
+    assert q4["type"] == "text", f"多空填空没被认领: {q4}"
+    assert q4.get("blanks") == [
+        {"id": "q4_0", "field": "name"},
+        {"id": "q4_1", "field": "phone"},
+    ], f"逐格槽位/字段判错: {q4.get('blanks')}"
+    assert "scale" not in q4 and "scale_min" not in q4 and "field" not in q4, (
+        f"量表/单框残留没清: {q4}"
+    )
+
+    texts = generate_answer(q4)["texts"]
+    assert texts == {"q4_0": p.name, "q4_1": p.phone}, f"逐格生成答错: {texts}"
+
+    assert js_fill_multi_text(driver, 4, texts) is True
+    got = driver.execute_script(
+        "return JSON.stringify([document.getElementById('q4_0').value,"
+        " document.getElementById('q4_1').value]);")
+    assert json.loads(got) == [p.name, p.phone], f"提交槽没写上: {got}"
+
+    # 续填扫描：平台逐格校验 → 全部非空才算整题已答，只填一格必须整题重填
+    assert 4 in detect_answered_questions(driver)
+    driver.execute_script("document.getElementById('q4_1').value = '';")
+    assert 4 not in detect_answered_questions(driver)
+
+    ours = [q for q in detect_questions(driver) if q["q"] == 4]
+    plat = [x for x in detect_platform_questions(driver, WJX) if x["q"] == 4]
+    assert crosscheck_questions(ours, plat, WJX) == []
+
+
+def test_multi_text_fill_reports_missing_boxes(driver):
+    """槽写错 / 框不存在时必须返回 False —— 不交一份"看起来写了"的多空题。"""
+    from src.interactions.text import js_fill_multi_text
+
+    _load_real_widgets(driver)
+    assert js_fill_multi_text(driver, 4, {"q4_0": "a", "q9_9": "b"}) is False
+    assert js_fill_multi_text(driver, 4, {}) is False
+
+
 def test_region_signals_are_detected_and_answered_by_one_persona(driver):
     """地区题三条识别信号 + 答案必须与画像同省（v3.2 persona 绑定）。
 

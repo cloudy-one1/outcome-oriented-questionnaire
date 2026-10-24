@@ -39,7 +39,7 @@ from ..interactions.matrix import (
 )
 from ..interactions.scale import js_set_scale
 from ..interactions.sort import js_fill_sort
-from ..interactions.text import js_fill_text
+from ..interactions.text import js_fill_multi_text, js_fill_text
 from ..utils import human_pause
 from .page_loader import QUESTION_CONTROL_SELECTOR
 
@@ -269,8 +269,16 @@ def _answer_one_question(
 
         try:
             if ans_type == "text":
-                text_answer = str(ans.get("text", ""))
-                is_ok = js_fill_text(driver, qnum, text_answer)
+                multi_texts = ans.get("texts")
+                if isinstance(multi_texts, dict) and multi_texts:
+                    # v4.1 多空填空（平台 type=9）：逐框写，**全部写上才算这道题
+                    # 答了** —— 平台对多空必答逐格校验，漏一格整题被弹回来。
+                    # 落库把各格摊平成一列（" ┋ " 连接），形状与既有 text 明细兼容。
+                    is_ok = js_fill_multi_text(driver, qnum, multi_texts)
+                    text_answer = " ┋ ".join(str(v) for v in multi_texts.values())
+                else:
+                    text_answer = str(ans.get("text", ""))
+                    is_ok = js_fill_text(driver, qnum, text_answer)
 
             elif ans_type == "scale":
                 val = int(ans.get("value", 3))

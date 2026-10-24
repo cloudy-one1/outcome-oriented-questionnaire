@@ -334,3 +334,54 @@ class TestDateQuestionAnswers(unittest.TestCase):
         )
         self.assertEqual(ans["type"], "text")
         self.assertRegex(ans["text"], r"^\d{4}-\d{2}$")
+
+
+class TestMultiBlankTexts(unittest.TestCase):
+    """多空填空（v4.1 平台 type=9）：逐框生成，一题多格不共串。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from src import answering_v2  # type: ignore
+        cls.mod: Any = answering_v2
+
+    def test_fields_dispatch_per_slot_from_one_persona(self) -> None:
+        """每格按自己的字段类型生成，且全部同源于当前画像。"""
+        from src.persona import active_persona
+        p = active_persona()
+        q = {"q": 14, "type": "text",
+             "blanks": [{"id": "q14_0", "field": "name"},
+                        {"id": "q14_1", "field": "phone"}]}
+        for _ in range(20):
+            texts = self.mod.generate_answer(q)["texts"]
+            self.assertEqual(set(texts), {"q14_0", "q14_1"})
+            self.assertTrue(_CHINESE_NAME_RE.match(texts["q14_0"]), texts)
+            self.assertTrue(_PHONE_RE.match(texts["q14_1"]), texts)
+            self.assertEqual(texts["q14_0"], p.name, "同一份问卷里换人了")
+            self.assertEqual(texts["q14_1"], p.phone)
+
+    def test_unknown_fields_get_distinct_short_sentences(self) -> None:
+        """字段认不出的格各取不同短句 —— 两格一字不差是异常特征。"""
+        q = {"q": 14, "type": "text",
+             "blanks": [{"id": "q14_0", "field": None},
+                        {"id": "q14_1", "field": None},
+                        {"id": "q14_2", "field": None}]}
+        texts = self.mod.generate_answer(q)["texts"]
+        self.assertEqual(len(set(texts.values())), 3, texts)
+
+    def test_explicit_options_apply_per_box(self) -> None:
+        """配置/题目给的显式候选池：每格独立随机取，值都出自池内。"""
+        pool = ["线上", "线下", "同事推荐"]
+        q = {"q": 14, "type": "text", "options": pool,
+             "blanks": [{"id": "q14_0", "field": None},
+                        {"id": "q14_1", "field": None}]}
+        for _ in range(20):
+            texts = self.mod.generate_answer(q)["texts"]
+            for v in texts.values():
+                self.assertIn(v, pool)
+
+    def test_single_blank_question_keeps_the_old_shape(self) -> None:
+        """没有 blanks（或不足两格）的单框填空不受影响，仍走顶层 field。"""
+        ans = self.mod.generate_answer({"q": 5, "type": "text", "field": "name"})
+        self.assertEqual(ans["field"], "name")
+        self.assertIn("text", ans)
+        self.assertNotIn("texts", ans)

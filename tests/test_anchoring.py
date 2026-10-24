@@ -89,12 +89,17 @@ def test_two_layer_numbering_is_stripped() -> None:
     (_q(5, "E", qtype="matrix", rows=[1, 2], cols=[1, 2, 3]), "matrix:2x3"),
     (_q(6, "F", qtype="matrix_single", rows=[1, 2], cols=[1, 2, 3]), "matrix:2x3"),
     ({"q": 7, "type": "single"}, "single:0"),
+    ({"q": 8, "type": "text", "blanks": [{"id": "q8_0"}, {"id": "q8_1"}]},
+     "text:2blanks"),
+    ({"q": 9, "type": "text", "blanks": [{"id": "q9_0"}]}, "text"),
 ])
 def test_question_signature(q: dict, expected: str) -> None:
     """签名走 models.normalize_question_type 的单一真相（checkbox→multi、matrix_single→matrix）。
 
     矩阵题那条是刻意成对写的：normalize 产出的是**存储名** matrix，
     分支若比 "matrix_single" 就永远走不到，矩阵会被算成 "matrix:0"（无 choices 键）。
+    多空填空（v4.1）的格数进签名：一题两格与一题三格是不同结构；
+    单框保持裸 "text"，老配置里已存的 text 锚点不受影响。
     """
     assert anchoring.question_signature(q) == expected
 
