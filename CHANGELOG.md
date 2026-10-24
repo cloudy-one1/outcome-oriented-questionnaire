@@ -4,6 +4,34 @@
 
 ## [未发布]
 
+### 修复（Web 控制台界面适配 —— 真浏览器实测后收口）
+
+- **≤900px 单列下整页横向溢出**：`grid-template-columns: 1fr` 的隐含下限是内容的
+  min-content，设置卡几件控件叠起来把轨道顶到 ~484px，横向滚动条出现在 main 里，
+  390px 视口下「停止」按钮整个滚出去。改 `minmax(0, 1fr)` + 控制条/顶栏换行；
+  单列时卡片回自然高度、滚动交给 main —— 此前设置卡被 flex 压成内部滚动、
+  拦腰截断，权重表只剩一条缝。
+- **文件按钮的键盘焦点完全不可见**：「导入配置」「二维码导入」的本体 input 是
+  `opacity: 0`，`:focus-visible` 的焦点圈画在它身上永远画不出来。新增
+  `.file-btn:has(input:focus-visible)` 把圈画到 label 上，与复选框的 `+ span`
+  规则同一口径（只认键盘焦点，点击不亮）。
+- **终端行号/时间戳对比度只有 2.6:1**：违反"文字过 WCAG AA"这条立身规则
+  （`DESIGN_motion_primitives.md` G5），提到与 terminal-title 同档的 5.3:1。
+- **权重表滚动时表头跟着滚走**：长问卷编辑到第几十行就不知道自己在填哪一列。
+  滚动收进 `.table` 自身、表头 `sticky` 贴自己的滚动视口 —— 不粘在带 14px
+  内边距的 card-body 上，否则行会从表头上方的缝隙里穿出去。两张历史表同享。
+- **表格逐行入场的"隐形依赖"**：基态 `opacity: 0` + `forwards` 落终态 —— 动画
+  一旦被后台标签页节流或吞掉（真浏览器复验时实际抓到一次），整张表**永久隐形**。
+  改成基态可见、keyframes 带 `from` 初态、`backwards` 补足错峰延迟期：
+  宁可丢动画，不能丢内容。
+- **`prefers-reduced-motion` 只在加载时读一次**：长跑动辄几小时，中途切系统偏好
+  界面不跟。app.js 挂 matchMedia `change` 监听（含旧版 `addListener` 回退），
+  CSS 兜底不变。
+- **杂项加固**：钉 `color-scheme: light`，防系统深色模式把 select/checkbox/
+  dialog 拖进 UA 暗色皮肤；`height: 100dvh` 回退移动端动态工具栏；隐藏与自定义
+  ± 按钮重复的原生 number 旋钮；步进按钮 28→32px（本就过 24px 的 AA 线，
+  往触控 44 的方向挪一步）；进度读数「0.0% 0/0」加间距。
+
 ### 修复（CODE_REVIEW_v4.0 剩余 P3 的第三批）
 
 - **历史导出的 10000 上限与 N+1 查询**：`history_export` 此前写死

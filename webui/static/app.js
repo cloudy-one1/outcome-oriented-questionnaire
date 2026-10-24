@@ -16,8 +16,17 @@
   var STAGGER_MAX = 24;
   var LOG_CAP = 800;
 
-  var reduceMotion = window.matchMedia
-    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // 减少动效不只在加载时问一次：长跑常常一开就是几小时，用户中途在系统里
+  // 切了这个开关，界面应当立刻跟上 —— 动画是装饰，用户的偏好在任何时刻都是对的。
+  var motionQuery = window.matchMedia
+    ? window.matchMedia("(prefers-reduced-motion: reduce)")
+    : null;
+  var reduceMotion = motionQuery ? motionQuery.matches : false;
+  if (motionQuery) {
+    var onMotionChange = function (e) { reduceMotion = e.matches; };
+    if (motionQuery.addEventListener) { motionQuery.addEventListener("change", onMotionChange); }
+    else if (motionQuery.addListener) { motionQuery.addListener(onMotionChange); } // 旧 Safari/Edge
+  }
 
   var els = {};
   var state = null;

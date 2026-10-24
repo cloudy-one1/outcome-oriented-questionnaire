@@ -7,6 +7,9 @@
  */
 
 :root {
+  /* 界面身份是浅色（设计稿 §13.3）。不钉死的话，系统深色模式会把 select、
+     checkbox 与 <dialog> 拖进 UA 的暗色皮肤，和写死的浅色面板打架。 */
+  color-scheme: light;
   --bg: #f4f6f9;
   --surface: #ffffff;
   --ink: #14181f;
@@ -44,6 +47,9 @@ body {
      （权重表第 13 行、历史最后一批都中招）。改成 main 自己滚，
      控制栏是实打实的最后一格，谁也不会被它盖住。 */
   height: 100vh;
+  /* 移动端浏览器的地址栏收展会吃掉 100vh 量出的高度，dvh 跟随可视窗口；
+     旧浏览器不认这一行就留在上一行的 100vh，行为不变。 */
+  height: 100dvh;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -63,6 +69,8 @@ body {
   background: #101418;
   color: #fff;
   border-bottom: 2px solid var(--primary);
+  /* 窄窗口时状态块自己掉到第二行，别把整页横向撑出滚动条 */
+  flex-wrap: wrap;
 }
 
 .brand { display: flex; align-items: center; gap: 14px; }
@@ -188,7 +196,20 @@ input[type="text"], input[type="number"], select {
 }
 
 input[type="text"] { flex: 1; min-width: 0; }
+/* 份数的 +/− 是自定义按钮，原生旋钮是第二份冗余控件，还压在居中数字上 */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
 input:focus-visible, select:focus-visible, button:focus-visible, .check input:focus-visible + span {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+/* 文件按钮的本体 input 是透明的（.file-btn input { opacity: 0 }），
+   它自己拿到的焦点圈永远画不出来 —— 键盘走到「导入配置」「二维码导入」时
+   屏幕上没有任何指示。把圈画到接收点击的 label 上，与上面那组同一份描边。
+   :focus-within 会在鼠标点击时也亮，所以用 :has(input:focus-visible)
+   只认键盘焦点，与既有规则同一口径。 */
+.file-btn:has(input:focus-visible) {
   outline: 2px solid var(--primary);
   outline-offset: 2px;
 }
@@ -196,7 +217,7 @@ input:focus-visible, select:focus-visible, button:focus-visible, .check input:fo
 .count-row { display: flex; align-items: center; gap: 8px; }
 .count-row input { width: 84px; text-align: center; font-weight: 700; }
 .step {
-  width: 28px; height: 28px;
+  width: 32px; height: 32px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--surface);
@@ -240,14 +261,27 @@ input:focus-visible, select:focus-visible, button:focus-visible, .check input:fo
 
 /* ------------------------------------------------------------ 权重表 */
 
-.table { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+/* overflow: clip 与 hidden 同样把圆角外的内容裁掉，但它不产生滚动容器 ——
+   表格自己成为滚动容器时（见下），sticky 表头才贴得住。不支持 clip 的旧浏览器
+   会忽略这行退回 hidden，表头不粘，行为与从前一致。 */
+.table { border: 1px solid var(--line); border-radius: 8px; overflow: clip; }
 .table-head, .table-row {
   display: grid;
   grid-template-columns: 56px 84px 92px minmax(0, 1fr);
   gap: 1px;
   background: var(--line);
 }
-.table-head { font: 700 12px/1 "Microsoft YaHei UI", sans-serif; color: var(--primary-ink); }
+/* 长问卷的权重表一滚十几行，列名跟着滚走后第 30 行就不知道自己在填什么列。
+   滚动收进 .table 自己（而不是带 14px 内边距的 .card-body）：表头贴住
+   自己的滚动视口顶部，行从它正下方穿过，不会在它上方的缝隙里露出来；
+   两张历史表同样受益。 */
+.table-head { position: sticky; top: 0; z-index: 1; font: 700 12px/1 "Microsoft YaHei UI", sans-serif; color: var(--primary-ink); }
+
+/* 表格所在的卡片体退化为纯布局容器：提示文字常驻，表格占满剩余高度自己滚。
+   flex: 1 + min-height: 0 是"占满可滚"的标准写法；卡片回到自然高度时
+   （≤900px），这里就是内容高度，整表展开、滚动交还 main。 */
+.card-body:has(> .table) { display: flex; flex-direction: column; }
+.card-body:has(> .table) > .table { flex: 1; min-height: 0; overflow: auto; }
 .table-head span { background: #f0f2f5; padding: 9px 8px; text-align: center; }
 .table-row { min-height: 34px; }
 .table-row > * { background: var(--surface); padding: 5px 8px; display: flex; align-items: center; }
@@ -272,9 +306,12 @@ input:focus-visible, select:focus-visible, button:focus-visible, .check input:fo
 .cell-text input { width: 100%; }
 .empty { margin: 14px 8px; color: var(--ink-mute); font-size: 12px; }
 
-/* 逐行入场：错峰 18ms，超过 24 行直接出现（长跑不许一行行等动画） */
-.table-row { opacity: 0; transform: translateY(4px); animation: row-in var(--dur-base) var(--ease-out) forwards; }
-@keyframes row-in { to { opacity: 1; transform: none; } }
+/* 逐行入场：错峰 18ms，超过 24 行直接出现（长跑不许一行行等动画）。
+   基态必须可见、动画只带 from 初态（backwards 补足延迟期）—— 若写成
+   "基态 opacity:0 + forwards 落终态"，动画一旦被后台标签页节流或吞掉，
+   整张表就永远隐形；宁可丢动画，不能丢内容。 */
+.table-row { animation: row-in var(--dur-base) var(--ease-out) backwards; }
+@keyframes row-in { from { opacity: 0; transform: translateY(4px); } }
 
 /* ------------------------------------------------------------ 终端 */
 
@@ -310,11 +347,13 @@ input:focus-visible, select:focus-visible, button:focus-visible, .check input:fo
   color: var(--term-ink);
 }
 
-.log-gutter { flex: 0 0 44px; padding: 8px 6px 8px 10px; color: #4d5a6b; text-align: right; user-select: none; }
+/* 行号与时间戳是内容不是装饰，#4d5a6b 在终端底色上只有 2.6:1 ——
+   提到与 terminal-title 同档的 #7f8b9b（5.3:1），守住本仓库"文字过 WCAG AA"的立身规则 */
+.log-gutter { flex: 0 0 44px; padding: 8px 6px 8px 10px; color: #7f8b9b; text-align: right; user-select: none; }
 .log-lines { flex: 1; min-width: 0; padding: 8px 10px; }
 .log-line { white-space: pre-wrap; word-break: break-word; }
 .log-line .prompt { color: #28c840; }
-.log-line .ts { color: #4d5a6b; margin: 0 6px; }
+.log-line .ts { color: #7f8b9b; margin: 0 6px; }
 .log-line[data-tag="OK"] .body { color: #56d364; }
 .log-line[data-tag="FAIL"] .body { color: #ff7b72; }
 .log-line[data-tag="WARN"] .body { color: #e3b341; }
@@ -338,6 +377,9 @@ input:focus-visible, select:focus-visible, button:focus-visible, .check input:fo
   align-items: center;
   gap: 12px;
   padding: 12px 22px 10px;
+  /* 桌面上四件套占一行；窄到放不下时逐件掉行 —— 横向溢出会让"停止"整个
+     滚出视口（390px 实测 scrollWidth 575），那是最不能看不见的按钮。 */
+  flex-wrap: wrap;
 }
 
 .progress-block { flex: 1; min-width: 180px; }
@@ -346,6 +388,7 @@ input:focus-visible, select:focus-visible, button:focus-visible, .check input:fo
   font-size: 12px; color: var(--primary-ink); margin-bottom: 5px;
 }
 .progress-top b { font-family: var(--mono); }
+.progress-top .muted { margin-left: 4px; }
 .muted { color: var(--ink-mute); font-family: var(--mono); }
 
 .progress-track {
@@ -469,9 +512,23 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: 
 .confirm-hint { margin: 10px 0 0; font-size: 11px; color: var(--ink-mute); }
 
 @media (max-width: 900px) {
-  .layout { grid-template-columns: 1fr; }
-  .history { grid-template-columns: 1fr; }
+  /* 1fr 的隐含下限是"内容的 min-content"——URL 输入框、二维码按钮几件叠起来
+     能把整条轨道顶到 484px，横向滚动条就出现在 main 里。minmax(0, 1fr) 把
+     下限钉死成 0，多出来的宽度由各行内部的 flex 自己消化。 */
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  .history { grid-template-columns: minmax(0, 1fr); }
   .field > label { flex-basis: 96px; }
+  /* 单列后不再把两张卡挤进一屏：卡片回到自然高度，滚动交给 main，
+     底部控制条照旧钉死 —— 否则设置卡被拦腰截断，权重表只剩一条缝。 */
+  .layout, .history { flex: 0 0 auto; }
+  .card-grow { flex: 0 0 auto; }
+}
+
+@media (max-width: 560px) {
+  /* 390px 宽度下 URL 输入框会被挤到只剩 ~100px：标签先独占一行，
+     输入框和二维码按钮同排分剩下的宽度。 */
+  .field:has(.file-btn) { flex-wrap: wrap; }
+  .field:has(.file-btn) > label { flex-basis: 100%; }
 }
 
 /* 系统要求减少动效时，一切直接落终值 —— 这是唯一开关（app.js 里读的是同一条） */
