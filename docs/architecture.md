@@ -136,8 +136,11 @@
 
 ## 运行历史落什么
 
-- **runs 表** — 批次元信息：`id, survey_url, survey_key, total_submissions, browser, use_uc, status(running/finished/failed/interrupted), success_count, fail_count, total_elapsed_seconds, error_message, weight_config_json, started_at, finished_at`
+- **runs 表** — 批次元信息：`id, survey_url, survey_key, total_submissions, browser, use_uc, status(running/finished/failed/interrupted), success_count, fail_count, total_elapsed_seconds, error_message, weight_config_json, started_at, heartbeat_at, finished_at`。
+  `heartbeat_at`（v4.2）由逐题 / 逐份落库自动刷新，孤儿批次清理（`reap_stale_runs`）
+  按"最后一次落库多老"判失活 —— 跑了很久但仍在校验的活批次不会被误判成崩溃
 - **answers 表** — 逐题明细：`run_id, submission_index, question_number, question_type, options_selected(JSON), text_answer, elapsed_ms, created_at`，`(run_id, submission_index, question_number)` 唯一，重试不会产生重复行
+- **submissions 表**（v4.1） — 逐份最终成败：`run_id, submission_index, final_status(success/failed/unknown), finished_at`，`(run_id, submission_index)` 唯一。每份出结果即写（不等批次收尾），是续传起点与信度报告口径的单一真相
 
 老数据库文件会被自动迁移（补充新列、去重并建立唯一索引），多次打开幂等无损。
 迁移还会**回填** `survey_key` —— 留着 NULL 等于没修：续传是按这个键匹配的，
