@@ -340,5 +340,47 @@ class TestConfigIO(unittest.TestCase):
                         f"应报 row_weights 行值不是 list，实际: {errs}")
 
 
+class TestZeroWeightCountContradiction(unittest.TestCase):
+    """v4.2 全面审查（零权重语义 0 = 绝不选择）：count/pick 候选不得超过非零权重数。
+
+    离线审计实测：weights=[1,0,0] 配「固定选 2」，旧实现用 1e-12 兜底凑数，
+    1000 次生成里零权重项被补选 1000 次 —— 用户理解为"绝不选择"的 0 被静默违背。
+    矛盾配置在配置期拒绝，运行期兜底宁可少选并大声说明。
+    """
+
+    def setUp(self) -> None:
+        import src.config_io as mod
+
+        self.mod = mod
+
+    def test_multi_count_exceeding_positive_weights_is_rejected(self) -> None:
+        errs = self.mod.validate_weight_config(
+            {1: {"type": "multi", "weights": [1, 0, 0], "count_options": [2]}})
+        self.assertTrue(any("count_options" in e and "非零权重" in e for e in errs),
+                        f"矛盾配置应被拒：{errs}")
+
+    def test_multi_count_within_positive_weights_passes(self) -> None:
+        ok = {1: {"type": "multi", "weights": [1, 1, 0], "count_options": [2]}}
+        self.assertEqual(self.mod.validate_weight_config(ok), [])
+        # 没配 weights（等权）谈不上矛盾
+        ok2 = {2: {"type": "multi", "count_options": [3]}}
+        self.assertEqual(self.mod.validate_weight_config(ok2), [])
+
+    def test_matrix_pick_exceeding_row_positive_is_rejected(self) -> None:
+        errs = self.mod.validate_weight_config(
+            {2: {"type": "matrix_multi", "cols": [1, 2, 3],
+                 "row_weights": {1: [1, 1, 0], 2: [1, 1, 1]},
+                 "pick_options": [3]}})
+        self.assertTrue(
+            any("pick_options" in e and "行 1" in e for e in errs),
+            f"行 1 正权重不足应被点名（行 2 足额不该报）：{errs}")
+
+    def test_matrix_pick_within_every_row_positive_passes(self) -> None:
+        ok = {2: {"type": "matrix_multi", "cols": [1, 2, 3],
+                  "row_weights": {1: [1, 1, 0], 2: [1, 1, 1]},
+                  "pick_options": [2]}}
+        self.assertEqual(self.mod.validate_weight_config(ok), [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

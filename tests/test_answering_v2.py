@@ -385,3 +385,47 @@ class TestMultiBlankTexts(unittest.TestCase):
         self.assertEqual(ans["field"], "name")
         self.assertIn("text", ans)
         self.assertNotIn("texts", ans)
+
+
+class TestMultiZeroWeightHardBan(unittest.TestCase):
+    """v4.2 全面审查：多选题 0 权重 = 绝不选择（端到端，经过生成器入口）。
+
+    审计实测：weights=[1,0,0]、随机选 1~3 个时，旧实现 k≥2 就会补选零权重项；
+    现在无论 k 抽到几，被 0 排除的选项都不出现在答卷里。矛盾配置
+    （count_options 超出正权重数）由 config_io 校验期拒绝。
+    """
+
+    def setUp(self) -> None:
+        import src.answering_v2 as mod
+
+        self.mod = mod
+
+    def test_zero_weight_option_never_appears_across_random_k(self) -> None:
+        from unittest import mock
+
+        from src import config as cfg_module
+
+        with mock.patch.dict(cfg_module.WEIGHT_CONFIG,
+                             {1: {"type": "multi", "weights": [1, 0, 0]}},
+                             clear=True):
+            for _ in range(300):
+                out = self.mod.generate_answer(
+                    {"q": 1, "type": "multi", "choices": [1, 2, 3]})
+                self.assertEqual(out["selected"], [1],
+                                 f"0 权重选项不得入选：{out}")
+
+    def test_zero_weight_option_never_appears_with_fixed_count(self) -> None:
+        """count=3 与正权重数 1 的矛盾已过不了校验；未过校验的兜底宁可少选。"""
+        from unittest import mock
+
+        from src import config as cfg_module
+
+        with mock.patch.dict(
+            cfg_module.WEIGHT_CONFIG,
+            {1: {"type": "multi", "weights": [1, 0, 0], "count_options": [3]}},
+            clear=True,
+        ):
+            out = self.mod.generate_answer(
+                {"q": 1, "type": "multi", "choices": [1, 2, 3]})
+            self.assertEqual(out["selected"], [1],
+                             "少选交由平台必答校验判失败，不违背 0 补数")

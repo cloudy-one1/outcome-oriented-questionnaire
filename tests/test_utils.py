@@ -305,6 +305,44 @@ class TestHumanPauseAbortCheck(unittest.TestCase):
         self.assertLess(got, 1.0, f"应在 2 个轮询片后就停，实际睡了 {got}s")
         self.assertEqual(len(slept), 2)
 
+
+# ============================================================================
+#  加权无放回抽样的零权重语义（v4.2 全面审查：0 = 绝不选择）
+# ============================================================================
+class TestWeightedSampleZeroWeightHardBan(unittest.TestCase):
+    """正权重不足 k 个时不再用 1e-12 兜底凑数。
+
+    离线审计实测：weights=[1,0,0] 配「固定选 2」，旧实现 1000 次生成里零权重
+    项被补选 1000 次 —— 用户理解为"绝不选择"的 0 被静默违背。现在零权重
+    不进抽样池：k 超出正权重数时宁可少选（并打一行 WARNING），矛盾配置本身
+    由 config_io 校验期拒绝。
+    """
+
+    def test_zero_weight_items_are_never_picked_even_when_k_exceeds(self) -> None:
+        for k in (1, 2, 3):
+            for _ in range(100):
+                picked = utils.weighted_sample_no_replace([1, 2, 3], [1, 0, 0], k)
+                self.assertEqual(picked, [1],
+                                 f"k={k} 时只有正权重的选项 1 可被选中，实际 {picked}")
+
+    def test_positive_only_weights_keep_old_behavior(self) -> None:
+        """没有零权重时行为不变：k 个互不相同、升序返回。"""
+        for _ in range(50):
+            picked = utils.weighted_sample_no_replace(
+                [1, 2, 3, 4], [4, 3, 2, 1], 3)
+            self.assertEqual(len(picked), 3)
+            self.assertEqual(len(set(picked)), 3)
+            self.assertEqual(picked, sorted(picked))
+
+    def test_invalid_weights_still_degrade_to_equal_without_ban(self) -> None:
+        """全 0 权重是"非法"而非"零权重"：照旧整体降级等权（长度补足 k）。
+
+        0=绝不选择管的是**合法权重里的 0**；权重本身不可用（全 0 / NaN）走
+        既有降级 —— 与 sanitize_weights 的口径同一把尺子。
+        """
+        picked = utils.weighted_sample_no_replace([1, 2, 3], [0, 0, 0], 2)
+        self.assertEqual(len(picked), 2, "非法权重降级等权，仍要选满 k 个")
+
     def test_completes_normally_when_never_aborted(self) -> None:
         slept: list = []
         got = utils.human_pause(

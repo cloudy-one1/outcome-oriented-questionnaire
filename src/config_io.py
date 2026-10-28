@@ -261,6 +261,10 @@ def validate_weight_config(
         # 5. multi 题：count_options / count_weights 校验
         if qtype_lc in {"multi", "checkbox"}:
             errors.extend(_validate_count_options(qi, qcfg))
+            # 5b. v4.2 零权重语义（0 = 绝不选择）：count 候选不得超过非零权重数。
+            #     要求选 3 个但只有 2 个非零权重是矛盾配置 —— 运行期只能"少选"
+            #     （平台必答校验会拒）或"违背 0"（污染数据），两者都不该被默默接受。
+            errors.extend(_validate_count_within_positive(qi, qcfg))
 
         # 6. scale 题：weights 长度必须匹配 scale 范围
         if qtype_lc in {"scale", "rating", "nps"} and "weights" in qcfg:
@@ -275,6 +279,7 @@ def validate_weight_config(
             errors.extend(_validate_count_options(
                 qi, qcfg, opts_key="pick_options", wts_key="pick_weights",
             ))
+            errors.extend(_validate_pick_within_positive(qi, qcfg))
 
         # 8. text：field 必须是字符串（如果给的话）
         if qtype_lc in {"text", "input", "textarea", "fillblank"}:
@@ -478,6 +483,70 @@ def _validate_count_options(
                 f"Q{qi} multi 的 {wts_key} 总和 = {positive_sum}，必须 > 0"
             )
 
+    return errs
+
+
+def _positive_count(weights: Any) -> int | None:
+    """权重列表里的非零项个数；列表缺失或自身非法（另行报错）时返回 None 不叠加。"""
+    if not isinstance(weights, (list, tuple)) or not weights:
+        return None
+    pos = 0
+    for v in weights:
+        ok, fv = _is_finite_number(v)
+        if not ok:
+            return None
+        if fv > 0:
+            pos += 1
+    return pos
+
+
+def _validate_count_within_positive(qi: int, qcfg: dict) -> list[str]:
+    """v4.2 零权重语义（0 = 绝不选择）：count 候选不得超过非零权重选项数。
+
+    要求「选 3 个」但 weights 只有 2 个非零项是**矛盾配置**：运行期只能
+    少选（平台必答校验拒收整份）或违背 0（把明确排除的选项塞进答卷），
+    两个出路都不该被默默接受 —— 在配置期直接拒绝。
+    """
+    errs: list[str] = []
+    co = qcfg.get("count_options")
+    pos = _positive_count(qcfg.get("weights"))
+    if co is None or pos is None or not isinstance(co, (list, tuple)):
+        return errs
+    max_count = max(
+        (float(v) for v in co if _is_finite_number(v)[0]),
+        default=None,
+    )
+    if max_count is not None and max_count > pos:
+        errs.append(
+            f"Q{qi} multi 的 count_options 最多要选 {int(max_count)} 个，"
+            f"但 weights 只有 {pos} 个非零权重 —— 0 = 绝不选择，这个矛盾配置"
+            f"无法兑现：把要排除的选项同时从 count_options 里去掉，或给足非零权重"
+        )
+    return errs
+
+
+def _validate_pick_within_positive(qi: int, qcfg: dict) -> list[str]:
+    """矩阵多选版：pick 候选逐行核对非零权重数（各行权重独立）。"""
+    errs: list[str] = []
+    co = qcfg.get("pick_options")
+    if co is None or not isinstance(co, (list, tuple)):
+        return errs
+    max_count = max(
+        (float(v) for v in co if _is_finite_number(v)[0]),
+        default=None,
+    )
+    if max_count is None:
+        return errs
+    rw = qcfg.get("row_weights")
+    rows = rw.items() if isinstance(rw, dict) else []
+    for rk, rv in rows:
+        pos = _positive_count(rv)
+        if pos is not None and max_count > pos:
+            errs.append(
+                f"Q{qi} matrix_multi 的 pick_options 最多要选 {int(max_count)} 个，"
+                f"但行 {rk!r} 的 row_weights 只有 {pos} 个非零权重"
+                f"（0 = 绝不选择，矛盾配置无法兑现）"
+            )
     return errs
 
 

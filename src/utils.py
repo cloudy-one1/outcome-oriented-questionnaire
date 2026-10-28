@@ -355,6 +355,14 @@ def weighted_sample_no_replace(
 
     非法权重（长度不符 / NaN / 总和为 0）一律降级为等概率抽样，
     判定与 :func:`weights_are_usable` 共用同一把尺子。
+
+    v4.2 全面审查（零权重语义）：**0 = 绝不选择**。正权重不足 k 个时不再用
+    1e-12 兜底凑数 —— 那会把用户明确排除的选项静默塞进答卷（权重 ``[1,0,0]``
+    配 count 2 时，两个零权重项必有一个被选中）。现在只从正权重里抽，
+    返回个数可能**少于 k**（并大声说明）：count 配置与权重的矛盾应当在校验期
+    被拒绝（``config_io.validate_weight_config``），能走到这里的都是没过校验的
+    运行时兜底 —— 少选交上去由平台的必答校验判失败，好过交一份违背 0 的
+    "成功"答卷污染数据。
     """
     n = len(pool)
     if n == 0:
@@ -362,10 +370,6 @@ def weighted_sample_no_replace(
     k = max(1, min(int(k), n))
 
     usable = weights_are_usable(weights, n)
-    # numpy 的 p= 抽样要求"非零概率的条目数 >= k"，否则抛
-    # ValueError: Fewer non-zero entries in p than size。
-    # 权重形如 [0, 0, 1] 而 k=2 时就会撞上（多选题里很自然：用户只想让一个选项出现，
-    # 但仍要求填满足少选个数）。此时走 A-Res —— 它给零权重一个 1e-12 的兜底。
     positive_cnt = (
         sum(1 for w in weights if w > 0) if usable else 0
     )
@@ -380,18 +384,24 @@ def weighted_sample_no_replace(
         return sorted(pool[int(i)] for i in picked)
 
     # A-Res（Efraimidis & Spirakis）：key = log(u)/w，取 top-k。
-    # 零/负权重不能直接除，给一个 1e-12 的下限 —— 于是它"几乎不会被选中"，
-    # 但在 k 大于正权重个数时仍能凑够 k 个不同选项（v1 原本就是这个行为）。
-    _W_FLOOR = 1e-12
+    # v4.2 起**零权重不进池**（0 = 绝不选择）：无 numpy 的环境里正权重本来就
+    # 不该被 floor 改变抽序，零权重则无论 k 多大都不许凑数。
     pairs: list[tuple[float, Any]] = []
     for i in range(n):
         if usable:
             w = float(weights[i])
+            if w <= 0:
+                continue
         else:
             w = 1.0
-        pairs.append((math.log(random.random()) / max(w, _W_FLOOR), pool[i]))
+        pairs.append((math.log(random.random()) / w, pool[i]))
+    take = min(k, len(pairs))
+    if usable and take < k:
+        print(f"  WARNING: 加权抽样：正权重选项只有 {take} 个，不足要求的 {k} 个 ——"
+              "0 权重按「绝不选择」处理，只选这 "
+              f"{take} 个（count 配置与权重矛盾应在配置校验期被拒）")
     pairs.sort(reverse=True)
-    return sorted(item for _, item in pairs[:k])
+    return sorted(item for _, item in pairs[:take])
 
 
 def equal_sample_no_replace(pool: list, k: int) -> list:
