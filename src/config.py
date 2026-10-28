@@ -39,6 +39,44 @@ WEIGHT_CONFIG: dict = {}
 
 
 # ============================================================================
+#  批次级配置快照（v4.2 全面审查 P1-3：批次配置隔离）
+# ============================================================================
+#
+#  生成器与计划此前直接读全局 WEIGHT_CONFIG —— 它是"当前会话的配置"而不是
+#  "本批次的配置"：Web 端运行中途导入一份新配置（或任何热更新）都会立刻改写
+#  全局，于是同一批答卷里前后份数用了不同的分布，而批次快照还停在启动时的
+#  那份，审计与比例都对不上。
+#
+#  接法：run_batch 开始时把本批次的不可变快照挂上来（set_active_batch_config），
+#  结束时摘下（传 None）。作答/计划侧统一走 effective_weight_config()：
+#  批次内 = 批次快照，批次外 = 全局。快照深拷贝冻结，之后全局怎么变都碰不到它。
+#  线程语义：一个进程同一时刻只有一个活动批次（Web 端由启动锁保证），挂/摘都
+#  发生在批次线程，读取方也在批次线程内 —— 不加锁，模块级赋值本身是原子的。
+_active_batch_config: dict | None = None
+
+
+def set_active_batch_config(cfg: dict | None) -> None:
+    """挂上（cfg 给出时，深拷贝冻结）或摘下（None）本批次的配置快照。"""
+    global _active_batch_config
+    if cfg is None:
+        _active_batch_config = None
+        return
+    import copy
+
+    _active_batch_config = copy.deepcopy(cfg)
+
+
+def active_batch_config() -> dict | None:
+    """本批次挂着的配置快照；没有活动批次时为 None。"""
+    return _active_batch_config
+
+
+def effective_weight_config() -> dict:
+    """作答 / 计划侧取配置的**唯一入口**：批次内用批次快照，批次外用全局。"""
+    return _active_batch_config if _active_batch_config is not None else WEIGHT_CONFIG
+
+
+# ============================================================================
 #  运行时常量（一般无需修改）
 # ============================================================================
 

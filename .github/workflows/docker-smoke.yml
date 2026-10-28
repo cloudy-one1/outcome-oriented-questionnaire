@@ -37,5 +37,12 @@ jobs:
         # 本地原样复跑同一条命令是通过的 —— 别再往镜像内容上找原因）。
         run: docker run --rm --entrypoint python wjx-autofill:smoke -c "import src.cli, src.pipeline, src.browser.driver_factory as m; print('import ok', m.__name__)"
 
+      - name: Manifest must not contain private data
+        # v4.2 全面审查 P1-8：白名单 COPY 的清单校验 —— 用无敏感内容的检查
+        # 证明镜像里没有数据库 / 导出表格类文件。命令同样写在一行（教训同上）。
+        # find 无命中时 grep 也无命中 → `&& exit 1` 不执行、`|| echo` 兜成 0；
+        # 命中任何文件则 grep 退出 0 → `exit 1`，整步失败。
+        run: docker run --rm --entrypoint sh wjx-autofill:smoke -c "find /app -name '*.db' -o -name '*.csv' -o -name '*.xlsx' -o -name '*.sqlite*' | grep . && exit 1 || echo 'manifest ok: no private data in image'"
+
       - name: Report image size
         run: docker image inspect wjx-autofill:smoke --format 'size={{.Size}} bytes'

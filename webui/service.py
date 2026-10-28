@@ -23,6 +23,7 @@ Tk 删除后两份仍各自维护——webui 这份有 ``_TYPE_LABELS`` 的契�
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 import secrets
@@ -199,6 +200,16 @@ class WebService:
         # 「清理历史」的一次性凭据：预览发一张、确认用掉一张（见 purge_preview）
         self._purge_lock = threading.Lock()
         self._purge_token: str | None = None
+        # v4.2 全面审查 P1-2：start_run 的「检查 running → 占用运行状态」两步之间
+        # 夹着配置处理、状态创建、续传确认与数据库操作，多线程 Web 服务下两个并发
+        # 请求可以同时穿过检查、各自启动一个批次执行器。此锁把"进入启动流程"变成
+        # 原子动作：非阻塞 acquire，抢不到说明另一次启动正在准备中，直接拒绝。
+        self._start_lock = threading.Lock()
+        # v4.2 全面审查 P1-4：最近一次导入的**完整结构化配置**。表格文本只承载
+        # weights / row_weights / order / options 这些列里表达得了的字段，
+        # count_options / count_weights / pick_* / dimension 等高级字段必须留在
+        # 这份结构里，启动重建时合并回去（见 build_weight_config）。
+        self._imported_struct: dict[int, dict] | None = None
 
     # ------------------------------------------------------------ 内部
 
@@ -278,6 +289,13 @@ class WebService:
             self._log(f"另存默认配置失败: {type(e).__name__}: {e}", "FAIL")
 
     def import_config(self, path: str) -> None:
+        # v4.2 全面审查 P1-3：导入会整体替换全局 WEIGHT_CONFIG，运行中的批次若还
+        # 在读全局，一批答案就会混用两份配置。服务端必须自己拦 —— 只禁界面按钮
+        # 挡不住直接打 API 的请求。（批次本身已改为读启动时的快照，这是第二道防线；
+        # 这里拒绝的是"导入成功"的假象与后续批次被静默换配置。）
+        if self.session.running:
+            raise ValidationError(
+                "批次运行中不能导入配置（会改变运行规则与统计口径）；请先停止运行")
         if not (self.session.availability.config_io and self._load_wc is not None):
             self._log("未加载 src/config_io，无法导入配置", "FAIL")
             return
@@ -303,6 +321,11 @@ class WebService:
                 f"配置校验未通过（{len(problems)} 项），已拒绝载入 —— "
                 "现有配置未动；修正 JSON 后重新导入")
         self._log("配置载入 · 校验通过", "INFO")
+
+        # v4.2 全面审查 P1-4：把校验通过的完整结构化配置留在手边 —— 表格文本
+        # 承载不了 count_options / count_weights / pick_* / dimension 等高级字段，
+        # 启动重建（build_weight_config）时按题号合并回去。下一次导入整体顶掉。
+        self._imported_struct = copy.deepcopy(cfg)
 
         # 整体替换语义（与 CLI --config 同一份实现）：合并会让上一份配置里
         # 本份没有的题号静默残留，于是"载入配置"的结果取决于你之前载入过什么。
@@ -621,6 +644,13 @@ class WebService:
                                            self.session.weight_texts)
         for w in warnings:
             self._log(w, "WARN")
+        # v4.2 全面审查 P1-4：表格文本 → cfg 的往返只保得住第 4 列表达得了的
+        # 字段。导入进来的高级字段（count_options / count_weights / pick_* /
+        # dimension / reverse …）从这里合并回去 —— 否则"导入成功"的提示是真的，
+        # 启动用的配置却是残缺的，「固定选几个」「指定排序」全部静默丢失。
+        if self._imported_struct:
+            known = {int(q["q"]) for q in self.session.questions if "q" in q}
+            cfg = _merge_imported_advanced(self._imported_struct, cfg, known)
         return cfg
 
     # ------------------------------------------------------------ 运行循环
@@ -630,7 +660,25 @@ class WebService:
 
         ``RunState`` 建好之后 worker 再也不读界面状态，所以跨线程读 UI 这件事
         在这里就断掉了 —— 这是整套 GUI 编排里最容易出事的一步。
+
+        v4.2 全面审查 P1-2：Web 服务是多线程的，"检查 running" 与 "占用运行状态"
+        之间夹着几十毫秒的准备（配置、续传确认、DB），两个并发请求能同时穿过
+        检查、各自起一个批次。进入启动流程必须先原子占用 ``_start_lock``：
+        非阻塞抢锁，抢不到说明另一次启动正在准备中 —— 拒绝而不是排队
+        （排队只会让第二个批次在第一个结束的瞬间悄悄开跑）。
         """
+        if self.session.running:
+            return
+        if not self._start_lock.acquire(blocking=False):
+            self._log("上一次启动还在准备中，本次启动请求已忽略", "WARN")
+            return
+        try:
+            self._start_run_locked()
+        finally:
+            self._start_lock.release()
+
+    def _start_run_locked(self) -> None:
+        """start_run 的本体（文档见 start_run）；并发互斥由 _start_lock 保证。"""
         if self.session.running:
             return
         url = self.session.url.strip()
@@ -851,6 +899,53 @@ class WebService:
                       f"{type(e).__name__}: {e}", "WARN")
 
 
+#: 第 4 列文本**能表达**的字段。合并语义（v4.2 全面审查 P1-4）：这些键以表格
+#: 解析结果为准 —— 表格里没有这个键 = 用户把那一格清空了，导入基座里的旧值
+#: 必须随之删除，不能复活；其余键（count_options / dimension …）属于导入
+#: 结构基座，表格动不到它们。
+_TEXT_OWNED_KEYS: tuple[str, ...] = ("weights", "options", "order", "row_weights")
+
+
+def _merge_imported_advanced(imported: dict, parsed: dict,
+                             known_qnums: set[int] | None = None) -> dict:
+    """表格解析结果 ⊕ 导入的结构化配置：高级字段保留，文本字段以表为准。
+
+    - 两边都有的题号：以导入条目为基座，解析结果的键整体覆盖（表格是用户
+      当下的意图）；解析结果里缺席的文本键（清空的格子）从基座里删掉。
+    - **表上有这题、解析却没产出**（文本被清空 / 格式错误被跳过）：文本键
+      照删，高级字段保留 —— 表格只动得了文本字段，用户清的是"权重那一格"，
+      不是"整道题的高级配置"。
+    - 只在导入里的题号（未探测 / 表上没有）：原样保留 —— 导入配置可以
+      先于探测到达，探测后启动是正常顺序。
+    - 只在解析结果里的题号：与旧版一致，直接用。
+    """
+    merged: dict = {}
+    for qi, pentry in parsed.items():
+        base = imported.get(qi)
+        if not isinstance(base, dict):
+            merged[qi] = pentry
+            continue
+        entry = copy.deepcopy(base)
+        entry.update(pentry)
+        for key in _TEXT_OWNED_KEYS:
+            if key not in pentry and key in entry:
+                del entry[key]
+        merged[qi] = entry
+    for qi, entry in imported.items():
+        try:
+            qi_int = int(qi)
+        except (TypeError, ValueError):
+            continue
+        if qi_int in merged:
+            continue
+        merged[qi_int] = copy.deepcopy(entry)
+        if known_qnums is not None and qi_int in known_qnums:
+            # 表上有这题但解析没产出：文本字段删除（用户清空的格子不许复活）
+            for key in _TEXT_OWNED_KEYS:
+                merged[qi_int].pop(key, None)
+    return merged
+
+
 def format_weights_for_entry(qcfg: dict) -> str:
     """cfg dict → 权重表第 4 列的字符串。是解析的逆运算，步骤 4 与正向一起抽走共用。"""
     weights = qcfg.get("weights")
@@ -874,4 +969,10 @@ def format_weights_for_entry(qcfg: dict) -> str:
             )
         ]
         return " | ".join(lines)
+    # v4.2 全面审查 P1-4：排序题的固定顺序也要渲染回第 4 列 —— 解析侧
+    # （weight_text._sort_entry）本来就认逗号分的顺序串，渲染侧此前却漏了它，
+    # 于是导入/续传恢复的排序配置在表上永远显示成空格子、重建时静默丢失。
+    order = qcfg.get("order")
+    if order:
+        return ",".join(str(x) for x in order)
     return ""

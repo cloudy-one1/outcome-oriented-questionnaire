@@ -112,6 +112,11 @@ def wait_for_manual_submit(
     :return: ``SUBMIT_SUCCESS`` 观察到提交效果；``SUBMIT_FAILED`` 等到超时也没人点
              （即"这一份没有交出去"）
     :raises SubmissionAborted: ``stop_check`` 置位 —— 不提交也不计失败
+
+    v4.2 全面审查 P1-1：等待开始**之前**抓正文基线。问卷介绍写着"感谢您的参与"
+    的卷子，人一个字都没点的时候，旧判据（正文里有强文案）立刻为真 → 空等 0 秒
+    就"提交成功"。现在强文案必须相对基线**新出现**才算数（成功容器/URL 变化
+    照旧），没人点就等满超时、老实落 SUBMIT_FAILED。
     """
     try:
         base_url: str | None = driver.current_url
@@ -119,7 +124,14 @@ def wait_for_manual_submit(
         # 基线拿不到就只靠强文案判定：拿 "" 兜底会让"任何 URL"都算变化，把错误页
         # 判成提交成功 —— 与 _wait_until_submit_effect 同一取舍。
         base_url = None
-    success_js = submit_success_detect_script()
+    try:
+        _text_val = driver.execute_script(
+            "return (document.body && document.body.innerText) || '';"
+        )
+    except TRANSIENT_DOM_EXCEPTIONS:
+        _text_val = None
+    base_text: str | None = None if _text_val is None else str(_text_val)
+    success_js = submit_success_detect_script(base_text)
     veto_js = submit_redirect_veto_script()
     print("  [人工提交] 已停在提交按钮前 —— 请在窗口里核对（要改的直接改），"
           f"由**你**点提交；最长等 {timeout:.0f}s，停止/Ctrl+C 可取消这一份")

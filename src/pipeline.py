@@ -32,7 +32,7 @@ from .config import (
     SUBMISSION_MAX_ATTEMPTS,
     MAX_SURVEY_PAGES,
     VERIFY_EVERY_N_QUESTIONS,
-    WEIGHT_CONFIG,
+    effective_weight_config,
 )
 # v3.0 权重锚定：按题干认领权重 + 未命中提示
 from .anchoring import report_unmatched_anchors
@@ -189,7 +189,8 @@ def _answer_current_page(
 
     # v3.0 权重锚定：带了 anchor 却认不到题的条目**不会**退回答题号（见 anchoring 契约 1），
     # 但必须说出来 —— 静默走等权，和用户没配一样，只是没人知道预设其实没生效。
-    for _anchor_line in report_unmatched_anchors(WEIGHT_CONFIG, questions):
+    # v4.2 全面审查 P1-3：读本批次快照（与作答侧同一份），不再直读全局。
+    for _anchor_line in report_unmatched_anchors(effective_weight_config(), questions):
         print("  " + _anchor_line)
 
     # v3.1 结构对拍：拿平台自报的 topic/type 与上面的探测结果比一次。锚定只能发现

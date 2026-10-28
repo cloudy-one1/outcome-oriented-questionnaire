@@ -436,9 +436,24 @@ def set_scale_script(
         }}
 
         // ---- 策略 B：容器内第 value 个 clickable 子项 ----
-        var sel = ['.rate','.star','.level','.score','.rating',
-                   '#div' + q, '#q' + q + '_area'].join(',');
-        var areas = document.querySelectorAll(sel);
+        // v4.2 全面审查 P1-5：定位必须钉死在目标题上。此前把 .rate/.star/.rating
+        // 这类通用类放到**整个文档**里找 —— 同页两道评分题时，文档序第一个
+        // 命中的往往是别的题的容器，点错题还报成功。现在的顺序：
+        //   1) 题号 id 容器（#divN / #qN_area，全文档查 id 是安全的）；
+        //   2) 题作用域内的通用类容器（scope 由题号锚定）；
+        //   3) 都找不到 → 失败，绝不用"别的题长得很像的控件"兜底。
+        var areas = [];
+        var byIdNodes = document.querySelectorAll('#div' + q + ', #q' + q + '_area');
+        for (var b = 0; b < byIdNodes.length; b++) areas.push(byIdNodes[b]);
+        if (areas.length === 0) {{
+            var qscope = document.getElementById('divquestion' + q)
+                      || document.querySelector('[data-q="' + q + '"]');
+            if (qscope) {{
+                var generic = qscope.querySelectorAll(
+                    '.rate, .star, .level, .score, .rating');
+                for (var g = 0; g < generic.length; g++) areas.push(generic[g]);
+            }}
+        }}
         for (var j = 0; j < areas.length; j++) {{
             var area = areas[j];
             area.scrollIntoView({{behavior:'instant', block:'center'}});
@@ -555,12 +570,18 @@ def _fill_matrix_script(q: int, row_selections: dict) -> str:
     return f"""
         var q = {q};
         var rowMap = {mapping_json};
-        var anyHit = false;
+        // v4.2 全面审查 P2-9：返回值从"至少命中一次"（anyHit）改成"每一行的
+        // 每一个请求值都真实写进控件"—— 页面缺行 / 缺列时必须报失败，
+        // 不能用"答了一半"冒充答完（平台对必答矩阵题逐行校验，半份会被弹回）。
+        var rowsTotal = 0, rowsDone = 0;
 
         Object.keys(rowMap).forEach(function(rowKey) {{
+            rowsTotal += 1;
             var raw = rowMap[rowKey];
             var isMulti = Array.isArray(raw);
             var wanted = isMulti ? raw : [raw];
+            // 每个请求值是否被真实写上（按下标记账，重复值也各自有据可查）
+            var got = {{}};
             // 先假设 name 约定是 "qN_rowIdx"
             var name = 'q' + q + '_' + rowKey;
             var boxes = document.querySelectorAll(
@@ -588,50 +609,52 @@ def _fill_matrix_script(q: int, row_selections: dict) -> str:
             for (var i = 0; i < boxes.length; i++) {{
                 var r = boxes[i];
                 var rv = parseInt(r.value);
-                var hit = false;
                 for (var w = 0; w < wanted.length; w++) {{
+                    if (got[w]) continue;
                     var colStr = String(wanted[w]);
                     if ((!isNaN(rv) && rv === parseInt(colStr))
                             || String(r.value) === colStr
                             || (r.getAttribute('data-value') || '') === colStr) {{
-                        hit = true;
-                        break;
-                    }}
-                }}
-                if (!hit) continue;
+                        got[w] = true;
 
-                var wrap = r.closest('label, td, span, li, div') || r;
-                wrap.scrollIntoView({{behavior:'instant', block:'center'}});
-                try {{ r.dispatchEvent(new MouseEvent('mousedown',{{bubbles:true,button:0}})); }} catch(_) {{}}
-                if (r.type === 'checkbox') {{
-                    // 复选框绝不能"先置 checked 再补一个合成 click" —— 那次 click
-                    // 会把它**再翻回未选中**，于是脚本报告成功、页面上一格都没勾。
-                    // radio 没这个问题（click 只会把它置为选中），所以旧序列原样保留。
-                    if (!r.checked) {{ r.click(); }}
-                    try {{ r.dispatchEvent(new Event('input', {{bubbles:true}})); }} catch(_) {{}}
-                    try {{ r.dispatchEvent(new Event('change', {{bubbles:true}})); }} catch(_) {{}}
-                }} else {{
-                    r.checked = true;
-                    try {{ r.dispatchEvent(new Event('input', {{bubbles:true}})); }} catch(_) {{}}
-                    try {{ r.dispatchEvent(new Event('change', {{bubbles:true}})); }} catch(_) {{}}
-                    try {{ r.dispatchEvent(new MouseEvent('click', {{bubbles:true,button:0}})); }} catch(_) {{}}
-                }}
-                // 装饰样式
-                var a = wrap.querySelector ? wrap.querySelector('a, .jqradio, .radio-label') : null;
-                if (a) {{
-                    a.classList.add('jqchecked', 'checked', 'active');
-                    if (!isMulti) {{
-                        // 行内单选才需要互斥；多选同行要能共存
-                        var sibs = wrap.parentNode ? wrap.parentNode.querySelectorAll('a,.jqradio,.radio-label') : [];
-                        sibs.forEach(function(s){{ if(s !== a) s.classList.remove('jqchecked','checked','active'); }});
+                        var wrap = r.closest('label, td, span, li, div') || r;
+                        wrap.scrollIntoView({{behavior:'instant', block:'center'}});
+                        try {{ r.dispatchEvent(new MouseEvent('mousedown',{{bubbles:true,button:0}})); }} catch(_) {{}}
+                        if (r.type === 'checkbox') {{
+                            // 复选框绝不能"先置 checked 再补一个合成 click" —— 那次 click
+                            // 会把它**再翻回未选中**，于是脚本报告成功、页面上一格都没勾。
+                            // radio 没这个问题（click 只会把它置为选中），所以旧序列原样保留。
+                            if (!r.checked) {{ r.click(); }}
+                            try {{ r.dispatchEvent(new Event('input', {{bubbles:true}})); }} catch(_) {{}}
+                            try {{ r.dispatchEvent(new Event('change', {{bubbles:true}})); }} catch(_) {{}}
+                        }} else {{
+                            r.checked = true;
+                            try {{ r.dispatchEvent(new Event('input', {{bubbles:true}})); }} catch(_) {{}}
+                            try {{ r.dispatchEvent(new Event('change', {{bubbles:true}})); }} catch(_) {{}}
+                            try {{ r.dispatchEvent(new MouseEvent('click', {{bubbles:true,button:0}})); }} catch(_) {{}}
+                        }}
+                        // 装饰样式
+                        var a = wrap.querySelector ? wrap.querySelector('a, .jqradio, .radio-label') : null;
+                        if (a) {{
+                            a.classList.add('jqchecked', 'checked', 'active');
+                            if (!isMulti) {{
+                                // 行内单选才需要互斥；多选同行要能共存
+                                var sibs = wrap.parentNode ? wrap.parentNode.querySelectorAll('a,.jqradio,.radio-label') : [];
+                                sibs.forEach(function(s){{ if(s !== a) s.classList.remove('jqchecked','checked','active'); }});
+                            }}
+                        }}
+                        break;   // 这个控件已消费一个请求值
                     }}
                 }}
-                anyHit = true;
-                if (!isMulti) break;
             }}
+            var rowOk = wanted.length > 0;
+            for (var w2 = 0; w2 < wanted.length; w2++) {{
+                if (!got[w2]) rowOk = false;
+            }}
+            if (rowOk) rowsDone += 1;
         }});
 
-        return anyHit;
+        return rowsTotal > 0 && rowsDone === rowsTotal;
     """
 
 
@@ -666,12 +689,15 @@ def fill_sort_script(q: int, order: list) -> str:
         if (byId && /sort/i.test(byId.className || '')) {{
             ul = byId;
         }} else {{
+            // v4.2 全面审查 P1-6：作用域必须钉死在目标题的容器**内部**。此前把
+            // scope 提升到 parentNode 再找第一个 sort 列表 —— 同级其他题的列表
+            // 也会被捞进来，重排落在别的题头上、隐藏值却写在本题名下。
             var scope = document.getElementById('div' + q)
                      || document.getElementById('divquestion' + q)
                      || document.querySelector('[data-q="' + q + '"]')
                      || document.querySelector('[id="q' + q + '"]');
-            scope = scope ? scope.parentNode : null;
-            var lists = scope ? scope.querySelectorAll('ul, ol') : [];
+            if (!scope) return false;
+            var lists = scope.querySelectorAll('ul, ol');
             for (var i = 0; i < lists.length; i++) {{
                 if (/sort/i.test(lists[i].className || '')) {{ ul = lists[i]; break; }}
             }}
@@ -699,15 +725,31 @@ def fill_sort_script(q: int, order: list) -> str:
         if (wanted.length !== lis.length) return false;   // 顺序里有认不出的项
         wanted.forEach(function(li) {{ ul.appendChild(li); }});
 
+        // ---- 2.5 核验目标列表真的被重排了（v4.2 全面审查 P1-6）----
+        // appendChild 是同步的，重排完再读一遍 DOM 顺序逐个比对节点身份 ——
+        // 页面自己的排序监听器若在同一事件循环里把顺序改回去，这里当场失败，
+        // 不能交一份"脚本说排了、页面还是原样"的排序题。
+        var lisNow = [];
+        for (var v2 = 0; v2 < ul.children.length; v2++) {{
+            if (ul.children[v2].tagName === 'LI') lisNow.push(ul.children[v2]);
+        }}
+        if (lisNow.length !== wanted.length) return false;
+        for (var v3 = 0; v3 < wanted.length; v3++) {{
+            if (lisNow[v3] !== wanted[v3]) return false;
+        }}
+
         // ---- 3. 写回提交值（隐藏 input 若存在） ----
         var inp = document.querySelector('input[name="q' + q + '"]');
         if (!inp) inp = ul.parentNode
             ? ul.parentNode.querySelector('input[type="hidden"]') : null;
         if (!inp) return false;
-        inp.value = wanted.map(function(li, idx) {{
+        var expected = wanted.map(function(li, idx) {{
             return li.getAttribute('value') || li.getAttribute('data-value')
                 || li.getAttribute('data-id') || String(idx + 1);
         }}).join(',');
+        inp.value = expected;
+        // 写完立即回读：同步监听器改写/清空提交值时当场失败，而不是报成功
+        if (String(inp.value) !== expected) return false;
         try {{ inp.dispatchEvent(new Event('input', {{bubbles:true}})); }} catch(_) {{}}
         try {{ inp.dispatchEvent(new Event('change', {{bubbles:true}})); }} catch(_) {{}}
         // jQuery UI sortable 的监听点在 sortstop 上，补一发让页面同步内部状态
@@ -929,20 +971,43 @@ def submit_button_fallback_script() -> str:
     """
 
 
-def submit_success_detect_script() -> str:
+def submit_success_detect_script(baseline_text: str | None = None) -> str:
     """_wait_until_submit_effect 的 success text/selector 命中检测。
 
     只保留**强**信号：URL 之外的「提交成功 / 感谢您的参与 / 感谢您的认真填写」
     与成功提示容器。「已完成」曾在此列，v2.8 移除 —— 它太常见于页面自带文案
     （答题进度、其它题的标签），6s 窗口内命中即会把失败判成成功，偏危险方向；
     真正的完成页必然同时命中上面某个强信号，代价只是退化为本就保守的 unknown。
+
+    v4.2 全面审查 P1-1：强文案必须是提交后**新出现**的（状态转换），不能只是
+    "页面上有"。问卷介绍本来就可能写着"感谢您的参与"——判定点还没点提交，
+    正文匹配已经为真，"人没交、机器记成功"。``baseline_text`` 是点击/等待开始
+    **之前**的正文快照：基线里已有强文案时，文案不再构成成功证据，只剩可见的
+    专用成功容器或（调用方另查的）URL 变化能确认成功；确认不了就轮询到超时，
+    按 unknown / failed 保守计。基线拿不到（传 None，页面正在跳转等）保持旧
+    行为 —— 那种场景下宁可用旧判据，也不能把真成功全判成 unknown 触发重复提交。
+
+    成功容器还补了可见性检查：``querySelector`` 不管 ``display:none``，
+    模板里常驻的隐藏 .success 节点此前一进页面就算命中。
     """
-    return """
+    baseline_json = "null" if baseline_text is None else json.dumps(baseline_text)
+    return f"""
+        var baseline = {baseline_json};
+        function strongIn(s) {{
+            return s.indexOf('提交成功') !== -1 ||
+                   s.indexOf('感谢您的参与') !== -1 ||
+                   s.indexOf('感谢您的认真填写') !== -1;
+        }}
+        // 专用成功容器：必须可见（querySelector 不管 display:none）
+        var succ = document.querySelectorAll('.submit-succ, .success-tip, #success-tip, .success');
+        for (var i = 0; i < succ.length; i++) {{
+            var r = succ[i].getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) return true;
+        }}
         var txt = (document.body && document.body.innerText) || '';
-        return txt.indexOf('提交成功') !== -1 ||
-               txt.indexOf('感谢您的参与') !== -1 ||
-               txt.indexOf('感谢您的认真填写') !== -1 ||
-               !!document.querySelector('.submit-succ, .success-tip, #success-tip, .success');
+        if (!strongIn(txt)) return false;
+        // 强文案只在"基线里没有 → 现在有了"这条转换上才算证据
+        return baseline === null || !strongIn(baseline);
     """
 
 

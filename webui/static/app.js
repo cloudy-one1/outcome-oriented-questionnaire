@@ -210,7 +210,9 @@
   function paintAvailability(avail, busy, running) {
     var detectable = !!avail.selenium;
     els["btn-detect"].disabled = !detectable || running || busy.indexOf("detect") >= 0;
-    els["file-import"].disabled = !avail.config_io;
+    // v4.2 全面审查 P1-3：运行中禁用配置导入 —— 服务端同刻也直接拒绝（按钮
+    // 禁用只挡得住鼠标，挡不住直接打 API），双保险防"一批答案混用两份配置"。
+    els["file-import"].disabled = !avail.config_io || running;
     els["btn-export"].disabled = !avail.config_io;
     els["btn-save-default"].disabled = !avail.config_io;
     els["btn-run"].disabled = running;

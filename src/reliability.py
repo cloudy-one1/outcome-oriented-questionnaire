@@ -6,14 +6,17 @@
 
 口径限制（必须显式声明，不要假装它不存在）
     ``answers`` 表唯一的写入口是**作答阶段**的 ``question_stage._answer_one_question``
-    （逐题 record_answer，点提交之前），而 ``runs`` 只有整批的
-    ``success_count`` / ``fail_count`` 计数 —— schema 里**没有**「这一份最终提交
-    成功了没有」的逐份标记。因此本模块测出的 α 把失败 / UNKNOWN 的那几份也算了
-    进去（它们可能根本没到达平台）。这是落库时机决定的既有上界，不是本模块的选择；
-    每个 :class:`DimensionReport` 都随身携带 ``scope_caveat`` 一行说明。
-    接缝已留好：:func:`measure_dimensions` 的 ``submission_filter`` 参数
-    （按 submission_index 过滤）今天恒为 None，P2 若给逐份补上状态列，
-    调用处不必再动签名。
+    （逐题 record_answer，点提交之前）。v4.1 起 ``submissions`` 表已有逐份成败，
+    于是口径分两档、各自随身声明（:class:`DimensionReport` 的 ``scope_caveat``）：
+
+    * **默认**（``status_scope=None``）：把失败 / UNKNOWN 的那几份也算进去
+      （它们可能根本没到达平台）—— 适合"看这批作答本身稳不稳"；
+    * **``status_scope='success'``**：只统计逐份成败为 success 的提交，
+      失败 / 未知 / 无逐份行（老库、未判完的尝试）一律不计入，
+      **缺状态的份数不补成成功** —— 适合"这些数字代表已入库答卷的信度"。
+
+    CLI（``--report-alpha``）默认走 success 口径：报告要说的是"回收数据可不可信"，
+    不是"我们的作答过程多稳定"。
 
 其余决策的出处都在设计稿里：k<3 的维度不参与（§6「报了就是骗人」）、
 填空/多选不参与 α（§1 非目标）、反向题必须显式声明（§4）。
@@ -41,11 +44,18 @@ __all__ = [
 _SCORABLE_TYPES = frozenset({"scale", "single", "dropdown", "matrix"})
 
 # 每个报告都带的一句话。放进常量而不是散落措辞，是为了让测试能钉住它 ——
-# 哪天 answers 表真有了逐份状态，这条常量的删除会先把测试弄红，
-# 而不是让口径声明静默蒸发。
+# 哪天口径变了，这条常量的修改会先把测试弄红，而不是让口径声明静默蒸发。
+# v4.2 全面审查 P2-12：逐份成败表（submissions）已存在，"无逐份标记"的上界
+# 不再成立 —— 两个口径各自带一句：
+#   * 默认（不过滤）：明确说出"含失败/未知尝试"，并指向 success 口径；
+#   * success：只算明确成功的提交，缺状态的数据**不补成成功**。
 _SCOPE_CAVEAT: str = (
-    "历史库无逐份成功标记（answers 在作答阶段落库、早于点提交），"
-    "本 α 含 failed/UNKNOWN 那几份 —— 见 src/reliability.py 模块 docstring 的口径限制"
+    "默认口径：包含 failed/UNKNOWN 的尝试份（逐份成败已落库 submissions 表，"
+    "本报告未按其过滤）—— 只统计明确成功提交请用 status_scope='success'"
+)
+_SCOPE_CAVEAT_SUCCESS: str = (
+    "口径：仅明确成功的提交（按 submissions 逐份成败表过滤）；"
+    "failed / unknown / 无状态的尝试不计入 —— 历史缺少状态的份数不补成成功"
 )
 
 # query_answers 自带 LIMIT（默认 5000），一份 100×60 题的批次就会撞上。
@@ -182,6 +192,7 @@ def measure_dimensions(
     dimensions: Mapping[str, Sequence[int]],
     reverse: Collection[int] = (),
     submission_filter: Optional[Callable[[int], bool]] = None,
+    status_scope: Optional[str] = None,
 ) -> list[DimensionReport]:
     """按维度分组，从某 run 的已落库答案算**实测** α（只读，不改任何行为）。
 
@@ -191,15 +202,55 @@ def measure_dimensions(
         **该维度的观测值域**而不是题面满分 —— 历史库没存题面满分（answers 只有
         0-based 索引，没有选项数），这是当前唯一可行的口径，报告 ``notes`` 里
         会注明；某极端选项从未被选到时，翻转因此可能整体偏心。
-    :param submission_filter: 预留位，按 ``submission_index`` 过滤「哪些份算数」。
-        **今天恒传 None** —— schema 里没有逐份成败标记（见模块 docstring 的
-        口径限制），传别的也是无据可滤。P2 补上逐份状态后由它接入，
-        本函数与调用方的签名都不用变。
+    :param submission_filter: 按 ``submission_index`` 过滤「哪些份算数」。
+        v4.2 P2 落地：逐份成败已在 ``submissions`` 表，与 ``status_scope``
+        组合过滤（两者同时给时取交集）。
+    :param status_scope: ``None``（默认，全部尝试）或 ``'success'`` —— 只统计
+        逐份成败为 success 的提交；失败 / unknown / **没有逐份行**的尝试一律
+        不计入（历史缺少状态的数据不补成成功）。报告的 ``scope_caveat`` 与
+        ``notes`` 会携带口径与各自被排除的份数。
 
     缺失答案（某题某份没记录）按**完整份**取交集处理：α 需要同一个人的一排分，
     把不同人混拼进一列会虚增方差 —— 少算几份是对的，拼出来才是错的。
     """
+    if status_scope is not None and status_scope != "success":
+        raise ValueError(f"status_scope 不认识: {status_scope!r}（支持：'success'）")
+
     rows = history_db.query_answers(run_id=run_id, limit=_ANSWER_SCAN_LIMIT)
+
+    # --- 口径过滤（v4.2 全面审查 P2-12） ----------------------------------
+    scope_caveat = _SCOPE_CAVEAT
+    status_note: Optional[str] = None
+    if status_scope == "success":
+        statuses = history_db.submission_statuses(run_id)
+        success_idx = {i for i, s in statuses.items() if s == "success"}
+        n_failed = sum(1 for s in statuses.values() if s == "failed")
+        n_unknown = sum(1 for s in statuses.values() if s == "unknown")
+        subs_seen = set(statuses)
+        for row in rows:
+            try:
+                subs_seen.add(int(row["submission_index"]))
+            except (TypeError, ValueError):
+                continue
+        n_stateless = len(subs_seen - set(statuses))
+        scope_caveat = _SCOPE_CAVEAT_SUCCESS
+        ok = success_idx.__contains__
+        if submission_filter is None:
+            submission_filter = ok
+        else:
+            user_filter = submission_filter
+            submission_filter = lambda sub: user_filter(sub) and ok(sub)  # noqa: E731
+        if statuses:
+            status_note = (
+                f"样本口径：仅计入明确成功的提交 {len(success_idx)} 份"
+                f"（另有 failed {n_failed}、unknown {n_unknown}、"
+                f"无逐份状态 {n_stateless} 份尝试未计入）"
+            )
+        else:
+            status_note = (
+                "该 run 没有逐份成败记录（老库或尝试未判完）：没有任何一份能被"
+                "证明成功提交 → 全部样本不计入，α 不可计算"
+            )
 
     # scores[qnum][submission_index] = 等距分；types_seen 只为排除理由服务
     scores: dict[int, dict[int, float]] = {}
@@ -257,7 +308,11 @@ def measure_dimensions(
                 )
                 for q in ordered
             ]
-            reports.append(DimensionReport(name, k=0, n=0, alpha=None, excluded=excluded))
+            reports.append(DimensionReport(
+                name, k=0, n=0, alpha=None, excluded=excluded,
+                scope_caveat=scope_caveat,
+                notes=[status_note] if status_note else [],
+            ))
             continue
 
         # 完整份：该维度每题都有分的 submission_index 交集（见 docstring 末段）
@@ -274,7 +329,9 @@ def measure_dimensions(
         if len(subs) < 2:
             reports.append(DimensionReport(
                 name, k=len(usable), n=len(subs), alpha=None, excluded=excluded,
-                notes=["完整份数 < 2，没有方差可分解（哪几题缺了哪几份见上）"],
+                scope_caveat=scope_caveat,
+                notes=([status_note] if status_note else [])
+                + ["完整份数 < 2，没有方差可分解（哪几题缺了哪几份见上）"],
             ))
             continue
 
@@ -311,7 +368,8 @@ def measure_dimensions(
             excluded=excluded,
             reversed_items=rev_applied,
             observed_range=(obs_min, obs_max),
-            notes=notes,
+            scope_caveat=scope_caveat,
+            notes=[status_note] + notes if status_note else notes,
         ))
     return reports
 

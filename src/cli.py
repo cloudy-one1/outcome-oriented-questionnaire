@@ -32,6 +32,7 @@ from .config import (
     DEFAULT_TOTAL_SUBMISSIONS,
     DEFAULT_USE_UC,
     WEIGHT_CONFIG,
+    set_active_batch_config,
 )
 from .exceptions import (
     TRANSIENT_DOM_EXCEPTIONS,
@@ -596,6 +597,66 @@ def run_batch(
         "unknown" 会单独打印一行 UNKNOWN 以便事后复盘。
         run_one_submission 返回 "success" / "failed" / "unknown" 三态字符串。
     """
+    # v4.2 全面审查 P1-3：把本批次快照挂成「活动批次配置」，生成器 / 计划 / 锚定
+    # 报告都改读它（effective_weight_config）—— 运行中的热更新（Web 端导入等）
+    # 改的只是全局，不能穿透进正在执行的批次。weight_config=None（CLI 未配
+    # --config）时落回全局，与旧版行为一致。finally 必摘，防止残留到下一批。
+    set_active_batch_config(weight_config)
+    try:
+        return _run_batch_inner(
+            survey_url=survey_url,
+            total_submissions=total_submissions,
+            browser=browser,
+            use_uc=use_uc,
+            history_db=history_db,
+            weight_config=weight_config,
+            no_record_text=no_record_text,
+            target_success=target_success,
+            max_attempts=max_attempts,
+            resume_run_id=resume_run_id,
+            resume_done=resume_done,
+            resume_fail=resume_fail,
+            state=state,
+            on_round=on_round,
+            log=log,
+            stop_check=stop_check,
+            error_suffix=error_suffix,
+            headless=headless,
+            user_data_dir=user_data_dir,
+            max_total_seconds=max_total_seconds,
+            rescue_gaps=rescue_gaps,
+            manual_submit=manual_submit,
+        )
+    finally:
+        set_active_batch_config(None)
+
+
+def _run_batch_inner(
+    survey_url: str = "",
+    total_submissions: int = DEFAULT_TOTAL_SUBMISSIONS,
+    *,
+    browser: str = DEFAULT_BROWSER,
+    use_uc: bool = DEFAULT_USE_UC,
+    history_db: Any | None = None,
+    weight_config: dict | None = None,
+    no_record_text: bool = False,
+    target_success: bool = False,
+    max_attempts: int | None = None,
+    resume_run_id: int | None = None,
+    resume_done: int = 0,
+    resume_fail: int = 0,
+    state: RunState | None = None,
+    on_round: "Callable[[RoundOutcome], None] | None" = None,
+    log: "Callable[[str], None] | None" = None,
+    stop_check: "Callable[[], bool] | None" = None,
+    error_suffix: str = "",
+    headless: bool = False,
+    user_data_dir: str | None = None,
+    max_total_seconds: float | None = None,
+    rescue_gaps: bool = False,
+    manual_submit: bool = False,
+) -> tuple[int, int]:
+    """run_batch 的本体（文档见 run_batch）；配置快照的挂/摘由外层包装负责。"""
     # ----- 延迟导入（运行时强依赖） -----
     from selenium.common.exceptions import (  # noqa: F401 - 供下方 except 分支使用
         InvalidSessionIdException,
@@ -1353,8 +1414,13 @@ def _report_reliability(history_db: Any, weight_config: dict) -> None:
         print(f"[信度] Run #{run_id} 没有可参与 α 的题（需要量表/单选/下拉/矩阵单选）")
         return
     print(f"[信度] Run #{run_id} 实测 Cronbach α —— {how}")
+    # v4.2 全面审查 P2-12：默认只统计**明确成功**的提交 —— 这份报告要回答的是
+    # "已入库答卷可不可信"，failed / unknown / 无状态的尝试混进来会把 n 撑大、
+    # 把"3 份尝试"说成"3 份成功答卷"。口径与排除明细随报告打印（scope_caveat）。
     for line in reliability.format_reports(
-        reliability.measure_dimensions(history_db, run_id, dims, reverse)
+        reliability.measure_dimensions(
+            history_db, run_id, dims, reverse, status_scope="success"
+        )
     ):
         print(line)
 

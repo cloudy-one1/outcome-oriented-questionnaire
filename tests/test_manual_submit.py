@@ -67,12 +67,14 @@ class FakeDriver:
         urls: list[str] | None = None,
         success: Any = False,
         url_error: BaseException | None = None,
+        body_text: str = "",
     ) -> None:
         self._urls = list(urls or ["https://www.wjx.cn/vm/x.aspx#0"])
         self._url_reads = 0
         self._success = success
         self._success_reads = 0
         self._url_error = url_error
+        self._body_text = body_text
         self.scripts: list[tuple[str, tuple[Any, ...]]] = []
 
     @property
@@ -85,12 +87,17 @@ class FakeDriver:
 
     def execute_script(self, script: str, *args: Any) -> Any:
         self.scripts.append((script, args))
-        if "innerText" in script or "submit-succ" in script:
+        # v4.2 P1-1：成功判定脚本带 strongIn 标记（基线感知版）—— 先认它，
+        # 它自己也含 innerText，不能落进下面的基线分支
+        if "strongIn" in script:
             if isinstance(self._success, (list, tuple)):
                 value = self._success[min(self._success_reads, len(self._success) - 1)]
                 self._success_reads += 1
                 return value
             return self._success
+        if "innerText" in script:
+            # 正文基线快照（提交效果判定开始前读一次）
+            return self._body_text
         return True
 
 
@@ -119,10 +126,12 @@ def test_returns_success_on_the_same_strong_text_the_auto_path_uses(clock: FakeT
     """URL 不变的 AJAX 提交也要认得，且用的就是那个共用脚本（不另立判据）。"""
     driver = FakeDriver(success=True)
     assert _run(driver) == SUBMIT_SUCCESS
-    success_scripts = [s for s, _a in driver.scripts if "innerText" in s]
     from src.interactions._scripts import submit_success_detect_script
+    success_scripts = [s for s, _a in driver.scripts if "strongIn" in s]
+    # v4.2 P1-1：判据带基线 —— 本用例的假件返回空正文，两边的基线语义一致
+    # （自动路径同刻从真实页面抓），脚本体必须逐字节相同。
     assert success_scripts and all(
-        s == submit_success_detect_script() for s in success_scripts
+        s == submit_success_detect_script("") for s in success_scripts
     ), "成功判据被换了一份，人提交的份就与自动提交的份不可比了"
 
 
@@ -139,7 +148,7 @@ def test_lock_is_holding_while_we_wait(clock: FakeTime) -> None:
 
     class _Spy(FakeDriver):
         def execute_script(self, script: str, *args: Any) -> Any:
-            if "innerText" in script:
+            if "strongIn" in script:
                 seen.append(lock.is_holding)
             return super().execute_script(script, *args)
 

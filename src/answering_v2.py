@@ -33,6 +33,7 @@ import random
 from typing import Any, Optional
 
 from . import anchoring, distribution, plan
+from .config import active_batch_config
 from .persona import Persona, active_persona
 from .utils import (
     sanitize_weights,
@@ -252,12 +253,17 @@ def _weighted_permutation(
 
 
 def _cfg_entry(q: dict) -> dict:
-    """该题生效的配置条目（v3.0：锚点优先、题号兜底；没配置则空 dict）。"""
-    return anchoring.lookup_weight_entry(q) or {}
+    """该题生效的配置条目（v3.0：锚点优先、题号兜底；没配置则空 dict）。
+
+    v4.2 全面审查 P1-3：查的是**本批次挂着的快照**（``active_batch_config``），
+    没有活动批次才落到全局 ``WEIGHT_CONFIG`` —— 运行中导入/热更新改的是全局，
+    不能再穿透进正在执行的批次。
+    """
+    return anchoring.lookup_weight_entry(q, active_batch_config()) or {}
 
 
 def _cfg_weights(q: dict) -> Optional[list[float]]:
-    """优先从 q['weights'] 取，其次按「锚点 → 题号」查全局配置（v3.0 见 anchoring）。"""
+    """优先从 q['weights'] 取，其次按「锚点 → 题号」查批次/全局配置（v3.0 见 anchoring）。"""
     if "weights" in q and q["weights"]:
         return list(q["weights"])
     cfg = _cfg_entry(q)
@@ -384,6 +390,14 @@ def generate_answer(question: dict) -> dict[str, Any]:
         n = len(indices)
         if cfg and "count_options" in cfg:
             count_opts = list(cfg["count_options"])
+            if not count_opts:
+                # v4.2 全面审查 P2-11：空候选此前穿过校验、在这里炸成裸 IndexError。
+                # 校验器已拒绝该配置；生成器侧也给出能定位到字段的人话，防御
+                # 直接构造 WEIGHT_CONFIG / 绕过校验的调用方。
+                raise ValueError(
+                    f"Q{question.get('q')} 的 count_options 是空列表 —— 抽不出任何"
+                    "「选几个」：请删除该键（走默认 1~N 均匀分布），或至少给一个 >= 1 的候选值"
+                )
             count_wts = sanitize_weights(
                 list(cfg.get("count_weights", [1] * len(count_opts))),
                 len(count_opts),

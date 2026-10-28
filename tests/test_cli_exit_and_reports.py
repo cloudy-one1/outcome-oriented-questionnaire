@@ -180,8 +180,8 @@ def test_alpha_report_uses_the_declared_dimensions(
     dims = {"焦虑": [1, 2, 3]}
     seen: dict[str, Any] = {}
 
-    def measure(db: Any, run_id: int, given: Any, reverse: Any) -> list[str]:
-        seen.update(run_id=run_id, dims=given, reverse=reverse)
+    def measure(db: Any, run_id: int, given: Any, reverse: Any, **kw) -> list[str]:
+        seen.update(run_id=run_id, dims=given, reverse=reverse, kwargs=kw)
         return ["raw-report"]
 
     monkeypatch.setattr(reliability, "dimensions_from_config", lambda _cfg: dims)
@@ -190,7 +190,9 @@ def test_alpha_report_uses_the_declared_dimensions(
     monkeypatch.setattr(reliability, "format_reports", lambda reps: [f"α={r}" for r in reps])
     cli._report_reliability(FakeRuns([{"id": "7"}]), {})
     # 库里 id 是字符串，进 measure_dimensions 前必须已经变回 int
-    assert seen == {"run_id": 7, "dims": dims, "reverse": [2]}
+    # v4.2 P2-12：CLI 的报告口径必须钉在"仅明确成功的提交"上
+    assert seen == {"run_id": 7, "dims": dims, "reverse": [2],
+                    "kwargs": {"status_scope": "success"}}
     out = capsys.readouterr().out
     assert "维度取自权重配置里声明的 dimension" in out
     assert "α=raw-report" in out
@@ -203,7 +205,7 @@ def test_alpha_report_fallback_says_it_is_not_a_construct(
     monkeypatch.setattr(reliability, "dimensions_from_config", lambda _cfg: {})
     monkeypatch.setattr(reliability, "reverse_from_config", lambda _cfg: [])
     monkeypatch.setattr(reliability, "implicit_dimension", lambda db, run_id: {"全体": [1, 2]})
-    monkeypatch.setattr(reliability, "measure_dimensions", lambda *a: [])
+    monkeypatch.setattr(reliability, "measure_dimensions", lambda *a, **kw: [])
     monkeypatch.setattr(reliability, "format_reports", lambda _reps: ["兜底那一行"])
     cli._report_reliability(FakeRuns([{"id": 3}]), {})
     out = capsys.readouterr().out
@@ -218,7 +220,7 @@ def test_alpha_report_stops_when_no_question_can_enter_alpha(
     monkeypatch.setattr(reliability, "reverse_from_config", lambda _cfg: [])
     monkeypatch.setattr(reliability, "implicit_dimension", lambda db, run_id: {})
     monkeypatch.setattr(reliability, "measure_dimensions",
-                        lambda *a: pytest.fail("没有可测的题就不该去读答卷"))
+                        lambda *a, **kw: pytest.fail("没有可测的题就不该去读答卷"))
     cli._report_reliability(FakeRuns([{"id": 9}]), {})
     assert "没有可参与 α 的题" in capsys.readouterr().out
 

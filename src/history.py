@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS runs (
     error_message           TEXT,
     weight_config_json      TEXT,                       -- V2.1 断点续传：本次批次的权重配置 JSON
     started_at              TEXT    NOT NULL DEFAULT (datetime('now')),
+    heartbeat_at            TEXT,                       -- v4.2 P1-7：最后一次落库时间（record_answer /
+                                                        -- record_submission_result 刷新），reap 按它判失活
     finished_at             TEXT
 );
 
@@ -141,7 +143,7 @@ WHERE id NOT IN (
 """
 
 # 目标 schema 版本（写入 SQLite 的 ``PRAGMA user_version``）
-_SCHEMA_VERSION: int = 3
+_SCHEMA_VERSION: int = 4
 
 
 def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
@@ -182,7 +184,7 @@ _MIGRATION_SURVEY_KEY_INDEX: str = (
 def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
     """v2 → v3：补 ``runs.survey_key`` 并回填全部历史批次。
 
-    回填只能在 Python 侧算：归一化规则（忽略 jq/m/vm/vj/hj 投放前缀与 query
+    回填只能在 Python 侧算：归一化规则（忽略 jq/m/vm/vj 投放前缀与 query
     差异、host 去 www）不是 SQL 表达式能干净写出来的。而且**留着 NULL 就等于
     没修** —— ``find_resumable_run`` 按键匹配，老批次没键就永远续不上，
     而那正是这次要消灭的"静默不续传"症状。
@@ -200,10 +202,28 @@ def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
     conn.execute(_MIGRATION_SURVEY_KEY_INDEX)
 
 
+# runs.heartbeat_at（v4.2 全面审查 P1-7）：进程失活判定从"启动时间多老"改为
+# "最后一次落库多久之前"。start_run 刻意**不**写心跳（NULL）—— COALESCE 会
+# 落回 started_at，而"启动后连一次落库都没有"的批次寿命上限本来就该是阈值；
+# 心跳由 record_answer / record_submission_result 每次落库时刷新，正常批次每份
+# 答卷至少写一次库。老库补列即可，NULL 的语义两条路完全一致。
+_MIGRATION_ADD_HEARTBEAT_COLUMN: str = (
+    "ALTER TABLE runs ADD COLUMN heartbeat_at TEXT;"
+)
+
+
+def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
+    """v3 → v4：补 ``runs.heartbeat_at`` 列（老行为靠 COALESCE(started_at) 兜底）。"""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
+    if "heartbeat_at" not in cols:
+        conn.execute(_MIGRATION_ADD_HEARTBEAT_COLUMN)
+
+
 # 迁移脚本表：key = 升级**到**的版本号。只跑一次，跑完写进 user_version。
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     2: _migrate_v1_to_v2,
     3: _migrate_v2_to_v3,
+    4: _migrate_v3_to_v4,
 }
 def _require_lastrowid(cur: sqlite3.Cursor, what: str) -> int:
     """取 INSERT 的自增主键；lastrowid 为 None 时给出可定位的报错。
@@ -429,6 +449,24 @@ class SubmissionHistory:
                 ),
             )
 
+    # v4.2 全面审查 P1-7：进程失活判定的心跳源。任何一次落库（逐题明细 /
+    # 逐份成败）都是"这个批次还活着"的证据；reap_stale_runs 只 reap 心跳
+    # （或启动时间）老于阈值、且仍在 running 的行。只在 running 行上刷，
+    # 收尾后的行不动。
+    _HEARTBEAT_SQL = (
+        "UPDATE runs SET heartbeat_at = datetime('now')"
+        " WHERE id = ? AND status = 'running'"
+    )
+
+    def _touch_heartbeat_locked(self, run_id: int) -> None:
+        """调用方必须已持有 ``self._lock``（与主写入同一事务粒度，不加锁）。"""
+        try:
+            self._conn.execute(self._HEARTBEAT_SQL, (int(run_id),))
+        except sqlite3.Error:
+            # 心跳是尽力而为的信号：写不上（连接异常等）不拖垮主写入，
+            # 最坏后果是该批次因无心跳被判失活 —— 与修复前的行为一致。
+            logger.debug("heartbeat 刷新失败（忽略）", exc_info=True)
+
     def record_answer(
         self,
         run_id: int,
@@ -470,7 +508,9 @@ class SubmissionHistory:
                         int(elapsed_ms),
                     ),
                 )
-                return _require_lastrowid(cur, "record_answer")
+                answer_id = _require_lastrowid(cur, "record_answer")
+                self._touch_heartbeat_locked(run_id)
+                return answer_id
             except sqlite3.IntegrityError:
                 # 可读性建议 5.1：收窄到唯一能触发兜底的异常——违反唯一索引
                 # （老库 dedup 失败或极端并发产生重复）。
@@ -608,6 +648,20 @@ class SubmissionHistory:
         )
         with self._locked():
             self._conn.execute(sql, (int(run_id), int(submission_index), final_status))
+            self._touch_heartbeat_locked(run_id)
+
+    def submission_statuses(self, run_id: int) -> dict[int, str]:
+        """一个 run 的逐份成败映射（``{submission_index: final_status}``）。
+
+        v4.2 全面审查 P2-12：信度统计按它区分「明确成功的提交」与「失败 /
+        unknown / 无状态的尝试」。老批次没有逐份行 → 返回空 dict，调用方
+        必须把"无状态"显式说出来，不得默认当成功。
+        """
+        rows = self._query(
+            "SELECT submission_index, final_status FROM submissions WHERE run_id = ?",
+            (int(run_id),),
+        )
+        return {int(r["submission_index"]): str(r["final_status"]) for r in rows}
 
     def resume_progress(self, run_id: int) -> tuple[int, int]:
         """续传进度的**单一真相**：返回 ``(已成功份数, 已烧掉的失败尝试数)``。
@@ -651,8 +705,15 @@ class SubmissionHistory:
         崩溃批次应有的语义是 ``failed``（RunState.mark_crashed 就是这么定的），
         本方法就是把漏掉的那步在下次启动时补上。
 
-        :param stale_after_minutes: 只处理开始时间早于此阈值的行，避免把
-                                    **另一个进程正在跑**的批次误判掉
+        v4.2 全面审查 P1-7：失活判据从"started_at 多老"改为"**最后一次落库**多老"
+        —— record_answer / record_submission_result 每次落库都刷新
+        ``runs.heartbeat_at``，正常批次每份答卷至少写一次库。此前按启动时间
+        一刀切，把另一个进程里跑了 61 分钟、仍持有连接且已记下 2 次成功的
+        活批次判成 failed，已持久化的进度从此失去续跑入口。心跳为空的行
+        （启动后还没落过任何库 / 老库）按 started_at 兜底，行为与修复前一致。
+
+        :param stale_after_minutes: 只处理最后一次落库早于此阈值的行 —— 一个
+                                    活着但恰好安静了 N 分钟的批次不会被误判
                                     （GUI 开着同时跑 CLI 是正常用法）。
         """
         sql = (
@@ -662,7 +723,7 @@ class SubmissionHistory:
             "        || ' · 未正常收尾，判为崩溃批次', "
             "    finished_at = COALESCE(finished_at, started_at) "
             "WHERE status = 'running' "
-            "  AND started_at < datetime('now', ?) "
+            "  AND datetime(COALESCE(heartbeat_at, started_at)) < datetime('now', ?) "
         )
         with self._locked():
             cur = self._conn.execute(sql, (f"-{int(stale_after_minutes)} minutes",))

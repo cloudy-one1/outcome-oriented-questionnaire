@@ -229,17 +229,23 @@ def test_fill_matrix_injects_rowmap_via_json_dumps() -> None:
 
 
 def test_fill_matrix_multi_selects_checkboxes_per_row() -> None:
-    """矩阵多选与单选共用一个生成器：两者都得能定位 checkbox，且多选不 break。
+    """矩阵多选与单选共用一个生成器：两者都得能定位 checkbox，且按"请求值"记账。
 
     锁的是"共用不漂移"：单选那份若被改回只查 radio，矩阵多选题就会一格都点不上；
-    而多选一 break 就变成"每行只勾一个"，与题型语义相反。
+    多选也不能"命中一个就收工"。v4.2 P2-9 起逐**请求值**记账（got[w]），每个
+    控件只消费一个请求值 —— 多选的多个目标由 boxes 循环继续扫完，效果上等价于
+    旧版"只有单选才 break"，且整题成功要求每一行全部到账。
     """
     row_map = {1: [2, 4], 2: ["北京"]}
     out = S.fill_matrix_multi_script(q=9, row_selections=row_map)
     assert json.dumps(row_map, ensure_ascii=False, default=str) in out
     assert 'input[type="checkbox"]' in out, "多选路径没查 checkbox"
     assert "Array.isArray(raw)" in out, "行值是否为数组必须在 JS 侧当场判定"
-    assert "if (!isMulti) break;" in out, "只有单选才允许命中后立刻 break"
+    assert "got[w] = true;" in out, "每个请求值必须单独记账（v4.2 P2-9）"
+    assert "rowsDone === rowsTotal" in out, "整题成功 = 每一行的请求全部到账"
+    assert "if (!isMulti) break;" not in out, (
+        "逐值记账后旧版的整行 break 已由 got 记账 + continue 取代"
+    )
     # 单选那份仍走同一定位约定
     single_out = S.fill_matrix_single_script(q=9, row_selections={1: 2})
     assert 'input[type="checkbox"]' in single_out

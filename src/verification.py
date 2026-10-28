@@ -102,7 +102,14 @@ CAPTCHA_KEYWORDS: tuple[str, ...] = (
 
 
 def _dom_has_verification(driver: Any) -> bool:
-    """信号 a)：标准 DOM 选择器检查（问卷星自带 / 腾讯 / 极验 / 滑动等）。"""
+    """信号 a)：标准 DOM 选择器检查（问卷星自带 / 腾讯 / 极验 / 滑动等）。
+
+    v4.2 全面审查 P2-10：``.layui-layer`` 通用弹窗与 shade 分支已移除 —— layui
+    只是弹窗壳，"弹了个窗"不等于"弹了验证码"，普通提示（"请认真填写"）会把
+    本轮拖进 120s 人工等待。真正的验证组件（antispam / captcha iframe / geetest /
+    yidun 等）各有专有选择器，都列在下面；iframe[src*=…] 会命中躺在任何弹窗壳
+    里的验证 iframe，壳本身不需要认。
+    """
     return driver.execute_script("""
         var sel = ['#antispam','.antispam','#wjx-antispam','.wjx-antispam',
                    '.captcha','#captcha','.verification','#verification',
@@ -111,7 +118,7 @@ def _dom_has_verification(driver: Any) -> bool:
                    'iframe[src*="recaptcha"]','iframe[src*="hcaptcha"]',
                    '.sm-dialog','#sm-dialog','.slide-verify','.slider-verify',
                    '.nc-container','.yidun','.geetest_holder','.geetest_widget',
-                   '.TencentCaptcha','#TCaptcha','.layui-layer',
+                   '.TencentCaptcha','#TCaptcha',
                    '[class*="captcha"]','[id*="captcha"]','[class*="verify"]','[id*="verify"]'];
         for (var i=0; i<sel.length; i++) {
             try {
@@ -121,18 +128,6 @@ def _dom_has_verification(driver: Any) -> bool:
                     if (r.width > 0 && r.height > 0) return true;
                 }
             } catch(_) {}
-        }
-        // layui 弹窗遮罩 + 弹窗对话框
-        var shade = document.querySelector('.layui-layer-shade');
-        if (shade) {
-            var rs = shade.getBoundingClientRect();
-            if (rs.width > 0) {
-                var ds = document.querySelectorAll('.layui-layer, .layui-layer-page, .layui-layer-dialog');
-                for (var j = 0; j < ds.length; j++) {
-                    var rr = ds[j].getBoundingClientRect();
-                    if (rr.width > 0 && rr.height > 0) return true;
-                }
-            }
         }
         return false;
     """)

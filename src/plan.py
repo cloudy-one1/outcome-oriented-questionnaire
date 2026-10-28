@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Sequence
 
 from .anchoring import lookup_weight_entry
-from .config import WEIGHT_CONFIG
+from .config import effective_weight_config
 from .reliability import cronbach_alpha, dimensions_from_config, reverse_from_config
 
 __all__ = [
@@ -634,11 +634,13 @@ def ensure_plan(questions: Sequence[Mapping[str, Any]]) -> list[str]:
         return [f"[信度] 本次只投 {session.total} 份，少于 {MIN_SAMPLES} 份 "
                 "→ 样本不够，一维搜索是在拟合噪声，不建计划"]
 
-    declared = dimensions_from_config(WEIGHT_CONFIG)
+    # v4.2 全面审查 P1-3：读本批次的配置快照（effective_weight_config），
+    # 不再直读全局 —— 运行中热更新不能穿透进正在执行的批次。
+    declared = dimensions_from_config(effective_weight_config())
     if not declared:
         return ["[信度] 权重配置里没有任何 dimension 声明 → 维度归属必须人写，"
                 "自动聚类会把不相干的题算进同一个漂亮的数字，不建计划"]
-    reverse = set(reverse_from_config(WEIGHT_CONFIG))
+    reverse = set(reverse_from_config(effective_weight_config()))
 
     by_qnum = {int(q["q"]): q for q in questions if q.get("q") is not None}
     specs: list[ItemSpec] = []
@@ -691,7 +693,10 @@ def _weights_for(q: Mapping[str, Any]) -> list[float]:
       - 负权重一律回退等权 —— 此前只查正权和，负权重会让 ``_quotas`` 产出
         负配额（``base`` 全负 floor 后补不回来，且总和检查反而可能放行）。
     """
-    cfg = lookup_weight_entry(dict(q)) if q.get("q") is not None else None
+    # v4.2 全面审查 P1-3：取数同样走批次快照（effective_weight_config），
+    # 与作答侧（answering_v2._cfg_entry）读同一份配置。
+    cfg = (lookup_weight_entry(dict(q), effective_weight_config())
+           if q.get("q") is not None else None)
     raw = q.get("weights") or (cfg.get("weights") if isinstance(cfg, dict) else None)
     n = _option_count(q)
     try:

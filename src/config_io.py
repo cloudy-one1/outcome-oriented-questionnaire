@@ -426,6 +426,21 @@ def _validate_count_options(
         errs.append(f"Q{qi} multi 的 '{wts_key}' 必须是 list/tuple")
         return errs
 
+    # v4.2 全面审查 P2-11：空候选列表必须在校验期拒绝 —— 此前 [] 顺利通过，
+    # 生成器在 random.choice([]) 上炸出裸 IndexError: Cannot choose from an
+    # empty sequence，运行到这一题才崩，报错还指不到配置字段。
+    if co is not None and len(co) == 0:
+        errs.append(
+            f"Q{qi} multi 的 '{opts_key}' 是空列表 —— 抽不出任何「选几个」："
+            f"请删除 '{opts_key}'（走默认 1~N 均匀分布），或至少给一个 >= 1 的候选值"
+        )
+    # 只有权重没有候选：对应关系残缺，谈不上「一一对应」，直接拒
+    if cw is not None and co is None:
+        errs.append(
+            f"Q{qi} multi 的 '{wts_key}' 单独出现没有意义："
+            f"必须与 '{opts_key}' 成对给出（每个选项数对应一个权重）"
+        )
+
     # count_options 必须都是 >= 1 的正整数
     if co is not None:
         for i, v in enumerate(co):

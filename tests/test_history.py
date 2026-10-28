@@ -531,7 +531,8 @@ class TestSubmissionHistory(unittest.TestCase):
         )
         self.assertEqual(len(rows), 1, "dedup 后应只剩 1 条（max id）")
         self.assertEqual(
-            int(db2._conn.execute("PRAGMA user_version").fetchone()[0]), 3,
+            int(db2._conn.execute("PRAGMA user_version").fetchone()[0]),
+            4,  # v4.2 全面审查 P1-7：heartbeat_at 迁移（_SCHEMA_VERSION）
             "迁移跑完必须把版本号写回去，否则下次打开又要全表扫一遍",
         )
         import json as _json2
@@ -602,7 +603,7 @@ class TestSubmissionHistory(unittest.TestCase):
         self.db.close()
         conn = _sqlite3.connect(self._tmppath)
         version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-        self.assertEqual(version, 3, "新建库应当已落在当前版本")
+        self.assertEqual(version, 4, "新建库应当已落在当前版本")  # v4.2 P1-7 心跳迁移
         # 若把 dedup 挂回构造路径，下面这次打开会执行全表 DELETE；
         # 用触发器把它的执行次数记录下来。
         conn.execute("DROP TABLE IF EXISTS _dedup_probe")

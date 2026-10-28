@@ -93,6 +93,17 @@ def _click_submit_button(driver: Any) -> bool:
     return bool(driver.execute_script(submit_button_fallback_script()))
 
 
+def _read_body_text(driver: Any) -> str | None:
+    """读当前页正文作为成功判定的基线快照；读不到（正在跳转 / 假件无正文）返回 None。"""
+    try:
+        value = driver.execute_script(
+            "return (document.body && document.body.innerText) || '';"
+        )
+    except TRANSIENT_DOM_EXCEPTIONS:
+        return None
+    return None if value is None else str(value)
+
+
 def find_and_click_submit(driver: Any, *, wait_url_change_timeout: float = 6.0) -> SubmitOutcome:
     """查找并点击问卷"提交"按钮；点击后等待 URL 变化。
 
@@ -100,21 +111,33 @@ def find_and_click_submit(driver: Any, *, wait_url_change_timeout: float = 6.0) 
     - (b) 全部失败 → JS 兜底（submit_button_fallback_script，第六章模块化）
 
     三态返回：success / failed / unknown
+
+    v4.2 全面审查 P1-1：点击**之前**先抓一份正文基线 —— "感谢您的参与"这类
+    文案可能本来就写在问卷介绍里，成功判定只认"基线里没有、现在有了"的
+    转换（见 ``submit_success_detect_script``）。
     """
+    baseline_text = _read_body_text(driver)
     if not _click_submit_button(driver):
         return SUBMIT_FAILED
-    return _wait_until_submit_effect(driver, wait_url_change_timeout)
+    return _wait_until_submit_effect(
+        driver, wait_url_change_timeout, baseline_text=baseline_text
+    )
 
 
 # ============================================================================
 #  提交效果探测：轮询 URL 变化 / 成功文本
 # ============================================================================
 
-def _wait_until_submit_effect(driver: Any, timeout: float) -> SubmitOutcome:
+def _wait_until_submit_effect(
+    driver: Any,
+    timeout: float,
+    *,
+    baseline_text: str | None = None,
+) -> SubmitOutcome:
     """点击提交按钮后，检测效果（URL 变化 / 成功提示）。
 
     返回值三态：
-        "success" : URL 变化且未被负向信号否决，或页面出现「提交成功 / 感谢您的参与」
+        "success" : URL 变化且未被负向信号否决，或页面**新**出现「提交成功 / 感谢您的参与」
         "unknown" : 等待 timeout 内未观察到任何效果；或跳转被否决（见下）
 
     v4.2（CODE_REVIEW_v4.0 P2）：URL 变化不再**无条件**判成功 —— 跳到人机验证页 /
@@ -123,6 +146,12 @@ def _wait_until_submit_effect(driver: Any, timeout: float) -> SubmitOutcome:
     （unknown —— 按钮点过、页面动了，但成不成说不清），不否决才按成功收。
     成功侧刻意不做强信号要求：问卷星支持提交后跳自定义网址，强求成功文案会把
     真成功判成 unknown → 下一轮重复提交，那个代价更大。
+
+    v4.2 全面审查 P1-1：``baseline_text`` 是点击前的正文快照（调用方传入）。
+    基线里已有的强文案不再构成成功证据 —— 介绍页写了"感谢您的参与"的问卷，
+    判定必须等到真正的提交效果，确认不了就 unknown，绝不拿点击前的旧文案
+    冒充提交成功。基线拿不到（None）退回纯文案判据，避免把真成功误伤成
+    重复提交。
     """
     try:
         old_url: str | None = driver.current_url
@@ -132,7 +161,7 @@ def _wait_until_submit_effect(driver: Any, timeout: float) -> SubmitOutcome:
         # 这里置 None，等首次能读到 URL 时再补建基线，期间只靠成功文案判定。
         old_url = None
     start = time.perf_counter()
-    success_check_js = submit_success_detect_script()
+    success_check_js = submit_success_detect_script(baseline_text)
     veto_check_js = submit_redirect_veto_script()
     # 瞬态集合已含 WebDriverException 基类，所以走到 `except Exception` 的几乎只剩
     # KeyError/TypeError 这类纯代码 bug。此前它被 `pass` 无日志吞掉（审查 P2-2 的

@@ -2,10 +2,27 @@
 # 打进镜像。没有本文件时，本地构建会把 data/history.db（含填空题原文等 PII，
 # .gitignore 自己都承认）、两个虚拟环境、coverage 产物全部送进镜像层 ——
 # 而 docker-smoke 在干净 checkout 上构建，结构性发现不了这个问题。
-# 只排"绝不该进镜像"的目录，不搞白名单，避免新增源文件被静默排除。
+# v4.2（全面审查 P1-8）：Dockerfile 改为**复制白名单**（只 COPY src/ webui/
+# pyproject.toml README.md requirements.txt），本文件降级为第二道防线 ——
+# 白名单管住"进镜像什么"，这里管住"进构建上下文什么"。规则仍是只排
+# "绝不该进镜像/上下文"的目录，不搞反向白名单，避免新增源文件被静默排除。
 
 # 运行数据与隐私
+# .gitignore 承认的运行产物类别在这里**逐类点名**：Docker 的 COPY 不看 Git
+# 规则，configs/ 本地预设、history.db、导出 CSV 只要出现在构建目录就会
+# 随上下文走 —— 哪怕白名单已经挡住它们，也别让它们进 build context。
 data/
+configs/
+profiles/
+logs/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.csv
+*.xlsx
+urls*.txt
+*.log
 
 # 版本库与本地工具链
 .git
@@ -23,6 +40,8 @@ __pycache__/
 .coverage
 coverage.json
 _review_tmp/
+tests/
+.github/
 
 # 文档与评审（镜像只跑代码，不需要）
 docs/
