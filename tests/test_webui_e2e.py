@@ -292,12 +292,20 @@ def page(console):
 
 
 def _set_text(driver, element_id, value):
-    """改输入框并触发 change —— 宿主读字段靠的是 change/blur，不是 input。"""
+    """改输入框并触发 change —— 宿主读字段靠的是 change/blur，不是 input。
+
+    v4.2：整体换成"一次 JS 原子赋值 + change"。此前是"JS 清空 → send_keys
+    逐字打 → 再派发 change"，而任何一次 SSE state 重绘（app.js 的
+    setIfDifferent 会按服务端旧值重置输入框）落在清空和打完之间，就会把打字
+    过程搅碎 —— 症状是 url 同步了、count 却停在默认值 1 或串成"3333"，负载
+    越高越容易复现；已验证与产品改动无关（干净基线上同样复现）。
+    """
     box = driver.find_element(By.ID, element_id)
-    driver.execute_script("arguments[0].value = '';", box)
-    box.send_keys(str(value))
     driver.execute_script(
-        "arguments[0].dispatchEvent(new Event('change'));", box)
+        "arguments[0].value = arguments[1];"
+        "arguments[0].dispatchEvent(new Event('change'));",
+        box, str(value),
+    )
 
 
 def _text(driver, element_id):
