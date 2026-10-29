@@ -12,7 +12,7 @@
 | 范围 | 离线覆盖率 |
 |---|---|
 | 全部 | **92.8%** |
-| `src/` | 91.3%（5286 条语句剩 458 行） |
+| `src/` | 91.4%（5286 条语句剩 454 行） |
 | `webui/` | 98.1%（1405 条语句剩 26 行） |
 
 #### 已补齐的缺口（"补齐前"一列是登记时的实测）
@@ -26,7 +26,7 @@
 | `src/browser/__init__.py` | 52.2% | **100.0%**（剩 0 行） | `tests/test_browser_facade_offline.py` |
 | `src/interactions/choices.py` | 58.8% | **100.0%**（剩 0 行） | `tests/test_choices_interaction.py` |
 | `src/interactions/sort.py` | 22.2% | **100.0%**（剩 0 行） | `tests/test_sort_interaction.py` |
-| `src/cli.py` | 74.3% | **81.2%**（剩 108 行，剩余是 run_batch 内的浏览器接线与降级分支） | `tests/test_cli_exit_and_reports.py`、`tests/test_cli_main.py`、`tests/test_cli_batch.py` |
+| `src/cli.py` | 74.3% | **81.8%**（剩 104 行，剩余是 run_batch 内的浏览器接线与降级分支） | `tests/test_cli_exit_and_reports.py`、`tests/test_cli_main.py`、`tests/test_cli_batch.py` |
 
 #### 仍然没有防线的地方
 
