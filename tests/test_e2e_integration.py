@@ -950,6 +950,64 @@ def test_full_submission_roundtrip_through_pipeline(driver, history_db):
     )
 
 
+def test_quota_exact_tally_through_the_engine(driver, history_db):
+    """v4.2 --quota 的引擎级验收：穿过真实引擎（探测→作答→交互→提交→扣账），
+    成功答卷的分值分布**逐项精确**等于配额 —— 生成层模拟（test_quota.py）
+    证明账本语义，这条证明接线在真引擎、真 DOM 里成立。
+
+    q1 是 4 选项单选（mock_wjx.html），权重 [1,1,1,1]、8 份成功 → 每个选项
+    恰好 2 份。失败的轮次不占配额（C1），本批全成功所以直接对账。
+    """
+    import pathlib
+    from collections import Counter
+
+    from src import config as cfg_module
+    from src import quota
+    from src.pipeline import run_one_submission
+    from src.utils import ManualHoldLock
+
+    url = "file:///" + (
+        pathlib.Path(__file__).resolve().parent / "fixtures" / "mock_wjx.html"
+    ).as_posix()
+
+    saved = dict(cfg_module.WEIGHT_CONFIG)
+    cfg_module.WEIGHT_CONFIG.clear()
+    cfg_module.WEIGHT_CONFIG.update(
+        {1: {"type": "single", "weights": [1, 1, 1, 1]}})
+    quota.enable(True)
+    quota.start_run(8)
+    run_id = history_db.start_run(url, 8, "edge", False)
+    try:
+        for index in range(1, 9):
+            outcome = run_one_submission(
+                driver, url, ManualHoldLock(),
+                history_db=history_db, run_id=run_id, submission_index=index,
+                no_record_text=True,
+            )
+            assert outcome == "success", f"第 {index} 份应提交成功，实际 {outcome!r}"
+    finally:
+        history_db.finish_run(
+            run_id, 8, 0, 1.0, status="finished")
+        quota.enable(False)
+        quota.start_run(0)
+        cfg_module.WEIGHT_CONFIG.clear()
+        cfg_module.WEIGHT_CONFIG.update(saved)
+
+    # 8 轮的 outcome 已在循环里断言全 success（逐份成败表由 run_batch 落，
+    # run_one_submission 不落），直接对账 q1 的四选项分布。
+    # options_selected 落库是 JSON 串；键的标签跟存储约定走（此路径为选项值域），
+    # 精确性断言只看分布本身：4 个选项各恰好 2 份 = 配额 [2,2,2,2] 逐项兑现。
+    import json as _json
+
+    tally: Counter = Counter()
+    for a in history_db.query_answers(run_id=run_id, question_number=1):
+        picks = _json.loads(a["options_selected"])
+        tally[int(picks[0])] += 1
+    assert len(tally) == 4 and sorted(tally.values()) == [2, 2, 2, 2], (
+        f"配额必须逐项精确兑现（四选项各 2 份），实际 {dict(tally)}"
+    )
+
+
 # ----------------------- 真卷形态（v3.1 排序点击式 + 日期题）-----------------------
 
 def _load_real_widgets(driver) -> None:
