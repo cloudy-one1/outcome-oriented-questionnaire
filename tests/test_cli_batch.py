@@ -280,6 +280,68 @@ class TestRunBatchSmoke(unittest.TestCase):
         self.assertEqual((success, fail), (1, 1))
 
 
+class TestRunBatchQuotaWiring(unittest.TestCase):
+    """v4.2 --quota：run_batch 级接线（账本按批清零 + 续传重建）。
+
+    单元级（test_quota.py）证明了账本本身的语义；这里证明的是**接线**：
+    续传参数进了 run_batch 之后，历史成功份数的配额消耗真的被扣掉 ——
+    接线断了（条件漏一个、参数没传）的症状是续传后重复兑现配额。
+    """
+
+    def setUp(self) -> None:
+        from src import quota
+
+        quota.enable(False)
+        quota.start_run(0)
+
+    def tearDown(self) -> None:
+        from src import quota
+
+        quota.enable(False)
+        quota.start_run(0)
+
+    def test_resume_rebuilds_quota_consumption_from_history(self) -> None:
+        """续传 + 配额：历史里成功的 2 份消耗配额 2 格（failed 的那份不占）。"""
+        from src import quota
+
+        with SubmissionHistory(":memory:") as db:
+            rid = db.start_run(SURVEY_URL, 5, "edge", False)
+            for sub, status in ((1, "success"), (2, "failed"), (3, "success")):
+                db.record_answer(rid, sub, 1, "single", options_selected=[0])
+                db.record_submission_result(rid, sub, status)
+
+            with mock.patch("src.browser.create_driver",
+                            side_effect=_fake_driver_factory), \
+                 mock.patch("src.utils.human_pause", return_value=0.0):
+                cli.run_batch(
+                    SURVEY_URL, 5,
+                    history_db=db,
+                    weight_config={1: {"type": "single", "weights": [1, 1]}},
+                    resume_run_id=rid, resume_done=2, resume_fail=1,
+                    quota_mode=True,
+                )
+
+            self.assertEqual(quota._pre_consumed, {1: {0: 2}},
+                             "只有成功份数进配额账；failed 不占（C1）")
+
+    def test_quota_ledger_resets_per_batch(self) -> None:
+        """账本按批清零：上一批的暂记消耗不许管到这一批（与 distribution 同规矩）。"""
+        from src import quota
+
+        quota.enable(True)
+        quota.start_run(10)
+        quota._pre_consumed[1] = {0: 3}
+        try:
+            with SubmissionHistory(":memory:") as db, \
+                 mock.patch("src.browser.create_driver",
+                            side_effect=_fake_driver_factory), \
+                 mock.patch("src.utils.human_pause", return_value=0.0):
+                cli.run_batch(SURVEY_URL, 1, history_db=db, quota_mode=True)
+            self.assertEqual(quota._pre_consumed, {}, "批次开始时没清零")
+        finally:
+            pass
+
+
 class TestRunBatchStopWithinRound(unittest.TestCase):
     """v3.0：run_batch 如何接住「轮内停止」（此前 stop_check 只在轮间生效）。"""
 

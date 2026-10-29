@@ -62,6 +62,11 @@ python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" --rescue-gaps
 # 人工提交：每一份答完就停住，由你在窗口里核对（要改的直接改）后**自己点**提交。
 # 要的是它而不是"-n 1 跑完读日志"：半份问卷交上去就是平台上一条收不回来的回收记录
 python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 3 --manual-submit
+
+# 配额调度：100 份**成功**答卷在单选/下拉上恰好按配置比例兑现（收尾有
+# [配额] 兑现报告）。-n 100 即目标成功份数，失败/未知不占配额、自动重投；
+# 权重来自 --config 或界面配置（10,30,50,10 → 10/30/50/10 各恰好）
+python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 100 --quota --config quota.json
 ```
 
 ## 每次提交的输出：三态
