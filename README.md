@@ -21,7 +21,7 @@
 - **可靠的提交语义** — OK / FAIL / UNKNOWN 三态、提交前完整度自检、答案幂等落库、指数退避重试、跨进程断点续传（权重随批次快照）
 - **人工在环** — 验证码只检测并请人处理；`--manual-submit` 把点提交那一下交给人（Web 控制台里是同名的「人工提交」开关），`--rescue-gaps` 把必答缺口滚进视野等人补答
 - **人类行为模拟** — 正态分布停顿、完整鼠标事件链、偶发长停顿；停止 / 关窗以 ≈0.2s 粒度生效，被打断的那一份不提交
-- **历史与统计** — SQLite 批次与逐题明细、Web 界面查询、CSV 导出、过期清理；真实答卷回放 / 投递分布纠正 / 信度报告与控制（默认关）
+- **历史与统计** — SQLite 批次与逐题明细、Web 界面查询、CSV 导出、过期清理；真实答卷回放 / 投递分布纠正 / 信度报告与控制 / 配额调度（默认关）
 - **浏览器反检测** — Stealth JS 注入隐藏自动化特征，UA / 屏幕 / 硬件指纹随机化，可选 undetected-chromedriver
 - **双入口** — `wjx-fill`（CLI）与 `wjx-web`（本地控制台）共用同一引擎；Web 端 SSE 推送进度，关掉页面不中断长跑
 
@@ -170,9 +170,11 @@ python -m ruff check . && npx pyright             # 静态检查 + 类型检查
 本工具仅供学习和研究 Selenium 自动化技术使用。请遵守问卷星平台的使用条款和相关法律法规，不得用于刷票、刷量等任何违规或违法用途。使用者需自行承担所有责任。
 
 `--alpha-target` 让工具的能力边界从"填得完"扩到"让造出来的数据通过信度检验"，
-`--replay-file` 则是把真实答卷搬进提交链路。这两件事**只适用于自有或已获授权的测试问卷**
+`--quota` 把自定义比例从概率收敛升级为**记账精确**的批量配额，
+`--replay-file` 则是把真实答卷搬进提交链路。这三件事**只适用于自有或已获授权的测试问卷**
 （验证算法用）；拿它们去生产环境里制造"看着像真研究数据"的样本，就是本段禁止的刷量本身
-（设计稿对这一条的表述见 [DESIGN_reliability_alpha.md](docs/design/DESIGN_reliability_alpha.md) §0）。
+（设计稿对这一条的表述见 [DESIGN_reliability_alpha.md](docs/design/DESIGN_reliability_alpha.md) §0
+与 [DESIGN_quota_scheduling.md](docs/design/DESIGN_quota_scheduling.md)）。
 
 ## License
 

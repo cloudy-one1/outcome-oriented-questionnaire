@@ -417,6 +417,21 @@ def test_manual_submit_checkbox_survives_a_state_round_trip(page) -> None:
         "manual_submit 没有被后端收下 —— 快照回弹把它勾掉了"
 
 
+def test_quota_checkbox_survives_a_state_round_trip(page) -> None:
+    """v4.2 配额调度走同一条验收：离线测试不点页面，els 缓存拼错、
+    fillForm 漏了新字段、change 监听没接——这三类断线只有真浏览器抓得到。
+    默认关（与 CLI 同一默认），勾上后必须被后端收下并在快照回弹里保持。
+    """
+    box = page.find_element(By.ID, "quota")
+    assert box.is_selected() is False, "默认必须与 CLI 同一默认（关）"
+    box.click()
+    WebDriverWait(page, 20).until(
+        lambda d: d.find_element(By.ID, "quota").is_selected())
+    time.sleep(1.0)   # 给 SSE 整份快照留一个往返
+    assert page.find_element(By.ID, "quota").is_selected(), \
+        "quota 没有被后端收下 —— 快照回弹把它勾掉了"
+
+
 def test_a_qr_image_picked_in_the_page_fills_the_url_field(page, console) -> None:
     """扫码这条链，页面上曾经**根本没有入口**。
 
