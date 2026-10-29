@@ -910,11 +910,27 @@ class WebService:
                       f"{type(e).__name__}: {e}", "WARN")
 
 
-#: 第 4 列文本**能表达**的字段。合并语义（v4.2 全面审查 P1-4）：这些键以表格
-#: 解析结果为准 —— 表格里没有这个键 = 用户把那一格清空了，导入基座里的旧值
-#: 必须随之删除，不能复活；其余键（count_options / dimension …）属于导入
-#: 结构基座，表格动不到它们。
-_TEXT_OWNED_KEYS: tuple[str, ...] = ("weights", "options", "order", "row_weights")
+#: 第 4 列文本的键归属已按题型细分（见 :func:`_text_owned_keys_for`）——
+#: 排序题的文本只表达 order、矩阵只表达 row_weights，"解析缺席 = 用户清空"
+#: 的推断必须限制在该题型真正表达得了的键上。
+
+
+def _text_owned_keys_for(ptype: Any) -> tuple[str, ...]:
+    """该题型的配置键里，**表格第 4 列文本实际能表达**的子集。
+
+    合并时"解析结果缺席"只有对这些键才意味着"用户清空了格子"——
+    其余键（count_options / dimension …）表格根本表达不了，缺席不能推出来。
+    排序题的文本只表达 order（weight_text._sort_entry 的语法），weights
+    表达不了 —— 一份同时带两者的配置无法经表格往返保真，见合并处的告警。
+    """
+    p = str(ptype or "").lower()
+    if p in ("sort", "ordering", "rank"):
+        return ("order",)
+    if p in ("matrix_single", "matrix", "matrix_multi"):
+        return ("row_weights",)
+    if p in ("text", "input", "textarea", "fillblank"):
+        return ("options",)
+    return ("weights",)
 
 
 def _merge_imported_advanced(imported: dict, parsed: dict,
@@ -922,15 +938,14 @@ def _merge_imported_advanced(imported: dict, parsed: dict,
     """表格解析结果 ⊕ 导入的结构化配置：高级字段保留，文本字段以表为准。
 
     - 两边都有的题号：以导入条目为基座，解析结果的键整体覆盖（表格是用户
-      当下的意图）；解析结果里缺席的文本键（清空的格子）从基座里删掉。
-    - **表上有这题、解析却没产出**（文本被清空 / 格式错误被跳过）：文本键
-      照删，高级字段保留 —— 表格只动得了文本字段，用户清的是"权重那一格"，
-      不是"整道题的高级配置"。
+      当下的意图）；解析结果里缺席的**该题型文本可表达**的键（清空的格子）
+      从基座里删掉 —— 判据见 :func:`_text_owned_keys_for`。
     - 只在导入里的题号（未探测 / 表上没有）：原样保留 —— 导入配置可以
       先于探测到达，探测后启动是正常顺序。
     - 只在解析结果里的题号：与旧版一致，直接用。
     """
     merged: dict = {}
+    warned_sort_both = False
     for qi, pentry in parsed.items():
         base = imported.get(qi)
         if not isinstance(base, dict):
@@ -938,9 +953,22 @@ def _merge_imported_advanced(imported: dict, parsed: dict,
             continue
         entry = copy.deepcopy(base)
         entry.update(pentry)
-        for key in _TEXT_OWNED_KEYS:
+        # 排序配置同时带 weights 与 order 时，第 4 列只能渲染其一（渲染侧
+        # weights 优先）—— order 没进过表格，缺席不代表被清空：保留并说出来。
+        base_type = str(base.get("type", "")).lower()
+        sort_both = (base_type in ("sort", "ordering", "rank")
+                     and "weights" in base and "order" in base
+                     and "order" not in pentry)
+        for key in _text_owned_keys_for(pentry.get("type")):
+            if key == "order" and sort_both:
+                continue
             if key not in pentry and key in entry:
                 del entry[key]
+        if sort_both and not warned_sort_both:
+            warned_sort_both = True
+            print(f"  WARNING: Q{qi} 的排序配置同时带 weights 与 order —— "
+                  "权重表第 4 列只能表达其一，本次重建保留 order；"
+                  "要改固定顺序请直接用 --config 投喂，别经表格改")
         merged[qi] = entry
     for qi, entry in imported.items():
         try:
@@ -952,7 +980,7 @@ def _merge_imported_advanced(imported: dict, parsed: dict,
         merged[qi_int] = copy.deepcopy(entry)
         if known_qnums is not None and qi_int in known_qnums:
             # 表上有这题但解析没产出：文本字段删除（用户清空的格子不许复活）
-            for key in _TEXT_OWNED_KEYS:
+            for key in _text_owned_keys_for(entry.get("type")):
                 merged[qi_int].pop(key, None)
     return merged
 

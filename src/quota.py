@@ -31,6 +31,7 @@ from typing import Any
 
 _enabled = False
 _total_target = 0
+_warned_exhausted = False
 #: qnum -> 每个选项的**初始配额**（已扣续传历史；报告用它算"还差几份"）
 _allocated: dict[int, list[int]] = {}
 #: qnum -> 每个选项的**剩余配额**
@@ -54,9 +55,10 @@ def enabled() -> bool:
 def start_run(total_target: int) -> None:
     """新批次开始：清空账本并记下目标成功份数 N。开着配额却不清，
     上一份问卷的账会管到这一份（与 distribution.start_run 同一条规矩）。"""
-    global _total_target, _consumed_total
+    global _total_target, _consumed_total, _warned_exhausted
     _total_target = int(total_target)
     _consumed_total = 0
+    _warned_exhausted = False
     _allocated.clear()
     _remaining.clear()
     _pre_consumed.clear()
@@ -114,8 +116,17 @@ def effective_weights(qnum: int | None, weights: Any, n: int) -> Any:
     rem = _remaining[q]
     out = [float(w) if rem[i] > 0 else 0.0 for i, w in enumerate(weights)]
     if sum(out) <= 0:
-        # 全部满额还来要权重：只可能发生在"成功数已达标但批次还没退出"的窗口，
-        # 原样返回让这次生成自然发生（它不会被 commit——批次已在收尾）。
+        # 全部满额还来要权重：正常只发生在"成功数已达标、批次收尾中"。但若
+        # 某些配额没能随成功扣减（点击未落地 is_ok=False、平台跳题），账本会
+        # 提前全满而批次仍在继续 —— 后续份数不再受配额约束，这是"精确收敛"
+        # 的已知失守路径，必须大声说出来而不是静默放过（每批提醒一次）。
+        global _warned_exhausted
+        if not _warned_exhausted and _consumed_total < _total_target:
+            _warned_exhausted = True
+            print(f"  WARNING: [配额] 账本已全满但成功数 {_consumed_total}/"
+                  f"{_total_target} 尚未达标 —— 有题目在成功答卷里缺席了"
+                  "（点击未落地或平台跳题），后续份数不再受配额约束，"
+                  "收尾报告会列出缺口")
         return list(weights)
     return out
 
@@ -199,7 +210,7 @@ def rebuild_consumed(history_db: Any, run_id: int) -> int:
 
 
 def progress_report() -> list[str]:
-    """批次收尾报告：整体兑现数 + 没填满的配额题（尝试上限先到时必有缺口）。"""
+    """批次收尾报告：整体兑现数 + 没填满的配额题，并区分两种缺口的成因。"""
     if not _enabled or not _allocated:
         return []
     lines = [f"[配额] 本批成功 {_consumed_total}/{_total_target} 份，"
@@ -211,6 +222,11 @@ def progress_report() -> list[str]:
             detail = "、".join(
                 f"选项 {i + 1} 差 {r}" for i, r in enumerate(rem) if r > 0
             )
+            if _consumed_total >= _total_target > 0:
+                reason = ("已达目标成功数但部分成功答卷缺席了这些选项"
+                          "—— 点击未落地或平台跳题，配额无法对它们记账")
+            else:
+                reason = "尝试上限先到，配额没有兑完"
             lines.append(f"[配额] Q{qnum} 未填满（差 {outstanding} 份：{detail}）"
-                         "—— 尝试上限先到，配额没有兑完")
+                         f"—— {reason}")
     return lines

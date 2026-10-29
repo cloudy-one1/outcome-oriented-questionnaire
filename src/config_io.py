@@ -503,30 +503,40 @@ def _positive_count(weights: Any) -> int | None:
 def _validate_count_within_positive(qi: int, qcfg: dict) -> list[str]:
     """v4.2 零权重语义（0 = 绝不选择）：count 候选不得超过非零权重选项数。
 
-    要求「选 3 个」但 weights 只有 2 个非零项是**矛盾配置**：运行期只能
-    少选（平台必答校验拒收整份）或违背 0（把明确排除的选项塞进答卷），
-    两个出路都不该被默默接受 —— 在配置期直接拒绝。
+    只拦**真实矛盾**：候选 ≤ 选项数、但超过非零权重数 —— 运行期要选 k 个，
+    0 权重不能选、凑不满，只能"少选"（平台必答校验拒收整份）或"违背 0"
+    （把明确排除的选项塞进答卷），两个出路都不该被默默接受。
+    候选**超过选项数**的不拦：旧运行期夹到全选，「全选」语义合法（保持兼容）。
     """
     errs: list[str] = []
     co = qcfg.get("count_options")
-    pos = _positive_count(qcfg.get("weights"))
+    weights = qcfg.get("weights")
+    pos = _positive_count(weights)
     if co is None or pos is None or not isinstance(co, (list, tuple)):
         return errs
+    # pos 非 None 蕴含 weights 是非空 list/tuple（_positive_count 的契约），
+    # 这里显式收窄让类型检查跟上
+    n_opts = len(weights) if isinstance(weights, (list, tuple)) else 0
     max_count = max(
         (float(v) for v in co if _is_finite_number(v)[0]),
         default=None,
     )
-    if max_count is not None and max_count > pos:
+    if max_count is not None and pos < max_count <= n_opts:
         errs.append(
-            f"Q{qi} multi 的 count_options 最多要选 {int(max_count)} 个，"
-            f"但 weights 只有 {pos} 个非零权重 —— 0 = 绝不选择，这个矛盾配置"
-            f"无法兑现：把要排除的选项同时从 count_options 里去掉，或给足非零权重"
+            f"Q{qi} multi 的 count_options 要求最多选 {int(max_count)} 个，"
+            f"但 weights 里只有 {pos} 个非零权重（选项共 {n_opts} 个）—— "
+            f"0 = 绝不选择，凑不满 {int(max_count)} 个：把要排除的选项同时从 "
+            f"count_options 里去掉，或给足非零权重"
         )
     return errs
 
 
 def _validate_pick_within_positive(qi: int, qcfg: dict) -> list[str]:
-    """矩阵多选版：pick 候选逐行核对非零权重数（各行权重独立）。"""
+    """矩阵多选版：pick 候选逐行核对非零权重数（各行权重独立）。
+
+    与 multi 同一条 refined 规则：候选 ≤ 行选项数但超过该行非零权重数才拦；
+    超过行选项数走旧夹取（全选该行），不拦。
+    """
     errs: list[str] = []
     co = qcfg.get("pick_options")
     if co is None or not isinstance(co, (list, tuple)):
@@ -541,11 +551,13 @@ def _validate_pick_within_positive(qi: int, qcfg: dict) -> list[str]:
     rows = rw.items() if isinstance(rw, dict) else []
     for rk, rv in rows:
         pos = _positive_count(rv)
-        if pos is not None and max_count > pos:
+        if pos is None or not isinstance(rv, (list, tuple)):
+            continue
+        if pos < max_count <= len(rv):
             errs.append(
                 f"Q{qi} matrix_multi 的 pick_options 最多要选 {int(max_count)} 个，"
                 f"但行 {rk!r} 的 row_weights 只有 {pos} 个非零权重"
-                f"（0 = 绝不选择，矛盾配置无法兑现）"
+                f"（行共 {len(rv)} 列；0 = 绝不选择，凑不满）"
             )
     return errs
 

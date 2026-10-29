@@ -93,8 +93,11 @@ def _page(driver, html: str) -> None:
 # P1-1 问卷正文里的感谢语 ≠ 提交成功（submit_success_detect_script 基线语义）
 # ---------------------------------------------------------------------------
 class TestP1P1SuccessDetectionBaseline:
+    # 真实作答页的形状：介绍收尾语 + 至少一个**可见**的作答控件 —— 2026-10-29
+    # 独立审查 P1 指出无控件的页面造不出"交出去"与"没交"的区别。
     page = (
         "<body>您好！感谢您的参与！"
+        '<input type="radio" style="width:12px;height:12px">'
         "<button onclick=\"window.clicks=(window.clicks||0)+1\">提交</button></body>"
     )
 
@@ -106,7 +109,7 @@ class TestP1P1SuccessDetectionBaseline:
         """复现案例 manual_success_without_submission：介绍含感谢语 + 没点提交。
 
         修复前：判定为真（正文里有"感谢您的参与"）。修复后：基线里已有该
-        文案 → 文案不构成成功证据 → 判定为假。
+        文案 → 文案不构成成功证据，且作答控件还在页面上 → 判定为假。
         """
         _page(driver, self.page)
         from src.interactions._scripts import submit_success_detect_script
@@ -115,6 +118,19 @@ class TestP1P1SuccessDetectionBaseline:
         pred = driver.execute_script(submit_success_detect_script(baseline))
         assert baseline and "感谢您的参与" in baseline
         assert not pred, "点击前的旧文案不能冒充提交成功"
+
+    def test_submitted_page_shape_is_success_even_with_intro_thanks(self, driver) -> None:
+        """独立审查 P1 的对照面：交出去之后控件没了 → 即使基线含感谢语、
+        URL 不变、无成功容器，也必须判得出成功（否则这类问卷真成功永远 unknown，
+        人工提交更会把"人明明点了"判成没交）。"""
+        from src.interactions._scripts import submit_success_detect_script
+
+        _page(driver, self.page)
+        baseline = self._body_text(driver)
+        driver.execute_script(
+            "document.querySelector('input[type=radio]').remove();")
+        pred = driver.execute_script(submit_success_detect_script(baseline))
+        assert pred is True, "完成页形状（强文案 + 无作答控件）必须判成功"
 
     def test_no_baseline_keeps_legacy_keyword_verdict(self, driver) -> None:
         """基线拿不到（None）→ 退回旧判据：正文有强文案即真。
@@ -239,6 +255,29 @@ def test_p1_6_sort_fallback_fails_when_question_scope_is_missing(driver) -> None
     )
     _page(driver, orphan)
     assert driver.execute_script(fill_sort_script(9, ["3", "2", "1"])) is False
+
+
+def test_p1_6_sort_fallback_supports_hidden_input_layout(driver) -> None:
+    """独立审查 P3 的旧布局回归面：没有 #divN/#qN 锚点，但提交值藏在
+    <li><input name=qN> 里 —— 顺着本题的隐藏输入爬回所属列表必须能答
+    （input 的 name 是本题题号，不会跨题抓到别人）。"""
+    from src.interactions._scripts import fill_sort_script
+
+    html = (
+        '<ul class="lisort">'
+        + "".join(
+            '<li value="' + str(i) + '">' + str(i)
+            + '<input type="hidden" name="q7" value="' + str(i) + '"></li>'
+            for i in (1, 2, 3)
+        )
+        + "</ul>"
+    )
+    _page(driver, html)
+    ok = driver.execute_script(fill_sort_script(7, ["3", "2", "1"]))
+    stored = driver.execute_script(
+        "return document.querySelector('input[name=q7]').value;")
+    assert ok is True, "旧布局（隐藏输入在 li 内）必须仍可作答"
+    assert stored == "3,2,1"
 
 
 # ---------------------------------------------------------------------------

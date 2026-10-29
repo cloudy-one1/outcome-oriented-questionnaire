@@ -696,10 +696,27 @@ def fill_sort_script(q: int, order: list) -> str:
                      || document.getElementById('divquestion' + q)
                      || document.querySelector('[data-q="' + q + '"]')
                      || document.querySelector('[id="q' + q + '"]');
-            if (!scope) return false;
-            var lists = scope.querySelectorAll('ul, ol');
-            for (var i = 0; i < lists.length; i++) {{
-                if (/sort/i.test(lists[i].className || '')) {{ ul = lists[i]; break; }}
+            if (!scope) {{
+                // 旧布局兜底（2026-10-29 独立审查 P3）：题号锚定不到容器，但
+                // 本题的提交值藏在某个 li 里（<li><input name=qN> 结构）——
+                // 顺着它爬回所属列表。input 的 name 就是本题题号，不跨题。
+                var hid = document.querySelector(
+                    'input[type="hidden"][name="q' + q + '"]');
+                var liNode = hid;
+                while (liNode && liNode.tagName !== 'LI') {{
+                    liNode = liNode.parentNode;
+                }}
+                if (liNode && liNode.parentNode
+                        && liNode.parentNode.tagName === 'UL') {{
+                    ul = liNode.parentNode;
+                }}
+            }}
+            if (!scope && !ul) return false;
+            if (scope) {{
+                var lists = scope.querySelectorAll('ul, ol');
+                for (var i = 0; i < lists.length; i++) {{
+                    if (/sort/i.test(lists[i].className || '')) {{ ul = lists[i]; break; }}
+                }}
             }}
         }}
         if (!ul) return false;
@@ -1004,10 +1021,31 @@ def submit_success_detect_script(baseline_text: str | None = None) -> str:
             var r = succ[i].getBoundingClientRect();
             if (r.width > 0 && r.height > 0) return true;
         }}
+        // 页面上还有没有**可见**的作答控件（radio/checkbox/select/文本框）。
+        // 交出去的完成页不会留着它们；没交时控件还在 —— 人改一个字、
+        // 进度数字跳一格都不会误判成"交了"。
+        function hasVisibleAnswerControls() {{
+            var sel = 'input[type="radio"], input[type="checkbox"], select,'
+                    + ' textarea, input[type="text"], input[type="number"],'
+                    + ' input:not([type])';
+            var els = document.querySelectorAll(sel);
+            for (var j = 0; j < els.length; j++) {{
+                try {{
+                    var r = els[j].getBoundingClientRect();
+                    if (r.width > 0 && r.height > 0) return true;
+                }} catch (_) {{}}
+            }}
+            return false;
+        }}
         var txt = (document.body && document.body.innerText) || '';
         if (!strongIn(txt)) return false;
-        // 强文案只在"基线里没有 → 现在有了"这条转换上才算证据
-        return baseline === null || !strongIn(baseline);
+        if (baseline === null) return true;
+        if (!strongIn(baseline)) return true;
+        // 强文案在基线里就有（介绍页收尾语"感谢您的参与"最常见）：正文文案不算
+        // 证据，但"强文案还在 + 作答控件已经不在了"算 —— 那正是交出去之后的
+        // 页面形状。缺了这条，这类问卷的真成功会永远判不出（URL 往往不变、
+        // 完成页也没有 .success 容器）。
+        return !hasVisibleAnswerControls();
     """
 
 

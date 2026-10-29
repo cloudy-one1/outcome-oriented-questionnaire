@@ -209,9 +209,17 @@ def _weighted_or_equal_choice(
     indices: list[int],
     weights: Optional[list[float]] = None,
     qnum: Optional[int] = None,
+    *,
+    quota_eligible: bool = False,
 ) -> int:
-    """单个选项：有权重按权重抽，否则均匀。配额模式（--quota）下只抽未满额项。"""
-    weights = _drift_weights(qnum, weights, len(indices), quota_eligible=True)
+    """单个选项：有权重按权重抽，否则均匀。
+
+    ``quota_eligible`` 由调用方声明 —— 只有单选/下拉传 True（配额 B1 边界，
+    见 :func:`_drift_weights`）；量表/矩阵行经此函数取值时**不得**触发配额，
+    否则它们的分值/行值会被账本钉死。
+    """
+    weights = _drift_weights(qnum, weights, len(indices),
+                             quota_eligible=quota_eligible)
     if weights_are_usable(weights, len(indices)):
         return random.choices(indices, weights=weights, k=1)[0]
     return random.choice(indices)
@@ -389,7 +397,10 @@ def generate_answer(question: dict) -> dict[str, Any]:
     if qtype in ("single", "radio"):
         choices = list(question["choices"])
         indices = list(range(len(choices)))
-        picked_idx = _weighted_or_equal_choice(indices, _cfg_weights(question), qnum)
+        # quota_eligible=True 只给单选/下拉 —— 配额（--quota）只对"每份恰好选
+        # 一个"的题型有意义（B1：量表/矩阵/多选维持相对频率语义，见 src/quota.py）
+        picked_idx = _weighted_or_equal_choice(indices, _cfg_weights(question),
+                                               qnum, quota_eligible=True)
         return {"type": "single", "selected": [choices[picked_idx]]}
 
     if qtype in ("multi", "checkbox"):
@@ -426,7 +437,8 @@ def generate_answer(question: dict) -> dict[str, Any]:
     if qtype == "dropdown":
         choices = list(question["choices"])
         indices = list(range(len(choices)))
-        picked_idx = _weighted_or_equal_choice(indices, _cfg_weights(question), qnum)
+        picked_idx = _weighted_or_equal_choice(indices, _cfg_weights(question),
+                                               qnum, quota_eligible=True)
         return {"type": "dropdown", "selected": [choices[picked_idx]]}
 
     # --- 3. 量表打分 ---------------------------------------------------

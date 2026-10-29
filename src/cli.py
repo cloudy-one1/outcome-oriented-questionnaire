@@ -1080,7 +1080,7 @@ def main(argv: list[str] | None = None) -> None:
         print("[drift] 在线纠正已开启：只统计提交成功的份，"
               "因子夹 ±1/3、前 8 份完全不纠正")
 
-    # v4.2 配额调度：与纠正/信度计划互斥 —— 三者都在改"这份答什么"，叠加语义不明
+    # v4.2 配额调度：与纠正/信度计划/回放互斥 —— 三者都在改"这份答什么"，叠加语义不明
     if getattr(args, "quota", False):
         if getattr(args, "drift_correct", False):
             print("[error] --quota 与 --drift-correct 互斥：配额已经把落地分布"
@@ -1089,6 +1089,10 @@ def main(argv: list[str] | None = None) -> None:
         if getattr(args, "alpha_target", None) is not None:
             print("[error] --quota 与 --alpha-target 互斥：维度题的配额本就由"
                   "计划矩阵管，两套配额记账会各自扣各自的账")
+            sys.exit(2)
+        if getattr(args, "replay_file", None):
+            print("[error] --quota 与 --replay-file 互斥：回放份的答案来自"
+                  "答卷表、不走配额账，混跑的兑现报告说不清缺口来自哪一边")
             sys.exit(2)
         quota.enable(True)
         # C1 语义（按明确成功兑现）要求循环跑到 N 份成功 —— 隐含 target-success

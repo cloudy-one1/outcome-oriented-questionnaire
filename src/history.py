@@ -516,10 +516,13 @@ class SubmissionHistory:
                 # （老库 dedup 失败或极端并发产生重复）。
                 # 其他异常（连接关闭、磁盘 IO 错误等）必须上抛暴露问题，
                 # 不应被误当作"幂等冲突"走 DELETE+INSERT。
-                return self._record_answer_fallback(
+                answer_id = self._record_answer_fallback(
                     run_id, submission_index, question_number,
                     question_type, opts_json, text_answer, elapsed_ms,
                 )
+                # 兜底路径同样是落库，心跳与主路径同权（v4.2 P1-7）
+                self._touch_heartbeat_locked(run_id)
+                return answer_id
 
     def _record_answer_fallback(
         self,

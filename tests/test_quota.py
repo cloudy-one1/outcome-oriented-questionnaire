@@ -260,6 +260,71 @@ class TestProgressReport(unittest.TestCase):
         self.assertEqual(quota.progress_report(), [])
 
 
+class TestQuotaScopeB1(unittest.TestCase):
+    """B1 边界（2026-10-29 独立审查 P1/P2）：配额只对单选/下拉建账。"""
+
+    def setUp(self) -> None:
+        _reset()
+
+    def tearDown(self) -> None:
+        _reset()
+
+    def test_scale_and_matrix_never_get_ledgers(self) -> None:
+        """量表与矩阵即使开着配额也不得建账 —— 此前
+        _weighted_or_equal_choice 把 quota_eligible 硬编给所有调用方：
+        量表分值被配额钉死（与 B1 相反）、矩阵题留幽灵账本刷"未兑完"假报告。
+        """
+        from src import config as cfg_module
+        from src.answering_v2 import generate_answer
+
+        with mock.patch.dict(
+            cfg_module.WEIGHT_CONFIG,
+            {
+                5: {"type": "scale", "scale": 5},
+                6: {"type": "matrix_single", "rows": [1], "cols": [1, 2],
+                    "row_weights": {1: [1, 1]}},
+            },
+            clear=True,
+        ):
+            quota.enable(True)
+            quota.start_run(10)
+            for _ in range(5):
+                generate_answer({"q": 5, "type": "scale", "scale": 5})
+                generate_answer({"q": 6, "type": "matrix_single",
+                                 "rows": [1], "cols": [1, 2]})
+            self.assertNotIn(5, quota._remaining, "量表不得建配额账")
+            self.assertNotIn(6, quota._remaining, "矩阵不得建配额账")
+
+    def test_exhausted_ledger_while_batch_continues_warns_once(self) -> None:
+        """不变量失守路径（独立审查 P2）：账本提前全满而成功数未达标 →
+        大声说明并每批只提醒一次，不静默放过。"""
+        import io
+        from contextlib import redirect_stdout
+
+        quota.enable(True)
+        quota.start_run(10)
+        quota.effective_weights(1, [1.0, 1.0], 2)      # 配额 [5, 5]
+        quota._remaining[1] = [0, 0]                    # 人为造"提前全满"
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            quota.effective_weights(1, [1.0, 1.0], 2)
+            quota.effective_weights(1, [1.0, 1.0], 2)
+        self.assertIn("不再受配额约束", buf.getvalue())
+        self.assertEqual(buf.getvalue().count("不再受配额约束"), 1, "每批只提醒一次")
+
+    def test_progress_report_distinguishes_shortfall_causes(self) -> None:
+        """独立审查 P2：缺口成因必须区分"达标但未兑现"与"尝试上限先到"。"""
+        quota.enable(True)
+        quota.start_run(10)
+        quota.effective_weights(1, [1.0, 1.0], 2)
+        quota._remaining[1] = [0, 2]
+        lines = quota.progress_report()
+        self.assertTrue(any("尝试上限先到" in line for line in lines), lines)
+        quota._consumed_total = 10
+        lines = quota.progress_report()
+        self.assertTrue(any("缺席" in line for line in lines), lines)
+
+
 class TestCliMutualExclusion(unittest.TestCase):
     """验收标准 3：--quota 与 --drift-correct / --alpha-target 同给退出码 2。"""
 
@@ -293,6 +358,12 @@ class TestCliMutualExclusion(unittest.TestCase):
         code, out = self._main("--quota", "--alpha-target", "0.8")
         self.assertEqual(code, 2)
         self.assertIn("--alpha-target 互斥", out)
+
+    def test_rejects_replay_file(self) -> None:
+        """独立审查 P3：回放份不走配额账，混跑的兑现报告说不清缺口。"""
+        code, out = self._main("--quota", "--replay-file", "r.csv")
+        self.assertEqual(code, 2)
+        self.assertIn("--replay-file 互斥", out)
 
     def test_quota_alone_enables_and_implies_target_success(self) -> None:
         """不带冲突开关时 --quota 通过校验：banner 出现，且以 target-success

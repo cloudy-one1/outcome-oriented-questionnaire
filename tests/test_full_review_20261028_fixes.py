@@ -331,6 +331,24 @@ def test_p1_4_merge_helper_edges() -> None:
     assert 3 in merged3 and merged3[3]["weights"] == [0, 0, 0, 0, 1]
 
 
+def test_p1_4_merge_sort_with_weights_and_order_keeps_both(capsys) -> None:
+    """独立审查 P3：排序配置同时带 weights 与 order 时，第 4 列只能渲染其一，
+    order 没进过表格 —— 缺席不得当"用户清空"删掉，须保留并告警。"""
+    imported = {2: {"type": "sort", "weights": [8, 1, 1],
+                    "order": ["3", "2", "1"]}}
+    # 表格里渲染出来的是 weights 串，按排序语法解析不出 order → pentry 无 order
+    parsed = {2: {"type": "sort", "anchor": {"title": "x"}}}
+    merged = _merge_imported_advanced(imported, parsed, known_qnums={2})
+    assert merged[2]["order"] == ["3", "2", "1"], "order 不得被当清空删除"
+    assert "weights" in merged[2]
+    assert "同时带 weights 与 order" in capsys.readouterr().out
+
+    # 解析结果真的带了 order（渲染修复前的旧配置走不到这里，但语法上合法）
+    parsed_with_order = {2: {"type": "sort", "order": ["1", "2", "3"]}}
+    merged2 = _merge_imported_advanced(imported, parsed_with_order)
+    assert merged2[2]["order"] == ["1", "2", "3"], "表格改的 order 必须兑现"
+
+
 # ================================================================== P1-7
 
 def test_p1_7_record_touches_heartbeat_only_while_running() -> None:
@@ -352,6 +370,42 @@ def test_p1_7_record_touches_heartbeat_only_while_running() -> None:
         h3 = db._query_one(
             "SELECT heartbeat_at h FROM runs WHERE id=?", (rid,))["h"]
         assert h3 == h2
+    finally:
+        db.close()
+
+
+def test_p1_7_fallback_insert_path_also_touches_heartbeat() -> None:
+    """IntegrityError 兜底（DELETE+INSERT）同样是落库 —— 心跳与主路径同权。
+
+    2026-10-29 自审发现：兜底分支直接 return，漏刷了心跳；正常批次触发不到
+    它（INSERT OR REPLACE 吃掉唯一冲突），但老库 dedup 失败时每一题都走这条
+    路 —— 一个全走兜底的批次安静得像死了一样。
+    """
+    import sqlite3
+
+    db = SubmissionHistory(":memory:")
+    try:
+        rid = db.start_run("https://x/hb2", 5, "edge", False)
+
+        class _FlakyConn:
+            """sqlite3.Connection.execute 是只读属性，patch 不了 —— 换薄代理。"""
+
+            def __init__(self, real):
+                self._real = real
+
+            def execute(self, sql, *a, **k):
+                if "INSERT OR REPLACE INTO answers" in sql:
+                    raise sqlite3.IntegrityError("simulated unique-index failure")
+                return self._real.execute(sql, *a, **k)
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        db._conn = _FlakyConn(db._conn)
+        db.record_answer(rid, 1, 1, "single", [0])
+        h = db._query_one(
+            "SELECT heartbeat_at h FROM runs WHERE id=?", (rid,))["h"]
+        assert h is not None, "兜底插入也要刷新心跳"
     finally:
         db.close()
 

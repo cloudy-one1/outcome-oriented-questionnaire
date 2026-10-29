@@ -365,6 +365,11 @@ class TestZeroWeightCountContradiction(unittest.TestCase):
         # 没配 weights（等权）谈不上矛盾
         ok2 = {2: {"type": "multi", "count_options": [3]}}
         self.assertEqual(self.mod.validate_weight_config(ok2), [])
+        # count 超过**选项数**不拦：旧运行期夹到全选，「全选」语义合法
+        # （2026-10-29 独立审查 P3：矛盾判定只针对"≤选项数但>非零权重"）
+        ok3 = {3: {"type": "multi", "weights": [1, 1, 1, 1, 1],
+                   "count_options": [10]}}
+        self.assertEqual(self.mod.validate_weight_config(ok3), [])
 
     def test_matrix_pick_exceeding_row_positive_is_rejected(self) -> None:
         errs = self.mod.validate_weight_config(
