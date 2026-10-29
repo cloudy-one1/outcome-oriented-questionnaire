@@ -44,6 +44,7 @@ from .completeness import describe_gap, describe_not_written, unanswered_require
 from .persona import new_persona
 # v3.2 投递分布在线纠正：只有提交成功的那份才计入统计（见该模块 docstring）
 from . import distribution
+from . import quota
 # v3.2 真实答卷回放：逐题覆盖 + 成功才推进队列
 from . import reverse_fill
 # v3.2 信度控制：整批计划矩阵（--alpha-target），逐题按秩映射兑现
@@ -637,6 +638,7 @@ def run_one_submission(
     except Exception as e:
         # Ctrl+C/SystemExit 直接上抛（不做任何清理尝试以免吞）
         distribution.discard_buffer()
+        quota.discard_buffer()
         raise_non_recoverable(e)
         print("  " + format_exc_log(
             e, action="单次提交核心流程", recovery="尝试回到默认上下文并重抛给外层重试",
@@ -655,13 +657,17 @@ def run_one_submission(
         # 停止信号 / Ctrl+C：这一份永远不会有结果，缓冲必须丢掉 —— 留着它，
         # 下一份的 commit 会把本题一起算进去，实际份额就虚增了。
         distribution.discard_buffer()
+        quota.discard_buffer()
         raise
 
     # 分布统计与回放队列都只认**真的提交成功**的那几份：failed / unknown 的一份
     # 可能压根没入库，把它们算进去等于往一个不存在的目标上收敛。
+    # 配额调度（--quota，默认关）同一口径：只有成功的份消耗配额（C1 语义）。
     if outcome == "success":
         distribution.commit_buffer()
+        quota.commit_buffer()
         reverse_fill.mark_consumed(submission_index)
     else:
         distribution.discard_buffer()
+        quota.discard_buffer()
     return outcome

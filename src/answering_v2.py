@@ -32,7 +32,7 @@ import datetime as _dt
 import random
 from typing import Any, Optional
 
-from . import anchoring, distribution, plan
+from . import anchoring, distribution, plan, quota
 from .config import active_batch_config
 from .persona import Persona, active_persona
 from .utils import (
@@ -174,8 +174,10 @@ def _drift_weights(
     qnum: Optional[int],
     weights: Optional[list[float]],
     n: int,
+    *,
+    quota_eligible: bool = False,
 ) -> Optional[list[float]]:
-    """投递分布纠正开着时，把目标权重按已落地的缺口小幅修正。
+    """单点修权：信度计划 → 投递分布纠正 → 配额屏蔽，按优先级依次生效。
 
     关着时原样返回，所以默认路径与 v3.1 逐位一致。配置权重长度与选项数不符时
     退回等权 —— 错位修正比不修正更糟。
@@ -183,15 +185,24 @@ def _drift_weights(
     **信度计划优先于一切**：``plan`` 给这一题这一份定了选项，就直接 one-hot。
     复用加权采样这条路而不是另开一条，是因为点击、DOM 回读、落盘、重试全都挂在
     "生成一个答案字典"这个出口上 —— 多开一条路就多一处会忘记校验的地方。
+
+    ``quota_eligible`` 只有单选/下拉这条路径给 True：配额只对"每份恰好选一个"
+    的题型有意义（``--quota``，默认关；多选的入选率语义见 src/quota.py B1）。
+    满额选项的权重被清零，未满额的保持配置相对频率 —— 收敛由扣账保证精确。
     """
     if qnum is not None:
         forced = plan.forced_choice(qnum)
         if forced is not None and 0 <= forced < n:
             return [1.0 if i == forced else 0.0 for i in range(n)]
-    if qnum is None or not distribution.control_enabled():
+    quota_on = quota_eligible and quota.enabled()
+    if qnum is None or (not distribution.control_enabled() and not quota_on):
         return weights
     base = list(weights) if weights and len(weights) == n else [1.0] * n
-    return distribution.adjust(qnum, base)
+    if distribution.control_enabled():
+        base = distribution.adjust(qnum, base)
+    if quota_on:
+        return quota.effective_weights(qnum, base, n)
+    return base
 
 
 def _weighted_or_equal_choice(
@@ -199,8 +210,8 @@ def _weighted_or_equal_choice(
     weights: Optional[list[float]] = None,
     qnum: Optional[int] = None,
 ) -> int:
-    """单个选项：有权重按权重抽，否则均匀。"""
-    weights = _drift_weights(qnum, weights, len(indices))
+    """单个选项：有权重按权重抽，否则均匀。配额模式（--quota）下只抽未满额项。"""
+    weights = _drift_weights(qnum, weights, len(indices), quota_eligible=True)
     if weights_are_usable(weights, len(indices)):
         return random.choices(indices, weights=weights, k=1)[0]
     return random.choice(indices)

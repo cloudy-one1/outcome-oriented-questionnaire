@@ -45,6 +45,7 @@ from .platforms import unsupported_url_notice
 
 from . import __version__
 from . import distribution  # v3.2 投递分布在线纠正（默认关，--drift-correct 开）
+from . import quota  # v4.2 配额调度（默认关，--quota 开；设计稿 docs/design/DESIGN_quota_scheduling.md）
 from . import reverse_fill  # v3.2 真实答卷回放（--replay-file）
 from . import reliability  # v3.2 实测 Cronbach α 报告（--report-alpha）
 from . import plan as alpha_plan  # v3.2 信度控制（--alpha-target）
@@ -327,6 +328,18 @@ def parse_args(argv: list[str] | None = None) -> Namespace:
              " 默认 False（旧行为：count = 总尝试次数，跑满即结束）。",
     )
     parser.add_argument(
+        "--quota",
+        dest="quota",
+        action="store_true",
+        default=False,
+        help="[v4.2] 配额调度：单选/下拉**恰好**按配置比例兑现到整批的成功份数上"
+             "（100 份 → 10/30/50/10 各恰好；每份生成时只在未满额的选项里按权重抽）。"
+             " failed/UNKNOWN 不占配额，重投继续填未满的格 —— 因此 --count 被解释为"
+             " 目标成功份数（隐含 --target-success），跑到达成或尝试上限。"
+             " 多选/矩阵/排序/量表不走配额（语义见 src/quota.py）。默认关 —— 它改变"
+             " 作答结果；与 --drift-correct、--alpha-target 互斥。",
+    )
+    parser.add_argument(
         "--max-attempts",
         dest="max_attempts",
         type=_positive_int,
@@ -519,6 +532,7 @@ def run_batch(
     max_total_seconds: float | None = None,
     rescue_gaps: bool = False,
     manual_submit: bool = False,
+    quota_mode: bool = False,
 ) -> tuple[int, int]:
     """批量执行指定份数的问卷提交 —— **CLI 与 GUI 共用的唯一批次引擎**。
 
@@ -626,6 +640,7 @@ def run_batch(
             max_total_seconds=max_total_seconds,
             rescue_gaps=rescue_gaps,
             manual_submit=manual_submit,
+            quota_mode=quota_mode,
         )
     finally:
         set_active_batch_config(None)
@@ -655,6 +670,7 @@ def _run_batch_inner(
     max_total_seconds: float | None = None,
     rescue_gaps: bool = False,
     manual_submit: bool = False,
+    quota_mode: bool = False,
 ) -> tuple[int, int]:
     """run_batch 的本体（文档见 run_batch）；配置快照的挂/摘由外层包装负责。"""
     # ----- 延迟导入（运行时强依赖） -----
@@ -708,6 +724,9 @@ def _run_batch_inner(
     consumed_attempts = int(resume_done) + int(resume_fail)
     # 每份问卷各自清零分布统计：开着纠正时不清，上一份问卷的落地比例会来管这一份
     distribution.start_run()
+    # v4.2 配额调度（--quota）：每批各建各的账本；N = 目标成功份数
+    quota.enable(quota_mode)
+    quota.start_run(int(total_submissions))
     reverse_fill.reset_for_survey()   # 同理：列绑定缓存按题号存，换问卷必须清
     alpha_plan.reset_survey()         # 同理：计划矩阵是按当前问卷的题号算出来的
     attempts_cap: int
@@ -770,6 +789,21 @@ def _run_batch_inner(
 
     if not state.total_elapsed_start:
         state.total_elapsed_start = time.perf_counter()
+
+    # v4.2 配额调度：续传时按历史库把已成功份数消耗的配额扣掉 —— 单一真相与
+    # resume_progress 相同（submissions 表 final_status='success' + answers 明细）。
+    if (quota.enabled() and history_db is not None and state.run_id is not None
+            and int(state.resume_start_idx) > 1):
+        try:
+            rebuilt = quota.rebuild_consumed(history_db, state.run_id)
+            if rebuilt:
+                _log(f"[配额] 续传恢复：已按历史成功答卷扣减配额（{rebuilt} 题次）")
+        except Exception as _qe:
+            raise_non_recoverable(_qe)
+            _log("  " + format_exc_log(
+                _qe, action="quota.rebuild_consumed",
+                recovery="忽略：配额按满账续跑，收尾报告会暴露偏差",
+            ))
 
     def _emit(res: RoundOutcome) -> None:
         """回调 on_round（若给了）—— 计数器已在 state 上更新完毕。"""
@@ -1000,6 +1034,10 @@ def _run_batch_inner(
             _log(f"[统计] 其中 {state.unknown_count} 次提交结果未知"
                  f"（按钮已点击但未观察到成功信号），已保守计入失败数。")
 
+        # v4.2 配额调度（--quota）：收尾必须报兑现情况 —— 缺口说明尝试上限先到
+        for _quota_line in quota.progress_report():
+            _log(_quota_line)
+
         # 无论如何都要关闭浏览器，避免进程残留
         _quit_quietly(driver)
 
@@ -1041,6 +1079,22 @@ def main(argv: list[str] | None = None) -> None:
         distribution.enable(True)
         print("[drift] 在线纠正已开启：只统计提交成功的份，"
               "因子夹 ±1/3、前 8 份完全不纠正")
+
+    # v4.2 配额调度：与纠正/信度计划互斥 —— 三者都在改"这份答什么"，叠加语义不明
+    if getattr(args, "quota", False):
+        if getattr(args, "drift_correct", False):
+            print("[error] --quota 与 --drift-correct 互斥：配额已经把落地分布"
+                  "钉死在配置上，纠正没有东西可纠，叠加只会互相打架")
+            sys.exit(2)
+        if getattr(args, "alpha_target", None) is not None:
+            print("[error] --quota 与 --alpha-target 互斥：维度题的配额本就由"
+                  "计划矩阵管，两套配额记账会各自扣各自的账")
+            sys.exit(2)
+        quota.enable(True)
+        # C1 语义（按明确成功兑现）要求循环跑到 N 份成功 —— 隐含 target-success
+        args.target_success = True
+        print("[配额] 配额调度已开启：单选/下拉恰好按配置比例兑现到成功份数上，"
+              f"-n {args.count} 解释为目标成功份数（failed/UNKNOWN 不占配额）")
 
     # v3.2 信度控制：目标 α 越界要在动手前说清楚，别等建计划时抛 ValueError
     if getattr(args, "alpha_target", None) is not None:
@@ -1309,6 +1363,7 @@ def main(argv: list[str] | None = None) -> None:
                 max_total_seconds=args.max_total_time,
                 rescue_gaps=args.rescue_gaps,
                 manual_submit=args.manual_submit,
+                quota_mode=bool(getattr(args, "quota", False)),
             )
             total_success += success
             total_fail += fail

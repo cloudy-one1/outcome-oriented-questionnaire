@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 
 from .. import distribution  # v3.2 投递分布在线纠正的缓冲入口
+from .. import quota  # v4.2 配额调度（--quota，默认关）的缓冲入口
 from .. import reverse_fill  # v3.2 真实答卷回放：逐题问一次要不要覆盖
 from ..answering_v2 import generate_answer as generate_answer_v2
 from ..answering_v2 import generate_option_blank_text
@@ -416,6 +417,14 @@ def _answer_one_question(
         picks, n_slots = _distribution_picks(q, qtype, options_selected)
         if picks and n_slots > 0:
             distribution.buffer_answer(qnum, picks, n_slots)
+
+    # ---- 配额调度（--quota，默认关）：同样只攒单选形的选中项 ----
+    # 换算沿用 _distribution_picks（value → 0-based 下标，矩阵/排序已排除）；
+    # 多选/量表在 quota.buffer_answer 里按"恰好一个下标"与"有无账本"双重过滤。
+    if quota.enabled() and is_ok and options_selected:
+        picks, _n_slots = _distribution_picks(q, qtype, options_selected)
+        if picks:
+            quota.buffer_answer(qnum, picks)
 
     return bool(is_ok)
 

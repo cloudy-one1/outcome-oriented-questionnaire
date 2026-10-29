@@ -92,6 +92,7 @@ python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 3 --manual-submit
 | `--stats` | 关 | 运行结束后打印全库统计（需配合 `--history`） |
 | `--no-record-text` | 关 | 隐私保护：填空题答案不写入 SQLite（DOM 仍需填入真实文本） |
 | `--target-success` | 关 | 把 `-n` 解释为「目标成功份数」，达成即提前结束 |
+| `--quota` | 关 | **配额调度**：单选/下拉**恰好**按配置比例兑现到整批成功份数上（100 份 → 10/30/50/10 各恰好；每份只在未满额的选项里按权重抽，收尾是记账精确不是概率收敛）。failed/UNKNOWN 不占配额，重投继续填未满的格 —— 因此隐含 `--target-success`，`-n` 即目标成功份数。多选/矩阵/排序/量表不走配额（入选率语义见 `src/quota.py`）。收尾打印 `[配额]` 兑现报告，未填满即尝试上限先到。与 `--drift-correct`、`--alpha-target` 互斥（退出码 2）；续传按历史库逐份成败重建账本。默认关 —— 它改变作答结果 |
 | `--max-attempts N` | `2×n` | 仅 `--target-success` 时生效：最大尝试次数上限。`--resume` 时按**已尝试次数**扣减（上次成功数 + 失败数），所以续传后总尝试数不会超过 N |
 | `--resume` | 关 | 断点续传：复用**同一份问卷**最近一次未完成批次的 run_id、计数与权重快照，并沿用其计划总份数（需配合 `--history`）。同一份问卷的不同 URL 形态算同一个批次，见下节 |
 | `--log-file PATH` | 关 | 启用 logging 并把运行日志写入指定文件 |
@@ -158,8 +159,9 @@ python run_cli.py -u "https://www.wjx.cn/vm/xxxxx.aspx" -n 3 --manual-submit
 - **投递分布在线纠正**（`--drift-correct`） — 加权随机只管每次抽样的期望，管不了"失败与 UNKNOWN 吃掉几份之后落地还剩什么比例"。开启后按**已提交成功**的实际比例对目标权重做小幅指数修正（因子夹 ±1/3、前 8 份完全不纠正）。它改变答题结果，所以不是默认行为（`src/distribution.py`）
 - **实测信度报告**（`--report-alpha`，只测不改） — 批次结束后从历史库读已落库的答案，按维度打印**实测 Cronbach α**；维度取权重配置里人显式声明的 `dimension` / `reverse`。配置没声明时按全部量表题兜底分组，**并在输出里明说那不是某个构念的信度**。v4.2 起样本口径是**仅明确成功的提交**（按逐份成败表过滤）：failed / unknown / 没有逐份状态的尝试一律不计入、也不补数 —— 这份报告回答的是"已入库答卷可不可信"，不是"作答过程多稳定"
 - **信度控制**（`--alpha-target`） — 先按权重把每道题的选项配额精确摊到总份数上，再用潜变量 + 按秩映射兑现它，使整批的量表结构逼近目标 α（`src/plan.py`，设计稿 `docs/design/DESIGN_reliability_alpha.md`）。必须在权重配置里用 `dimension` 显式声明哪些题属于同一构念，没声明就不建计划并说清原因；**边际配额优先**，α 不达标只告警不返工。少于 30 份不参与
+- **配额调度**（`--quota`，`src/quota.py`，设计稿 `docs/design/DESIGN_quota_scheduling.md`） — 把「自定义比例」从概率收敛升级为**记账精确**：整批成功份数在单选/下拉上恰好按配置比例分配，failed/UNKNOWN 不占配额。是这一族里唯一**保证**兑现的：分布纠正往目标上拉，它把目标钉死
 
-这四条里只有 `--report-alpha` 是纯读侧。`--alpha-target` 与 `--replay-file`
+这五条里只有 `--report-alpha` 是纯读侧。`--alpha-target`、`--quota` 与 `--replay-file`
 把工具的能力边界从"填得完"推到"让造出来的数据通过信度检验"，
 因此只适用于自有或已获授权的测试问卷 —— 见 README 的免责声明。
 
