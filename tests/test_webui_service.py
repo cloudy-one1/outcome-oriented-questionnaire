@@ -1204,6 +1204,38 @@ def test_manual_submit_field_coerces_like_the_other_booleans(tmp_path):
     assert sess.manual_submit is False
 
 
+def test_quota_field_coerces_like_the_other_booleans(tmp_path):
+    sess, _svc, _calls, _db = make_runner(tmp_path)
+    sess.set_field("quota", 1)
+    assert sess.quota is True
+    sess.set_field("quota", 0)
+    assert sess.quota is False
+
+
+def test_quota_flows_into_the_engine_and_implies_target_success(tmp_path):
+    """v4.2 配额调度：开关 → 引擎 kwargs（quota_mode + 隐含 target_success），并留横幅。"""
+    sess, svc, calls, _db = make_runner(tmp_path)
+    sess.set_field("url", "https://x.test/s")
+    sess.set_field("count", 5)
+    sess.set_field("quota", True)
+    svc.start_run()
+    assert svc.wait_for_run(5)
+    assert calls["quota_mode"] is True, "配额开关必须真传进引擎"
+    assert calls["target_success"] is True, "C1 语义：-n 是目标成功份数，跑到达成"
+    assert any(t == "WARN" and "配额调度" in x for t, x in logs_of(sess))
+
+
+def test_quota_off_keeps_the_default_engine_call(tmp_path):
+    """不开配额：引擎收到的仍是旧契约（quota_mode/target_success 双 False）。"""
+    sess, svc, calls, _db = make_runner(tmp_path)
+    sess.set_field("url", "https://x.test/s")
+    sess.set_field("count", 2)
+    svc.start_run()
+    assert svc.wait_for_run(5)
+    assert calls["quota_mode"] is False
+    assert calls["target_success"] is False
+
+
 def test_round_callbacks_become_log_lines_and_progress(tmp_path):
     sess, svc, _calls, _db = make_runner(tmp_path, rounds=[
         FakeRound(1, "success", "第 1 份已提交"),

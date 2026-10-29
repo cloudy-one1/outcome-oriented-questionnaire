@@ -725,8 +725,16 @@ class WebService:
         if state.manual_submit:
             self._log("人工提交 : 每一份都停在提交按钮前，由你核对后自己点"
                       "（超时没人点 = 这一份没交出去，计失败）", "WARN")
+        # v4.2 配额调度：启动一刻冻结开关（RunState 建好之后 worker 不再读界面状态），
+        # 隐含 target-success —— -n 就是目标成功份数，failed/UNKNOWN 不占配额。
+        quota_mode = bool(self.session.quota)
+        if quota_mode:
+            self._log("配额调度 : 单选/下拉恰好按配置比例兑现到成功份数上 —— "
+                      f"-n {state.total_target} 即目标成功份数，失败/未知不占配额"
+                      "（多选/矩阵/排序/量表维持原语义）", "WARN")
         self._log("═" * 40, "HEADER")
-        self._run_thread = threading.Thread(target=self._run_loop, args=(state,),
+        self._run_thread = threading.Thread(target=self._run_loop,
+                                            args=(state, quota_mode),
                                             name="wjx-run", daemon=True)
         self._run_thread.start()
 
@@ -746,11 +754,12 @@ class WebService:
         thread.join(timeout if timeout is not None else self._join_timeout)
         return not thread.is_alive()
 
-    def _run_loop(self, state: RunState) -> None:
+    def _run_loop(self, state: RunState, quota_mode: bool = False) -> None:
         """批次语义只有一份实现：这里只是把 RunState 交给 ``src.cli.run_batch``。
 
         与 Tk 宿主共用同一个入口，所以"GUI 与 CLI 跑出不同结果"这类问题
-        在结构上不存在。
+        在结构上不存在。``quota_mode`` 由 start_run 在启动一刻冻结（隐含
+        target-success —— -n 就是目标成功份数，见 src/quota.py C1）。
         """
         run_batch = self._run_batch
         if run_batch is None:                                  # pragma: no cover
@@ -772,6 +781,8 @@ class WebService:
                       weight_config=state.weight_config_snapshot,
                       no_record_text=state.no_record_text,
                       manual_submit=state.manual_submit,
+                      target_success=quota_mode,
+                      quota_mode=quota_mode,
                       state=state,
                       on_round=on_round,
                       log=lambda msg: self._log(msg, "INFO"),

@@ -146,6 +146,11 @@ class RunSession:
         # 由在场的人核对后自己点。默认关 —— 与 CLI 同一默认。Web 宿主没有无头形态
         # （它存在的意义就是"看着窗口跑"），CLI 那条与 --headless 的互斥在这里结构性成立。
         self.manual_submit: bool = False
+        # 配额调度（v4.2 --quota，docs/design/DESIGN_quota_scheduling.md）：单选/下拉
+        # 恰好按配置比例兑现到成功份数上，-n 即目标成功份数（隐含 target-success）。
+        # 默认关 —— 与 CLI 同一默认；Web 端没有 drift/alpha 开关，CLI 的互斥在这里
+        # 结构性不存在。
+        self.quota: bool = False
 
         # ---- 运行态 ----
         self.status: str = "就绪"
@@ -220,6 +225,8 @@ class RunSession:
                 self.no_record_text = bool(value)
             elif name == "manual_submit":
                 self.manual_submit = bool(value)
+            elif name == "quota":
+                self.quota = bool(value)
             else:
                 raise ValidationError(f"未知字段：{name}")
         self.emit_state()
@@ -264,6 +271,7 @@ class RunSession:
                 "use_uc": self.use_uc,
                 "no_record_text": self.no_record_text,
                 "manual_submit": self.manual_submit,
+                "quota": self.quota,
             }
 
     # ------------------------------------------------------------ 运行态

@@ -76,6 +76,10 @@
               <input type="checkbox" id="manual-submit">
               <span>✋ 人工提交（答完停在提交按钮前，由你核对后自己点；等 180s 没人点算这份失败——它没交出去，平台上不留记录）</span>
             </label>
+            <label class="check">
+              <input type="checkbox" id="quota">
+              <span>🎯 配额调度（单选/下拉**恰好**按配置比例兑现到成功份数上：100 份 → 10/30/50/10 各恰好；失败/未知不占配额，份数即目标成功数。收尾打印兑现报告）</span>
+            </label>
           </div>
           <div class="actions">
             <button type="button" class="btn btn-primary" id="btn-detect">🔍 探测题目</button>

@@ -250,6 +250,20 @@ def test_field_endpoint_accepts_manual_submit_and_the_state_carries_it(api):
     assert payload["state"]["form"]["manual_submit"] is True
 
 
+def test_field_endpoint_accepts_quota_and_the_state_carries_it(api):
+    """v4.2 配额调度：同一个往返通道（/api/field → form 快照），默认关。"""
+    made, session, _svc = api
+    assert session.quota is False
+    resp = post(made, "/api/field", {"name": "quota", "value": True})
+    assert resp.status == 200
+    assert session.quota is True
+    payload = body_of(made.handle("GET", "/api/state", host="127.0.0.1:8000"))
+    assert payload["state"]["form"]["quota"] is True
+    resp = post(made, "/api/field", {"name": "quota", "value": 0})
+    assert resp.status == 200
+    assert session.quota is False
+
+
 def test_weights_endpoint_is_the_only_way_the_table_gets_back(api):
     """权重表整列一次写回：前端在浏览器里，服务端是唯一能收下它的地方。
 
