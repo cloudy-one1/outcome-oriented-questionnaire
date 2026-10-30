@@ -397,8 +397,8 @@ def generate_answer(question: dict) -> dict[str, Any]:
     if qtype in ("single", "radio"):
         choices = list(question["choices"])
         indices = list(range(len(choices)))
-        # quota_eligible=True 只给单选/下拉 —— 配额（--quota）只对"每份恰好选
-        # 一个"的题型有意义（B1：量表/矩阵/多选维持相对频率语义，见 src/quota.py）
+        # quota_eligible=True 只给单选/下拉 —— 配额的单选形账本（多选走 B2
+        # 校准账本，见下方 multi 分支与 src/quota.py）
         picked_idx = _weighted_or_equal_choice(indices, _cfg_weights(question),
                                                qnum, quota_eligible=True)
         return {"type": "single", "selected": [choices[picked_idx]]}
@@ -410,6 +410,19 @@ def generate_answer(question: dict) -> dict[str, Any]:
         qi = question.get("q")
         cfg = _cfg_entry(question)
         n = len(indices)
+        # v4.2.2（B2 立项，推翻此前的 B1 选择）：配额模式下多选的 weights =
+        # 目标入选率 —— 引擎校准"这份勾哪 k 个"（剩余配额最大优先，平局随机），
+        # 使各选项实际入选率 ∝ 权重（夹 100% 后重分配）。要求 count_options
+        # 固定为单一值（k 漂移时入选率没有定义）；不满足的题回退 B1 并告警。
+        if quota.enabled():
+            calibrated_k = quota.multi_calibrated_k(cfg, n, qi)
+            if calibrated_k is not None:
+                calibrated = quota.multi_pick(qi, n, calibrated_k,
+                                              _cfg_weights(question))
+                if calibrated is not None:
+                    return {"type": "multi",
+                            "selected": [choices[i] for i in calibrated]}
+            # 未校准（count 漂移 / k 越界 / 账本提前耗尽）→ 落到下方 B1 路径
         if cfg and "count_options" in cfg:
             count_opts = list(cfg["count_options"])
             if not count_opts:

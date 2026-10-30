@@ -206,11 +206,14 @@ class TestResumeRebuild(unittest.TestCase):
 
             quota.enable(True)
             quota.start_run(10)
-            self.assertEqual(quota.rebuild_consumed(db, rid), 2,
-                             "只有成功的份扣账；多选明细（len≠1）不进单选形账")
+            self.assertEqual(quota.rebuild_consumed(db, rid), 4,
+                             "成功的份扣账（单选 2 行 + 多选 2 行）；failed 不占")
 
             quota.effective_weights(1, [1.0, 1.0], 2)   # 初始化 [5,5] - 历史 2
             self.assertEqual(quota._remaining[1], [3, 5])
+            self.assertEqual(quota._multi_pre_consumed.get(2), {0: 2, 1: 2},
+                             "多选明细进多选暂记账（len==1 的 q1 行也进，但 q2 "
+                             "不会建单选账，不会双计）")
 
     def test_pre_consumed_beyond_quota_clamps_with_warning(self) -> None:
         """改过权重后续传：历史成功数超过当前配额 → 夹 0 并大声说明。
@@ -320,9 +323,148 @@ class TestQuotaScopeB1(unittest.TestCase):
         quota._remaining[1] = [0, 2]
         lines = quota.progress_report()
         self.assertTrue(any("尝试上限先到" in line for line in lines), lines)
-        quota._consumed_total = 10
+        quota._success_count = 10
         lines = quota.progress_report()
         self.assertTrue(any("缺席" in line for line in lines), lines)
+
+
+class TestMultiCalibrationB2(unittest.TestCase):
+    """B2（2026-10-30 立项）：多选权重 = 目标入选率，引擎校准逐份勾选。"""
+
+    def setUp(self) -> None:
+        _reset()
+
+    def tearDown(self) -> None:
+        _reset()
+
+    def test_alloc_multi_water_filling(self) -> None:
+        # 8,1,1 选 2、N=2：rate 100/50/50 → [2,1,1]
+        self.assertEqual(quota._alloc_multi(2, [8, 1, 1], 3, 2), [2, 1, 1])
+        # 等权 4 选项选 2、N=8 → 每项入选 4/8 = 50%
+        self.assertEqual(quota._alloc_multi(8, [1, 1, 1, 1], 4, 2), [4, 4, 4, 4])
+        # 封顶重分配：[10,1] 选 2、N=10 → 两项都必须在每份里（rate 100%）
+        self.assertEqual(quota._alloc_multi(10, [10, 1], 2, 2), [10, 10])
+        # 零权重 = 0 配额（0 = 绝不选择，与单选同一条语义）
+        self.assertEqual(quota._alloc_multi(10, [8, 1, 0], 3, 2)[2], 0)
+
+    def test_exact_inclusion_rates_through_generate(self) -> None:
+        """端到端：8,1,1 选 2、10 份成功 → 选项 1 全中、选项 2/3 各恰 5 份。"""
+        from src import config as cfg_module
+        from src.answering_v2 import generate_answer
+
+        random.seed(20261030)
+        with mock.patch.dict(
+            cfg_module.WEIGHT_CONFIG,
+            {1: {"type": "multi", "weights": [8, 1, 1], "count_options": [2]}},
+            clear=True,
+        ):
+            quota.enable(True)
+            quota.start_run(10)
+            question = {"q": 1, "type": "multi", "choices": [1, 2, 3]}
+            tally: Counter = Counter()
+            for _ in range(10):
+                ans = generate_answer(question)
+                picks = [int(x) - 1 for x in ans["selected"]]
+                quota.buffer_answer(1, picks)
+                quota.commit_buffer()
+                for p in picks:
+                    tally[p] += 1
+            self.assertEqual([tally[i] for i in range(3)], [10, 5, 5],
+                             f"入选率必须精确 ∝ 权重（100/50/50%），实际 {dict(tally)}")
+            self.assertEqual(quota._multi_remaining[1], [0, 0, 0])
+
+    def test_unequal_weights_get_proportional_rates(self) -> None:
+        """3,2,1 选 2、N=6：rate ∝ 3:2:1 → 总 12 格 = [6,4,2]（100/66/33%）。"""
+        from src import config as cfg_module
+        from src.answering_v2 import generate_answer
+
+        random.seed(11)
+        with mock.patch.dict(
+            cfg_module.WEIGHT_CONFIG,
+            {1: {"type": "multi", "weights": [3, 2, 1], "count_options": [2]}},
+            clear=True,
+        ):
+            quota.enable(True)
+            quota.start_run(6)
+            question = {"q": 1, "type": "multi", "choices": [1, 2, 3]}
+            tally: Counter = Counter()
+            for _ in range(6):
+                ans = generate_answer(question)
+                picks = [int(x) - 1 for x in ans["selected"]]
+                quota.buffer_answer(1, picks)
+                quota.commit_buffer()
+                for p in picks:
+                    tally[p] += 1
+            self.assertEqual([tally[i] for i in range(3)], [6, 4, 2],
+                             f"入选率必须逐项精确，实际 {dict(tally)}")
+
+    def test_variable_count_falls_back_to_b1_with_warning(self) -> None:
+        """count_options 漂移的题校准不了（入选率没有定义）→ B1 兜底 + 一次告警。"""
+        import io
+        from contextlib import redirect_stdout
+
+        from src import config as cfg_module
+        from src.answering_v2 import generate_answer
+
+        with mock.patch.dict(
+            cfg_module.WEIGHT_CONFIG,
+            {1: {"type": "multi", "weights": [1, 1, 1, 1],
+                 "count_options": [1, 2]}},
+            clear=True,
+        ):
+            quota.enable(True)
+            quota.start_run(10)
+            question = {"q": 1, "type": "multi", "choices": [1, 2, 3, 4]}
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                for _ in range(6):
+                    generate_answer(question)
+            self.assertNotIn(1, quota._multi_remaining, "漂移题不建校准账")
+            self.assertEqual(buf.getvalue().count("未进入入选率校准"), 1,
+                             "每题只告警一次")
+
+    def test_multi_commit_and_rebuild(self) -> None:
+        quota.enable(True)
+        quota.start_run(6)
+        quota.multi_pick(2, 3, 2, [1.0, 1.0, 1.0])     # 建账 [4, 4, 4]（Σ = k×N = 12）
+        quota.buffer_answer(2, [0, 1])
+        self.assertEqual(quota.commit_buffer(), 1)
+        self.assertEqual(quota._multi_remaining[2], [3, 3, 4])
+        quota.buffer_answer(2, [2, 1])
+        quota.discard_buffer()                          # 失败不占额
+        self.assertEqual(quota._multi_remaining[2], [3, 3, 4])
+
+        # 续传：成功答卷的多选勾选进暂记账，懒初始化时扣减
+        with SubmissionHistory(":memory:") as db:
+            rid = db.start_run(_URL, 5, "edge", False)
+            for sub in (1, 2):
+                db.record_answer(rid, sub, 2, "multi", options_selected=[0, 2])
+                db.record_submission_result(rid, sub, "success")
+            quota.rebuild_consumed(db, rid)
+            quota._multi_remaining.clear()
+            quota._multi_allocated.clear()
+            quota.multi_pick(2, 3, 2, [1.0, 1.0, 1.0])  # [4,4,4] - 历史(0,2 各2)
+            self.assertEqual(quota._multi_remaining[2], [2, 4, 2])
+
+    def test_multi_k1_uses_multi_ledger_not_single(self) -> None:
+        """k=1 的多选与单选形状相同：靠题号在哪本账区分，不靠 picks 长度。"""
+        from src import config as cfg_module
+        from src.answering_v2 import generate_answer
+
+        with mock.patch.dict(
+            cfg_module.WEIGHT_CONFIG,
+            {1: {"type": "multi", "weights": [1, 1], "count_options": [1]}},
+            clear=True,
+        ):
+            quota.enable(True)
+            quota.start_run(4)
+            question = {"q": 1, "type": "multi", "choices": [1, 2]}
+            for _ in range(4):
+                ans = generate_answer(question)
+                quota.buffer_answer(1, [int(x) - 1 for x in ans["selected"]])
+                quota.commit_buffer()
+            self.assertEqual(quota._multi_remaining[1], [0, 0])
+            self.assertNotIn(1, quota._remaining, "多选题不得落进单选账")
 
 
 class TestCliMutualExclusion(unittest.TestCase):

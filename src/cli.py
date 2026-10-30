@@ -957,6 +957,8 @@ def _run_batch_inner(
                 _emit(RoundOutcome(index=displayed_idx, outcome="failed",
                                    message="提交失败", state=state))
             _record_submission(displayed_idx, outcome)
+            if outcome == "success":
+                quota.note_success()   # v4.2 B2：报告与告警的成功数同逐份成败口径
 
             # --- 清理浏览器状态（为下一轮做准备） ---
             _cleanup_browser_state(driver)
