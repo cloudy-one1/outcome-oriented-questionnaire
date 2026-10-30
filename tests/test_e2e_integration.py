@@ -1008,6 +1008,62 @@ def test_quota_exact_tally_through_the_engine(driver, history_db):
     )
 
 
+def test_quota_multi_calibration_exact_through_the_engine(driver, history_db):
+    """v4.2 B2 的引擎级验收：多选校准穿过真实引擎（缓冲 → _distribution_picks
+    换算 → 多选账本扣账），入选率逐项精确 —— 单选那条引擎测试证明单选账接线，
+    这条专门盯多选的换算约定（_distribution_picks 的 0-based 下标 ↔ 账本索引）。
+
+    q2 是 6 选项多选（mock_wjx.html），等权、每份选 2、12 份成功 → 每个选项
+    恰好出现在 4 份里（入选率 4/12 = 33.3%，Σ = 2 ✓）。
+    """
+    import pathlib
+    from collections import Counter
+
+    from src import config as cfg_module
+    from src import quota
+    from src.pipeline import run_one_submission
+    from src.utils import ManualHoldLock
+
+    url = "file:///" + (
+        pathlib.Path(__file__).resolve().parent / "fixtures" / "mock_wjx.html"
+    ).as_posix()
+
+    saved = dict(cfg_module.WEIGHT_CONFIG)
+    cfg_module.WEIGHT_CONFIG.clear()
+    cfg_module.WEIGHT_CONFIG.update(
+        {2: {"type": "multi", "weights": [1, 1, 1, 1, 1, 1],
+             "count_options": [2]}})
+    quota.enable(True)
+    quota.start_run(12)
+    run_id = history_db.start_run(url, 12, "edge", False)
+    try:
+        for index in range(1, 13):
+            outcome = run_one_submission(
+                driver, url, ManualHoldLock(),
+                history_db=history_db, run_id=run_id, submission_index=index,
+                no_record_text=True,
+            )
+            assert outcome == "success", f"第 {index} 份应提交成功，实际 {outcome!r}"
+    finally:
+        history_db.finish_run(
+            run_id, 12, 0, 1.0, status="finished")
+        quota.enable(False)
+        quota.start_run(0)
+        cfg_module.WEIGHT_CONFIG.clear()
+        cfg_module.WEIGHT_CONFIG.update(saved)
+
+    # 12 轮的 outcome 已在循环里断言全 success，直接对账 q2 的六选项入选数。
+    import json as _json
+
+    tally: Counter = Counter()
+    for a in history_db.query_answers(run_id=run_id, question_number=2):
+        for p in _json.loads(a["options_selected"]):
+            tally[int(p)] += 1
+    assert len(tally) == 6 and sorted(tally.values()) == [4] * 6, (
+        f"多选校准必须逐项精确兑现（六选项各 4 份），实际 {dict(tally)}"
+    )
+
+
 # ----------------------- 真卷形态（v3.1 排序点击式 + 日期题）-----------------------
 
 def _load_real_widgets(driver) -> None:
