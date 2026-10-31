@@ -197,11 +197,13 @@ class TestResumeRebuild(unittest.TestCase):
         _reset()
 
     def test_rebuild_counts_only_successful_submissions(self) -> None:
+        """落库是 **value 域**（1..n，与真卷/引擎实测一致）：rebuild 必须
+        value-1 换算成账本下标（2026-10-31 独立复审 P1 的差一修正）。"""
         with SubmissionHistory(":memory:") as db:
             rid = db.start_run(_URL, 5, "edge", False)
             for sub, status in ((1, "success"), (2, "failed"), (3, "success")):
-                db.record_answer(rid, sub, 1, "single", options_selected=[0])
-                db.record_answer(rid, sub, 2, "multi", options_selected=[0, 1])
+                db.record_answer(rid, sub, 1, "single", options_selected=[1])
+                db.record_answer(rid, sub, 2, "multi", options_selected=[1, 2])
                 db.record_submission_result(rid, sub, status)
 
             quota.enable(True)
@@ -209,11 +211,42 @@ class TestResumeRebuild(unittest.TestCase):
             self.assertEqual(quota.rebuild_consumed(db, rid), 4,
                              "成功的份扣账（单选 2 行 + 多选 2 行）；failed 不占")
 
-            quota.effective_weights(1, [1.0, 1.0], 2)   # 初始化 [5,5] - 历史 2
-            self.assertEqual(quota._remaining[1], [3, 5])
+            quota.effective_weights(1, [1.0, 1.0], 2)   # 初始化 [5,5] - 历史 idx0 ×2
+            self.assertEqual(quota._remaining[1], [3, 5],
+                             "value 1 → 下标 0：扣的必须是选项 1 的格（差一修正）")
             self.assertEqual(quota._multi_pre_consumed.get(2), {0: 2, 1: 2},
-                             "多选明细进多选暂记账（len==1 的 q1 行也进，但 q2 "
-                             "不会建单选账，不会双计）")
+                             "多选明细 value 1,2 → 下标 0,1")
+
+    def test_resume_off_by_one_delivers_exact_ratio(self) -> None:
+        """独立复审 P1 的复现场景：目标 2:2，1 份历史成功（落库值 [1] = 选项 1）。
+
+        修复前 value 被直接当下标 → 扣在选项 2 头上 → 续跑后实际 3:1；
+        修复后续跑交付 [1,2]，连同历史恰好 2:2。
+        """
+        from src.answering_v2 import generate_answer
+
+        with SubmissionHistory(":memory:") as db:
+            rid = db.start_run(_URL, 4, "edge", False)
+            db.record_answer(rid, 1, 1, "single", options_selected=[1])
+            db.record_submission_result(rid, 1, "success")
+
+            quota.enable(True)
+            quota.start_run(4)
+            quota.rebuild_consumed(db, rid)
+            quota.effective_weights(1, [1.0, 1.0], 2)   # [2,2] - 历史 idx0 → [1,2]
+
+            random.seed(5)
+            delivered: Counter = Counter({0: 1})        # 历史那份落在选项 1（下标 0）
+            for _ in range(3):                          # 续跑 3 份（全部成功）
+                ans = generate_answer(
+                    {"q": 1, "type": "single", "choices": [1, 2]})
+                pick = int(ans["selected"][0]) - 1
+                quota.buffer_answer(1, [pick])
+                quota.commit_buffer()
+                delivered[pick] += 1
+            self.assertEqual(quota._remaining[1], [0, 0])
+            self.assertEqual([delivered[i] for i in range(2)], [2, 2],
+                             f"连历史在内必须恰好 2:2，实际 {dict(delivered)}")
 
     def test_pre_consumed_beyond_quota_clamps_with_warning(self) -> None:
         """改过权重后续传：历史成功数超过当前配额 → 夹 0 并大声说明。
@@ -227,7 +260,8 @@ class TestResumeRebuild(unittest.TestCase):
         with SubmissionHistory(":memory:") as db:
             rid = db.start_run(_URL, 5, "edge", False)
             for sub in (1, 2, 3):
-                db.record_answer(rid, sub, 1, "single", options_selected=[1])
+                # 落库 value=2 → 下标 1：该选项配额为 0，3 笔历史消耗无处可扣
+                db.record_answer(rid, sub, 1, "single", options_selected=[2])
                 db.record_submission_result(rid, sub, "success")
 
             quota.enable(True)
@@ -434,11 +468,12 @@ class TestMultiCalibrationB2(unittest.TestCase):
         quota.discard_buffer()                          # 失败不占额
         self.assertEqual(quota._multi_remaining[2], [3, 3, 4])
 
-        # 续传：成功答卷的多选勾选进暂记账，懒初始化时扣减
+        # 续传：成功答卷的多选勾选进暂记账（落库 value 1,3 → 下标 0,2），
+        # 懒初始化时扣减
         with SubmissionHistory(":memory:") as db:
             rid = db.start_run(_URL, 5, "edge", False)
             for sub in (1, 2):
-                db.record_answer(rid, sub, 2, "multi", options_selected=[0, 2])
+                db.record_answer(rid, sub, 2, "multi", options_selected=[1, 3])
                 db.record_submission_result(rid, sub, "success")
             quota.rebuild_consumed(db, rid)
             quota._multi_remaining.clear()

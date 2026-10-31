@@ -1021,19 +1021,30 @@ def submit_success_detect_script(baseline_text: str | None = None) -> str:
             var r = succ[i].getBoundingClientRect();
             if (r.width > 0 && r.height > 0) return true;
         }}
-        // 页面上还有没有**可见**的作答控件（radio/checkbox/select/文本框）。
-        // 交出去的完成页不会留着它们；没交时控件还在 —— 人改一个字、
-        // 进度数字跳一格都不会误判成"交了"。
+        // 页面上还有没有**可答的作答控件**。真卷（问卷星）把原生 input 藏起来、
+        // 用样式化容器渲染 —— 控件的"存在"必须沿祖先链找可见容器（label/div），
+        // 只查 input 本身会在真卷上永远判"无控件"，把基线含感谢语的问卷的
+        // 真成功证据废掉、没交也判成功（2026-10-31 独立复审 P1）。
+        // body/html 刻意不算可见祖先：完成页把表单整体 display:none 藏起来时，
+        // 浅树会一路走到 body —— 那时必须判"无控件"。
         function hasVisibleAnswerControls() {{
             var sel = 'input[type="radio"], input[type="checkbox"], select,'
                     + ' textarea, input[type="text"], input[type="number"],'
                     + ' input:not([type])';
             var els = document.querySelectorAll(sel);
-            for (var j = 0; j < els.length; j++) {{
+            function visible(el) {{
                 try {{
-                    var r = els[j].getBoundingClientRect();
-                    if (r.width > 0 && r.height > 0) return true;
-                }} catch (_) {{}}
+                    var r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0;
+                }} catch (_) {{ return false; }}
+            }}
+            for (var j = 0; j < els.length; j++) {{
+                var p = els[j];
+                for (var depth = 0; p && p !== document.body
+                        && p !== document.documentElement && depth < 5; depth++) {{
+                    if (visible(p)) return true;
+                    p = p.parentElement;
+                }}
             }}
             return false;
         }}

@@ -307,7 +307,8 @@ class TestRunBatchQuotaWiring(unittest.TestCase):
         with SubmissionHistory(":memory:") as db:
             rid = db.start_run(SURVEY_URL, 5, "edge", False)
             for sub, status in ((1, "success"), (2, "failed"), (3, "success")):
-                db.record_answer(rid, sub, 1, "single", options_selected=[0])
+                # 落库是 value 域（1..n）：value 1 → 账本下标 0（2026-10-31 复审差一修正）
+                db.record_answer(rid, sub, 1, "single", options_selected=[1])
                 db.record_submission_result(rid, sub, status)
 
             with mock.patch("src.browser.create_driver",

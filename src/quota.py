@@ -204,6 +204,13 @@ def rebuild_consumed(history_db: Any, run_id: int) -> int:
     'success'`` 的那几份。单选账收 len==1 的明细；多选校准账收该题**全部**
     明细（k=1 的多选与单选形状相同，靠题号落在哪本账区分，不会双计 ——
     一个题号只会建其中一本账）。暂记在账本懒初始化时扣减。
+
+    v4.3.1（独立复审 P1）：``options_selected`` 落库是 **value 域**（问卷星
+    单选/多选 1..n），而配额账本是 **0-based 下标域** —— 此前把 value 直接
+    当下标扣，整条账错一位：目标 2:2 的题续跑后实际 3:1（多选同病）。
+    修正：下标 = value - 1（0 与负值防护性跳过 —— 量表 min=0 的卷没有
+    配额账，不受影响）。这与活路径 ``question_stage._distribution_picks``
+    的 value→下标换算同一语义。
     """
     if not _enabled:
         return 0
@@ -231,11 +238,15 @@ def rebuild_consumed(history_db: Any, run_id: int) -> int:
             picks = [int(p) for p in loaded]
         except (TypeError, ValueError):
             continue
-        if len(picks) == 1:
-            _pre_consumed.setdefault(qnum, defaultdict(int))[picks[0]] += 1
+        # value 域（1..n）→ 下标域（0..n-1）：差一修正是本函数的存在理由
+        idxs = [p - 1 for p in picks if p - 1 >= 0]
+        if not idxs:
+            continue
+        if len(idxs) == 1:
+            _pre_consumed.setdefault(qnum, defaultdict(int))[idxs[0]] += 1
         _multi_pre_consumed.setdefault(qnum, defaultdict(int))
-        for p in picks:
-            _multi_pre_consumed[qnum][p] += 1
+        for idx in idxs:
+            _multi_pre_consumed[qnum][idx] += 1
         counted += 1
     return counted
 

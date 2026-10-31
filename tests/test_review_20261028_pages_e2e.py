@@ -132,6 +132,37 @@ class TestP1P1SuccessDetectionBaseline:
         pred = driver.execute_script(submit_success_detect_script(baseline))
         assert pred is True, "完成页形状（强文案 + 无作答控件）必须判成功"
 
+    def test_p1_1_hidden_native_inputs_real_wjx_shape(self, driver) -> None:
+        """2026-10-31 独立复审 P1 复现：真卷把原生 input 藏起来、样式化容器
+        渲染 —— 修复前只查 input 本身可见性，真卷上永远"无控件" → 基线含
+        感谢语时没交也判成功。修复后沿祖先链找可见容器：没交 → 容器在 →
+        False；交出去（题区移除）→ True。"""
+        from src.interactions._scripts import submit_success_detect_script
+
+        page = (
+            "<body>您好！感谢您的参与！"
+            '<div id="div1">'
+            + "".join(
+                '<label class="ui-radio" style="display:block">'
+                f'<input type="radio" name="q1" value="{i}" style="display:none">'
+                f"<span>选项{i}</span></label>"
+                for i in (1, 2, 3))
+            + "</div>"
+            "<button onclick=\"document.getElementById('div1').remove();"
+            "document.body.innerText += '感谢您的参与！'\">提交</button></body>"
+        )
+        _page(driver, page)
+        baseline = str(driver.execute_script(
+            "return (document.body && document.body.innerText) || '';"))
+        assert "感谢您的参与" in baseline
+        pred_before = driver.execute_script(submit_success_detect_script(baseline))
+        assert pred_before is False, (
+            "没交：样式化容器可见（input 藏起来不算无控件），不得判成功"
+        )
+        driver.execute_script("document.querySelector('button').click();")
+        pred_after = driver.execute_script(submit_success_detect_script(baseline))
+        assert pred_after is True, "交出去（题区移除）必须判成功"
+
     def test_no_baseline_keeps_legacy_keyword_verdict(self, driver) -> None:
         """基线拿不到（None）→ 退回旧判据：正文有强文案即真。
 
