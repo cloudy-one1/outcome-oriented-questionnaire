@@ -1295,3 +1295,127 @@ def test_region_signals_are_detected_and_answered_by_one_persona(driver):
     assert js_fill_text(driver, 1, regions[0]) is True
     got = driver.find_element("id", "q1").get_attribute("value")
     assert got == f"{p.province} {p.city}", f"页面上留下的是 {got!r}"
+
+
+# ===========================================================================
+#  v4.4 降级定位层：mock_wjx_shifted.html（模板改版形态）
+#
+#  shifted fixture 模拟平台改版：选项控件 id/name 全部漂移、题目容器换成另一
+#  种已知模板形态，但 topic/type 属性与题干保留 —— 探测（非锚定正则 + div 容
+#  器回退）仍认得出全部题目，主交互脚本的精确选择器全部失配。只有这一页能
+#  验证"主选择器失配"这个前提本身；mock_wjx.html 上主路径永远命中，降级层
+#  根本不会被触发。
+# ===========================================================================
+
+SHIFTED_FIXTURE_HTML = PROJ / "tests" / "fixtures" / "mock_wjx_shifted.html"
+
+
+def _shifted_url():
+    return "file:///" + SHIFTED_FIXTURE_HTML.as_posix()
+
+
+def test_shifted_template_relocates_and_submits(driver, history_db):
+    """降级定位开 + 改版形态 → 全链路照常答完并提交。
+
+    Q1（单选）/ Q2（多选，含"其他____"）/ Q5（填空）在主选择器全部失配，
+    靠题干/属性锚点重定位作答；Q3（下拉，未漂移）走主路径作对照。
+    """
+    from src.pipeline import run_one_submission
+    from src.utils import ManualHoldLock
+
+    url = _shifted_url()
+    run_id = history_db.start_run(url, 1, "edge", False)
+    try:
+        outcome = run_one_submission(
+            driver, url, ManualHoldLock(),
+            history_db=history_db, run_id=run_id, submission_index=1,
+            no_record_text=True, fallback_locate=True,
+        )
+    finally:
+        history_db.finish_run(
+            run_id,
+            success_count=1 if outcome == "success" else 0,
+            fail_count=0 if outcome == "success" else 1,
+            total_elapsed_seconds=1.0, status="finished",
+        )
+
+    assert outcome == "success", f"改版形态 + 降级定位应能完整提交，实际 {outcome!r}"
+    assert driver.execute_script("return window.__submitClicks;") == 1
+    # DOM 终态：主选择器失配的三道题必须真的落上了
+    assert driver.execute_script(
+        "return window.__lastCheckedValue('q1radio');"), "Q1 单选应经降级定位勾上"
+    assert driver.execute_script(
+        "return !!document.querySelector('input[name=\"q2box\"]:checked');"
+    ), "Q2 多选应经降级定位勾上"
+    phone = driver.execute_script(
+        "return (document.getElementById('phone_input')||{}).value || '';")
+    assert phone.strip(), "Q5 填空应经降级定位写上"
+    # 对照组：Q3 未漂移，主路径直接命中
+    assert driver.execute_script(
+        "return document.getElementById('selectq3').value;"), "Q3 下拉走主路径也应答上"
+
+
+def test_shifted_template_without_fallback_stays_unanswered(driver):
+    """开关关（默认）：改版形态下失配题一道都答不上 —— 降级层没有暗中常开。
+
+    不断言 outcome：Q2 若随机勾中"其他"项会触发 mock 的必填 alert，三态判定
+    在 success/failed/unknown 之间随权重摆动；这条钉的是 DOM 终态与回执契约。
+    """
+    from src.pipeline import run_one_submission
+    from src.utils import ManualHoldLock
+
+    run_one_submission(
+        driver, _shifted_url(), ManualHoldLock(), no_record_text=True,
+    )  # fallback_locate 缺席 = False
+
+    assert driver.execute_script(
+        "return window.__lastCheckedValue('q1radio');") is None, (
+        "开关关时 Q1 不该被勾上（主选择器失配、降级层未启用）")
+    assert driver.execute_script(
+        "return !!document.querySelector('input[name=\"q2box\"]:checked');"
+    ) is False, "开关关时 Q2 不该被勾上"
+    phone = driver.execute_script(
+        "return (document.getElementById('phone_input')||{}).value || '';")
+    assert not phone.strip(), "开关关时 Q5 不该被写上"
+    # 对照组：Q3 主路径不受影响
+    assert driver.execute_script(
+        "return document.getElementById('selectq3').value;"), (
+        "未漂移的 Q3 应照常答上（证明流程本身在跑）")
+
+
+def test_relocate_title_leg_finds_container_without_topic_value(driver):
+    """第二腿（题干锚点）：topic 值对不上时按题干文本找回容器。
+
+    q=999 不匹配任何 topic 属性 → 第一腿落空 → 第二腿用题干命中 Q1 容器
+    （优先"装有输入控件的命中"取文本最短者）。这是属性锚点也失配时的
+    最后一层。
+    """
+    from src.interactions._relocate import relocate_click_options_script
+
+    driver.get("file:///" + SHIFTED_FIXTURE_HTML.as_posix())
+    out = driver.execute_script(relocate_click_options_script(
+        999, [3], [1, 2, 3, 4], "您的性别是？（单选）", is_multi=False,
+    ))
+    assert out == "relocated:title", f"应经题干锚点命中，实际 {out!r}"
+    assert driver.execute_script(
+        "return document.getElementById('optq1_3').checked;") is True, (
+        "value=3 的选项应被勾上")
+
+
+def test_relocate_count_mismatch_bails_instead_of_guessing(driver):
+    """容器内控件数与探测 choices 数对不上 → 放弃，不按序号猜点。
+
+    宁可失败回 False 让上层走"作答回执"，也不能把选项点错 —— 错选是
+    收不回来的真实回收记录。
+    """
+    from src.interactions._relocate import relocate_click_options_script
+
+    driver.get("file:///" + SHIFTED_FIXTURE_HTML.as_posix())
+    out = driver.execute_script(relocate_click_options_script(
+        1, [2], [1, 2, 3],  # 声称只有 3 个选项，容器里实际有 4 个 radio
+        "您的性别是？（单选）", is_multi=False,
+    ))
+    assert out is False, f"数量对不上必须放弃，实际 {out!r}"
+    assert driver.execute_script(
+        "return !!document.querySelector('input[name=\"q1radio\"]:checked');"
+    ) is False, "放弃时不得点任何选项"

@@ -42,7 +42,7 @@
 
   function cacheElements() {
     ["url", "count", "count-minus", "count-plus", "browser", "use-uc",
-     "no-record-text", "manual-submit", "quota", "btn-detect", "btn-export", "btn-save-default",
+     "no-record-text", "manual-submit", "quota", "fallback-locate", "btn-detect", "btn-export", "btn-save-default",
      "file-import", "file-qr", "settings-note", "table-body", "table-empty",
      "table-meta", "status", "status-text", "line-count", "log-scroll",
      "log-gutter", "log-lines", "btn-run", "btn-stop", "pct", "rounds",
@@ -181,6 +181,7 @@
     setIfDifferent(els["no-record-text"], form.no_record_text);
     setIfDifferent(els["manual-submit"], form.manual_submit);
     setIfDifferent(els["quota"], form.quota);
+    setIfDifferent(els["fallback-locate"], form.fallback_locate);
     if (els.browser.options.length === 0) {
       ["edge", "chrome"].forEach(function (b) {
         var opt = document.createElement("option");
@@ -618,6 +619,9 @@
     });
     els["quota"].addEventListener("change", function () {
       sendField("quota", els["quota"].checked);
+    });
+    els["fallback-locate"].addEventListener("change", function () {
+      sendField("fallback_locate", els["fallback-locate"].checked);
     });
 
     els["count-minus"].addEventListener("click", function () { bumpCount(-1); });

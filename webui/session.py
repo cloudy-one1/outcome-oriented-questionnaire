@@ -151,6 +151,9 @@ class RunSession:
         # 默认关 —— 与 CLI 同一默认；Web 端没有 drift/alpha 开关，CLI 的互斥在这里
         # 结构性不存在。
         self.quota: bool = False
+        # 降级定位（v4.4 --fallback-locate）：主选择器失配（平台改版）时用题干/属性
+        # 锚点重定位重试一次。默认关 —— 与 CLI 同一默认。
+        self.fallback_locate: bool = False
 
         # ---- 运行态 ----
         self.status: str = "就绪"
@@ -227,6 +230,8 @@ class RunSession:
                 self.manual_submit = bool(value)
             elif name == "quota":
                 self.quota = bool(value)
+            elif name == "fallback_locate":
+                self.fallback_locate = bool(value)
             else:
                 raise ValidationError(f"未知字段：{name}")
         self.emit_state()
@@ -270,8 +275,9 @@ class RunSession:
                 "browser": self.browser,
                 "use_uc": self.use_uc,
                 "no_record_text": self.no_record_text,
-                "manual_submit": self.manual_submit,
-                "quota": self.quota,
+            "manual_submit": self.manual_submit,
+            "quota": self.quota,
+            "fallback_locate": self.fallback_locate,
             }
 
     # ------------------------------------------------------------ 运行态

@@ -387,6 +387,15 @@ def parse_args(argv: list[str] | None = None) -> Namespace:
              " 与 --headless 互斥（无头窗口里没有可点的人）。",
     )
     parser.add_argument(
+        "--fallback-locate",
+        dest="fallback_locate",
+        action="store_true",
+        default=False,
+        help="[降级定位] 主选择器失配（平台改版）时，用题干/属性锚点重新定位元素"
+             " 再试一次（单选/多选/单框填空/选项自带填空）。默认关 —— 失配即本题"
+             " 计失败，与历史行为一致。开了也只是多一次尝试，定位不到照旧回执失败。",
+    )
+    parser.add_argument(
         "--start-at",
         dest="start_at",
         type=_start_at,
@@ -533,6 +542,7 @@ def run_batch(
     rescue_gaps: bool = False,
     manual_submit: bool = False,
     quota_mode: bool = False,
+    fallback_locate: bool = False,
 ) -> tuple[int, int]:
     """批量执行指定份数的问卷提交 —— **CLI 与 GUI 共用的唯一批次引擎**。
 
@@ -641,6 +651,7 @@ def run_batch(
             rescue_gaps=rescue_gaps,
             manual_submit=manual_submit,
             quota_mode=quota_mode,
+            fallback_locate=fallback_locate,
         )
     finally:
         set_active_batch_config(None)
@@ -671,6 +682,7 @@ def _run_batch_inner(
     rescue_gaps: bool = False,
     manual_submit: bool = False,
     quota_mode: bool = False,
+    fallback_locate: bool = False,
 ) -> tuple[int, int]:
     """run_batch 的本体（文档见 run_batch）；配置快照的挂/摘由外层包装负责。"""
     # ----- 延迟导入（运行时强依赖） -----
@@ -890,6 +902,7 @@ def _run_batch_inner(
                     stop_check=stop_check,
                     rescue_gaps=rescue_gaps,
                     manual_submit=manual_submit,
+                    fallback_locate=fallback_locate,
                 )
 
             except SubmissionAborted as _ab:
@@ -1288,6 +1301,8 @@ def main(argv: list[str] | None = None) -> None:
         print("补漏轮   : 完整度自检拦下的必答缺口先等人工补答（--rescue-gaps）")
     if args.manual_submit:
         print("人工提交 : 每一份都停在提交按钮前，由你核对后自己点（--manual-submit）")
+    if args.fallback_locate:
+        print("降级定位 : 主选择器失配时用题干/属性锚点重定位重试（--fallback-locate）")
     print("=" * 60)
 
     # ---------- v3.0：--url-file 顺序队列 ----------
@@ -1370,6 +1385,7 @@ def main(argv: list[str] | None = None) -> None:
                 rescue_gaps=args.rescue_gaps,
                 manual_submit=args.manual_submit,
                 quota_mode=bool(getattr(args, "quota", False)),
+                fallback_locate=bool(getattr(args, "fallback_locate", False)),
             )
             total_success += success
             total_fail += fail

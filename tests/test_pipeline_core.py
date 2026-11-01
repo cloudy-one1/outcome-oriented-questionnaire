@@ -492,6 +492,7 @@ def test_run_one_submission_never_retries_a_successful_core() -> None:
         driver, SURVEY_URL, lock,
         history_db=None, run_id=None, submission_index=None, no_record_text=False,
         stop_check=None, rescue_gaps=False, manual_submit=False,
+        fallback_locate=False,
     )
 
 
@@ -598,6 +599,8 @@ def test_history_and_identity_params_reach_the_answer_step() -> None:
             "submission_index": 3,
             # 隐私开关（审查 P2-3）：漏传一次就等于把明文答案写进 SQLite
             "no_record_text": True,
+            # v4.4 降级定位：默认 False，漏传即等于改默认行为
+            "fallback_locate": False,
         }
     st._robust_driver_get.assert_called_once_with(driver, SURVEY_URL)
 
@@ -610,6 +613,7 @@ def test_answer_step_defaults_are_conservative_when_omitted() -> None:
     assert st._answer_one_question.call_args.kwargs == {
         "history_db": None, "run_id": None, "submission_index": None,
         "no_record_text": False,
+        "fallback_locate": False,
     }
 
 

@@ -162,6 +162,7 @@ def _answer_one_question(
     submission_index: int | None = None,
     *,
     no_record_text: bool = False,
+    fallback_locate: bool = False,
 ) -> bool:
     """为单道题生成答案并写入 DOM，可选地落盘 history.answers。
 
@@ -178,6 +179,10 @@ def _answer_one_question(
                             不会写入 SQLite 的 text_answer 列（写 NULL 占位），
                             避免明文保存用户自定义的姓名/手机/邮箱等敏感内容。
                             DOM 仍然会填入实际文本（流程需要），只是不持久化。
+    :param fallback_locate: v4.4 降级定位开关（默认关）。主交互回执 False 时，
+                            用题干/属性锚点重定位元素再试一次（``_relocate.py``），
+                            对抗平台改版导致的精确 id/name 失配；仍失败照旧回
+                            False，诊断走 ``[relocate]`` 前缀的 print。
 
     :return: 是否答题成功。**v3.3 起外层会收上去**：逐页汇成"我们答过、但回执说没落上"
              的题号集合，点提交之前报一行 ``[作答回执]``，开了 ``--rescue-gaps`` 时连着
@@ -213,7 +218,12 @@ def _answer_one_question(
     if qtype in ("single", "multi"):
         answer_values = replay_values if replay_values else _v2_selected(q)
         try:
-            is_ok = js_click_question_options(driver, qnum, qtype, answer_values)
+            is_ok = js_click_question_options(
+                driver, qnum, qtype, answer_values,
+                all_choices=list(q.get("choices") or []),
+                title=q.get("title"),
+                fallback_locate=fallback_locate,
+            )
         except TRANSIENT_DOM_EXCEPTIONS as _e:
             print("  " + format_exc_log(
                 _e, action="批量点击选项", question=qnum, qtype=qtype,
@@ -248,7 +258,10 @@ def _answer_one_question(
             try:
                 blank_text = str(replayed.get("option_blank_text") or "") if replayed else ""
                 if not js_fill_option_blank(
-                    driver, qnum, blank_value, blank_text or generate_option_blank_text()
+                    driver, qnum, blank_value, blank_text or generate_option_blank_text(),
+                    all_choices=list(q.get("choices") or []),
+                    title=q.get("title"),
+                    fallback_locate=fallback_locate,
                 ):
                     print(f"  [填空选项] Q{qnum} 第 {blank_value} 项的框没写进去"
                           " → 本题计失败")
@@ -279,7 +292,11 @@ def _answer_one_question(
                     text_answer = " ┋ ".join(str(v) for v in multi_texts.values())
                 else:
                     text_answer = str(ans.get("text", ""))
-                    is_ok = js_fill_text(driver, qnum, text_answer)
+                    is_ok = js_fill_text(
+                        driver, qnum, text_answer,
+                        title=q.get("title"),
+                        fallback_locate=fallback_locate,
+                    )
 
             elif ans_type == "scale":
                 val = int(ans.get("value", 3))
@@ -349,7 +366,12 @@ def _answer_one_question(
                 # 兜底：如果有 choices，降级成单选（与 answering_v2 的兜底一致）
                 if q.get("choices"):
                     answer_values = _v2_selected({**q, "type": "single"})
-                    is_ok = js_click_question_options(driver, qnum, "single", answer_values)
+                    is_ok = js_click_question_options(
+                        driver, qnum, "single", answer_values,
+                        all_choices=list(q.get("choices") or []),
+                        title=q.get("title"),
+                        fallback_locate=fallback_locate,
+                    )
                     options_selected = list(answer_values)
                 else:
                     is_ok = False

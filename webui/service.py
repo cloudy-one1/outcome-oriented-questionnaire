@@ -732,9 +732,14 @@ class WebService:
             self._log("配额调度 : 单选/下拉恰好按配置比例兑现到成功份数上 —— "
                       f"-n {state.total_target} 即目标成功份数，失败/未知不占配额"
                       "（多选/矩阵/排序/量表维持原语义）", "WARN")
+        # v4.4 降级定位：与 quota 同款在启动一刻冻结（worker 不再读界面状态）
+        fallback_locate = bool(self.session.fallback_locate)
+        if fallback_locate:
+            self._log("降级定位 : 主选择器失配时用题干/属性锚点重定位重试"
+                      "（平台改版场景，日志里看 [relocate] 行）", "WARN")
         self._log("═" * 40, "HEADER")
         self._run_thread = threading.Thread(target=self._run_loop,
-                                            args=(state, quota_mode),
+                                            args=(state, quota_mode, fallback_locate),
                                             name="wjx-run", daemon=True)
         self._run_thread.start()
 
@@ -754,12 +759,14 @@ class WebService:
         thread.join(timeout if timeout is not None else self._join_timeout)
         return not thread.is_alive()
 
-    def _run_loop(self, state: RunState, quota_mode: bool = False) -> None:
+    def _run_loop(self, state: RunState, quota_mode: bool = False,
+                  fallback_locate: bool = False) -> None:
         """批次语义只有一份实现：这里只是把 RunState 交给 ``src.cli.run_batch``。
 
         与 Tk 宿主共用同一个入口，所以"GUI 与 CLI 跑出不同结果"这类问题
         在结构上不存在。``quota_mode`` 由 start_run 在启动一刻冻结（隐含
         target-success —— -n 就是目标成功份数，见 src/quota.py C1）。
+        ``fallback_locate`` 同款冻结（v4.4 降级定位）。
         """
         run_batch = self._run_batch
         if run_batch is None:                                  # pragma: no cover
@@ -783,6 +790,7 @@ class WebService:
                       manual_submit=state.manual_submit,
                       target_success=quota_mode,
                       quota_mode=quota_mode,
+                      fallback_locate=fallback_locate,
                       state=state,
                       on_round=on_round,
                       log=lambda msg: self._log(msg, "INFO"),

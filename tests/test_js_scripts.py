@@ -18,6 +18,7 @@ import tempfile
 
 import pytest
 
+from src.interactions import _relocate as R
 from src.interactions import _scripts as S
 
 
@@ -385,6 +386,35 @@ def _script_cases() -> dict[str, str]:
         "submit_redirect_veto_script__noargs": S.submit_redirect_veto_script(),
         "install_alert_recorder_script__noargs": S.install_alert_recorder_script(),
         "read_blocked_alerts_script__noargs": S.read_blocked_alerts_script(),
+        # v4.4 降级定位层（_relocate.py）：共享事件链 + 两腿定位 + 三个 relocated 脚本
+        "interaction_chain_helper_script__noargs": S.interaction_chain_helper_script(),
+        "relocate_finder_helper_script__noargs": R.relocate_finder_helper_script(),
+        "relocate_click_options_script__single": R.relocate_click_options_script(
+            q=1, targets=[2], all_choices=[1, 2, 3, 4],
+            title="您的性别是？（单选）", is_multi=False,
+        ),
+        "relocate_click_options_script__multi": R.relocate_click_options_script(
+            q=2, targets=[1, 3], all_choices=[1, 2, 3, 4, 5, 6],
+            title="常用渠道（多选）", is_multi=True,
+        ),
+        "relocate_click_options_script__quote_title": R.relocate_click_options_script(
+            q=3, targets=[1], all_choices=[1, 2], title='题干带 "引号" 与 \'单引号\'',
+            is_multi=False,
+        ),
+        "relocate_fill_text_script__basic": R.relocate_fill_text_script(
+            q=5, text="张三", title="请填写您的姓名",
+        ),
+        "relocate_fill_text_script__quote": R.relocate_fill_text_script(
+            q=5, text="a\"b'c", title=None,
+        ),
+        "relocate_fill_option_blank_script__basic": R.relocate_fill_option_blank_script(
+            q=2, choice=6, all_choices=[1, 2, 3, 4, 5, 6], text="其他原因", title="渠道",
+        ),
+        "relocate_fill_option_blank_script__quote_in_text": (
+            R.relocate_fill_option_blank_script(
+                q=2, choice="a'\\\"", all_choices=[1, 2], text='he said "hi"', title=None,
+            )
+        ),
     }
 
 
@@ -435,12 +465,13 @@ def test_all_script_builders_are_covered_by_syntax_cases() -> None:
 
     ``_SCRIPT_CASES`` 的键约定为 ``"<builder 名>__<场景>"``，
     因此「builder 名是某个键的前缀」即视为已覆盖。
+    v4.4 起扫描面覆盖 _scripts 与 _relocate 两个模块。
     """
     builders = sorted(
-        n for n, o in vars(S).items()
+        n for mod in (S, R) for n, o in vars(mod).items()
         if n.endswith("_script") and callable(o) and not n.startswith("_")
     )
-    assert builders, "未从 _scripts 发现任何 *_script 生成器，导入面可能变了"
+    assert builders, "未从 _scripts/_relocate 发现任何 *_script 生成器，导入面可能变了"
     keys = list(_SCRIPT_CASES)
     missing = [b for b in builders if not any(k == b or k.startswith(b + "_") for k in keys)]
     assert not missing, f"以下脚本生成器未纳入 JS 语法测试：{missing}"

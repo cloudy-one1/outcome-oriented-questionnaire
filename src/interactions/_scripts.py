@@ -24,6 +24,177 @@ from ..platforms import WJX
 #  choices 模块：单选 / 多选题
 # ============================================================================
 
+def interaction_chain_helper_script() -> str:
+    """JS 函数声明组：人类行为事件链的**唯一**实现（v4.4 降级定位层引入）。
+
+    四个函数，全部从既有主脚本的语句**逐字**提取（行为零变化，见各自注释）：
+
+    - ``__wjxHumanClickFull(input)`` —— 单选的完整事件链
+      （scroll → hover 三连 → mousedown → checked/input/change → mouseup →
+      click → jqchecked 装饰），原 click_option_script 48-88 行；
+    - ``__wjxHumanClickSimple(input)`` —— 多选批量点击的轻量链
+      （scroll → checked/input/change → jqchecked），原
+      click_question_options_script 的逐项段；
+    - ``__wjxClearCheckedSiblings(sel, scope, exceptInput)`` —— 清同题其他
+      选中态，原单选"清兄弟"与多选"清全部"的合并形态（除 sel/scope 参数化，
+      ``exceptInput`` 传 null 即"全清"）；
+    - ``__wjxFillTextLike(el, txt)`` —— 填空的完整写入链
+      （scroll → hover → focus → maxlength 截断 → 赋值 → 假逐字 →
+      input/change → blur），原 fill_text_script 步骤 1-6；
+    - ``__wjxWriteOptionBlank(blank, txt)`` —— 选项自带填空的写入链
+      （截断 → scroll → focus → 赋值 → input/change/blur），原
+      fill_option_blank_script 的写入段。
+
+    为什么要提出来：降级定位层（_relocate.py）重定位到元素之后必须走**同一套**
+    事件链 —— 一边认得、一边找不到框，效果就是"报了成功、页面仍是空的"
+    （option_blank_helper_script 的同源教训）。主脚本与 relocated 脚本都内插
+    本声明组，链只有一份。
+    """
+    return """
+        function __wjxHumanClickFull(input) {
+            // ---- 点击前：把选项滚动到可视位置 ----
+            var target = input.closest('.field, .div_question, .q-item, li, label');
+            if (!target) target = input.closest('div, span') || input;
+            target.scrollIntoView({behavior: 'instant', block: 'center'});
+
+            // ---- 点击前：模拟鼠标移动到元素上 ----
+            try {
+                var r = target.getBoundingClientRect();
+                var cx = Math.round(r.left + r.width / 2);
+                var cy = Math.round(r.top + r.height / 2);
+                ['mousemove','mouseover','mouseenter'].forEach(function(evtName){
+                    var ev = new MouseEvent(evtName, {
+                        bubbles: true, cancelable: true, view: window,
+                        clientX: cx, clientY: cy,
+                        relatedTarget: document.body
+                    });
+                    target.dispatchEvent(ev);
+                });
+            } catch(_) {}
+
+            // ---- 点击：mousedown → change/input → checked=true → mouseup → click ----
+            try {
+                var ev2 = new MouseEvent('mousedown', { bubbles:true, button:0, cancelable:true });
+                target.dispatchEvent(ev2);
+            } catch(_) {}
+
+            input.checked = true;
+            input.dispatchEvent(new Event('input', {bubbles: true}));
+            input.dispatchEvent(new Event('change', {bubbles: true}));
+
+            try { target.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, button:0})); } catch(_) {}
+            try { target.dispatchEvent(new MouseEvent('click', {bubbles:true, button:0})); } catch(_) {}
+
+            // ---- 问卷星特有的样式：给装饰 <a> 加 jqchecked ----
+            var wrapper = input.closest('.jqradiowrapper, .jqcheckboxwrapper, label, span');
+            if (wrapper) {
+                var a = wrapper.querySelector('a.jqradio, a.jqcheck, a');
+                if (a) {
+                    a.classList.add('jqchecked');
+                }
+            }
+        }
+
+        function __wjxHumanClickSimple(input) {
+            var target = input.closest('.field, .div_question, .q-item, li, label');
+            if (!target) target = input;
+            target.scrollIntoView({behavior: 'instant', block: 'center'});
+
+            input.checked = true;
+            input.dispatchEvent(new Event('input', {bubbles: true}));
+            input.dispatchEvent(new Event('change', {bubbles: true}));
+
+            var wrapper = input.closest('.jqcheckboxwrapper, label, span');
+            if (wrapper) {
+                var a = wrapper.querySelector('a.jqcheck, a.jqradio, a');
+                if (a) a.classList.add('jqchecked');
+            }
+        }
+
+        function __wjxClearCheckedSiblings(sel, scope, exceptInput) {
+            var nodes = scope.querySelectorAll(sel);
+            for (var i = 0; i < nodes.length; i++) {
+                var sib = nodes[i];
+                if (sib === exceptInput) continue;
+                sib.checked = false;
+                sib.dispatchEvent(new Event('change', {bubbles: true}));
+                var w = sib.closest('.jqradiowrapper, .jqcheckboxwrapper, label, span');
+                if (w) {
+                    var aa = w.querySelector('a.jqradio, a.jqcheck, a');
+                    if (aa) aa.classList.remove('jqchecked');
+                }
+            }
+        }
+
+        function __wjxFillTextLike(el, txt) {
+            // 1. 滚动到视野中央
+            var wrap = el.closest('.field, .div_question, .q-item, li, label, div');
+            if (!wrap) wrap = el;
+            wrap.scrollIntoView({behavior: 'instant', block: 'center'});
+
+            // 2. fake hover + focus（假装点进来）
+            try {
+                var r = wrap.getBoundingClientRect();
+                var cx = Math.round(r.left + r.width / 2);
+                var cy = Math.round(r.top + r.height / 2);
+                ['mousemove','mouseover','mouseenter'].forEach(function(n){
+                    wrap.dispatchEvent(new MouseEvent(n, { bubbles:true, clientX:cx, clientY:cy }));
+                });
+            } catch(_) {}
+
+            try { el.dispatchEvent(new MouseEvent('mousedown', { bubbles:true, button:0 })); } catch(_) {}
+            try { el.focus(); } catch(_) {}
+            try { el.dispatchEvent(new Event('focus', { bubbles:true })); } catch(_) {}
+
+            // 3. maxlength 截断 → 赋值（contentEditable 走 innerText）
+            try {
+                var limit = parseInt(el.getAttribute('maxlength'));
+                if (limit > 0 && txt.length > limit) txt = txt.substring(0, limit);
+            } catch(_) {}
+            if (el.isContentEditable) {
+                el.innerText = txt;
+            } else {
+                el.value = txt;
+            }
+
+            // 4. keydown 假逐字（问卷星可能监控键盘触发节奏）
+            try {
+                for (var k = 0; k < Math.min(txt.length, 6); k++) {
+                    el.dispatchEvent(new Event('keydown', { bubbles:true }));
+                }
+            } catch(_) {}
+
+            // 5. 核心触发：input + change
+            try { el.dispatchEvent(new Event('input',  { bubbles:true })); } catch(_) {}
+            try { el.dispatchEvent(new Event('change', { bubbles:true })); } catch(_) {}
+
+            // 6. blur 失焦
+            try { el.dispatchEvent(new Event('blur', { bubbles:true })); } catch(_) {}
+            try { el.blur(); } catch(_) {}
+        }
+
+        function __wjxWriteOptionBlank(blank, txt) {
+            var limit = parseInt(blank.getAttribute('maxlength'));
+            if (!isNaN(limit) && limit > 0 && txt.length > limit) {
+                txt = txt.substring(0, limit);
+            }
+            var wrap = blank.closest ? (blank.closest('label, li, td') || blank) : blank;
+            try { wrap.scrollIntoView({behavior: 'instant', block: 'center'}); } catch(_) {}
+            try { blank.focus(); } catch(_) {}
+            try { blank.dispatchEvent(new Event('focus', {bubbles:true})); } catch(_) {}
+            if (blank.isContentEditable) {
+                blank.innerText = txt;
+            } else {
+                blank.value = txt;
+            }
+            try { blank.dispatchEvent(new Event('input',  {bubbles:true})); } catch(_) {}
+            try { blank.dispatchEvent(new Event('change', {bubbles:true})); } catch(_) {}
+            try { blank.dispatchEvent(new Event('blur',   {bubbles:true})); } catch(_) {}
+            return (blank.value || blank.innerText || '').length > 0;
+        }
+    """
+
+
 def click_option_script(q: int, choice: int) -> str:
     """js_click_option 的 JS：人类行为增强的"某题某个选项"点击。
 
@@ -35,113 +206,50 @@ def click_option_script(q: int, choice: int) -> str:
     这行就成了在问卷页面上下文里执行任意 JS 的通道。json.dumps 之后
     值再也不可能被解析成代码，这条边界不再依赖上游数据的形状。
     本模块其余站点（fill_text / dropdown / matrix）本来就是这么做的。
+
+    v4.4：事件链提取到 :func:`interaction_chain_helper_script`，与降级定位层
+    共用同一份（见该函数 docstring）。
     """
     q_json = json.dumps(q)
     choice_json = json.dumps(choice)
     return f"""
+        {interaction_chain_helper_script()}
         var q = {q_json};
         var choice = {choice_json};
         var input = document.querySelector('#q' + q + '_' + choice) ||
                     document.querySelector('input[name="q' + q + '"][value="' + choice + '"]');
         if (!input) return false;
 
-        // ---- 点击前：把选项滚动到可视位置 ----
-        var target = input.closest('.field, .div_question, .q-item, li, label');
-        if (!target) target = input.closest('div, span') || input;
-        target.scrollIntoView({{behavior: 'instant', block: 'center'}});
-
-        // ---- 点击前：模拟鼠标移动到元素上 ----
-        try {{
-            var r = target.getBoundingClientRect();
-            var cx = Math.round(r.left + r.width / 2);
-            var cy = Math.round(r.top + r.height / 2);
-            ['mousemove','mouseover','mouseenter'].forEach(function(evtName){{
-                var ev = new MouseEvent(evtName, {{
-                    bubbles: true, cancelable: true, view: window,
-                    clientX: cx, clientY: cy,
-                    relatedTarget: document.body
-                }});
-                target.dispatchEvent(ev);
-            }});
-        }} catch(_) {{}}
-
-        // ---- 点击：mousedown → change/input → checked=true → mouseup → click ----
-        try {{
-            var ev2 = new MouseEvent('mousedown', {{ bubbles:true, button:0, cancelable:true }});
-            target.dispatchEvent(ev2);
-        }} catch(_) {{}}
-
-        input.checked = true;
-        input.dispatchEvent(new Event('input', {{bubbles: true}}));
-        input.dispatchEvent(new Event('change', {{bubbles: true}}));
-
-        try {{ target.dispatchEvent(new MouseEvent('mouseup', {{bubbles:true, button:0}})); }} catch(_) {{}}
-        try {{ target.dispatchEvent(new MouseEvent('click', {{bubbles:true, button:0}})); }} catch(_) {{}}
-
-        // ---- 问卷星特有的样式：给装饰 <a> 加 jqchecked ----
-        var wrapper = input.closest('.jqradiowrapper, .jqcheckboxwrapper, label, span');
-        if (wrapper) {{
-            var a = wrapper.querySelector('a.jqradio, a.jqcheck, a');
-            if (a) {{
-                a.classList.add('jqchecked');
-            }}
-        }}
+        __wjxHumanClickFull(input);
 
         // ---- 单选：清掉同题其他选项 ----
         if (input.type === 'radio') {{
-            document.querySelectorAll('input[name="q' + q + '"]').forEach(function(sib) {{
-                if (sib !== input) {{
-                    sib.checked = false;
-                    sib.dispatchEvent(new Event('change', {{bubbles: true}}));
-                    var w = sib.closest('.jqradiowrapper, label, span');
-                    if (w) {{
-                        var aa = w.querySelector('a.jqradio, a.jqcheck, a');
-                        if (aa) aa.classList.remove('jqchecked');
-                    }}
-                }}
-            }});
+            __wjxClearCheckedSiblings('input[name="q' + q + '"]', document, input);
         }}
         return true;
     """
 
 
 def click_question_options_script(q: int, choices: list[int]) -> str:
-    """js_click_question_options 的多选题批量点击 JS（清旧值 → 逐个选中 → 加样式）。"""
+    """js_click_question_options 的多选题批量点击 JS（清旧值 → 逐个选中 → 加样式）。
+
+    v4.4：事件链提取到 :func:`interaction_chain_helper_script`，与降级定位层共用。
+    """
     choices_json = json.dumps(choices)
     return f"""
+        {interaction_chain_helper_script()}
         var choices = {choices_json};
         var any_hit = false;
 
         // 先把该题所有原有选中态清空（防止页面已有默认值）
-        document.querySelectorAll("input[name='q{q}']").forEach(function(sib) {{
-            sib.checked = false;
-            sib.dispatchEvent(new Event('change', {{bubbles: true}}));
-            var w = sib.closest('.jqcheckboxwrapper, .jqradiowrapper, label, span');
-            if (w) {{
-                var aa = w.querySelector('a.jqcheck, a.jqradio, a');
-                if (aa) aa.classList.remove('jqchecked');
-            }}
-        }});
+        __wjxClearCheckedSiblings("input[name='q{q}']", document, null);
 
         choices.forEach(function(ch) {{
             var input = document.querySelector('#q{q}_' + ch) ||
                         document.querySelector("input[name='q{q}'][value='" + ch + "']");
             if (!input) return;
             any_hit = true;
-
-            var target = input.closest('.field, .div_question, .q-item, li, label');
-            if (!target) target = input;
-            target.scrollIntoView({{behavior: 'instant', block: 'center'}});
-
-            input.checked = true;
-            input.dispatchEvent(new Event('input', {{bubbles: true}}));
-            input.dispatchEvent(new Event('change', {{bubbles: true}}));
-
-            var wrapper = input.closest('.jqcheckboxwrapper, label, span');
-            if (wrapper) {{
-                var a = wrapper.querySelector('a.jqcheck, a.jqradio, a');
-                if (a) a.classList.add('jqchecked');
-            }}
+            __wjxHumanClickSimple(input);
         }});
 
         return any_hit;
@@ -212,12 +320,16 @@ def fill_option_blank_script(q: int, choice, text: str) -> str:
     maxlength 约束（浏览器只在交互输入时裁），于是一段比框更长的文本会被原样
     提交给服务端 —— 前端看起来填好了，校验却按"超出长度"拒，症状又落回
     本工具最难查的那一类：提交返回 unknown。
+
+    v4.4：写入链提取到 :func:`interaction_chain_helper_script` 的
+    ``__wjxWriteOptionBlank``，与降级定位层共用同一份。
     """
     q_json = json.dumps(q)
     choice_json = json.dumps(str(choice))
     text_json = json.dumps(str(text))
     return f"""
         {option_blank_helper_script()}
+        {interaction_chain_helper_script()}
         var q = {q_json};
         var choice = {choice_json};
         var txt = {text_json};
@@ -228,24 +340,7 @@ def fill_option_blank_script(q: int, choice, text: str) -> str:
         var blank = optionBlankInput(input);
         if (!blank) return false;
 
-        var limit = parseInt(blank.getAttribute('maxlength'));
-        if (!isNaN(limit) && limit > 0 && txt.length > limit) {{
-            txt = txt.substring(0, limit);
-        }}
-
-        var wrap = blank.closest ? (blank.closest('label, li, td') || blank) : blank;
-        try {{ wrap.scrollIntoView({{behavior: 'instant', block: 'center'}}); }} catch(_) {{}}
-        try {{ blank.focus(); }} catch(_) {{}}
-        try {{ blank.dispatchEvent(new Event('focus', {{bubbles:true}})); }} catch(_) {{}}
-        if (blank.isContentEditable) {{
-            blank.innerText = txt;
-        }} else {{
-            blank.value = txt;
-        }}
-        try {{ blank.dispatchEvent(new Event('input',  {{bubbles:true}})); }} catch(_) {{}}
-        try {{ blank.dispatchEvent(new Event('change', {{bubbles:true}})); }} catch(_) {{}}
-        try {{ blank.dispatchEvent(new Event('blur',   {{bubbles:true}})); }} catch(_) {{}}
-        return (blank.value || blank.innerText || '').length > 0;
+        return __wjxWriteOptionBlank(blank, txt);
     """
 
 
@@ -254,9 +349,14 @@ def fill_option_blank_script(q: int, choice, text: str) -> str:
 # ============================================================================
 
 def fill_text_script(q: int, text: str) -> str:
-    """js_fill_text 的 JS：scroll → hover → focus → 赋值 → 假键盘 → input/change → blur。"""
+    """js_fill_text 的 JS：scroll → hover → focus → 赋值 → 假键盘 → input/change → blur。
+
+    v4.4：写入链提取到 :func:`interaction_chain_helper_script` 的
+    ``__wjxFillTextLike``，与降级定位层共用同一份。
+    """
     text_json = json.dumps(str(text))
     return f"""
+        {interaction_chain_helper_script()}
         // 依次尝试多种 id/name 组合（问卷星 + 其他常见模板）
         var candidates = [
             document.getElementById('q{q}'),
@@ -272,56 +372,10 @@ def fill_text_script(q: int, text: str) -> str:
         }}
         if (!el) return false;
 
-        // 1. 滚动到视野中央
-        var wrap = el.closest('.field, .div_question, .q-item, li, label, div');
-        if (!wrap) wrap = el;
-        wrap.scrollIntoView({{behavior: 'instant', block: 'center'}});
-
-        // 2. fake hover + focus（假装点进来）
-        try {{
-            var r = wrap.getBoundingClientRect();
-            var cx = Math.round(r.left + r.width / 2);
-            var cy = Math.round(r.top + r.height / 2);
-            ['mousemove','mouseover','mouseenter'].forEach(function(n){{
-                wrap.dispatchEvent(new MouseEvent(n, {{ bubbles:true, clientX:cx, clientY:cy }}));
-            }});
-        }} catch(_) {{}}
-
-        try {{ el.dispatchEvent(new MouseEvent('mousedown', {{ bubbles:true, button:0 }})); }} catch(_) {{}}
-        try {{ el.focus(); }} catch(_) {{}}
-        try {{ el.dispatchEvent(new Event('focus', {{ bubbles:true }})); }} catch(_) {{}}
-
-        // 3. 清原有值 → 赋值（如果是 contentEditable 走 innerText）
-        // v4.1：按 maxlength 截断 —— 程序赋值不受 maxlength 约束，超长文本
-        // 会被平台长度校验整格清掉，提交时这题落空、只能判 unknown（与
-        // fill_option_blank 的同类缺口同修；那里当时已带截断）。
+        // maxlength 截断在 __wjxFillTextLike 内做：程序赋值不受 maxlength 约束，
+        // 超长文本会被平台长度校验整格清掉，提交时这题落空、只能判 unknown（v4.1）。
         var txt = {text_json};
-        try {{
-            var limit = parseInt(el.getAttribute('maxlength'));
-            if (limit > 0 && txt.length > limit) txt = txt.substring(0, limit);
-        }} catch(_) {{}}
-        if (el.isContentEditable) {{
-            el.innerText = txt;
-        }} else {{
-            el.value = txt;
-        }}
-
-        // 4. keydown 假逐字（问卷星可能监控键盘触发节奏）
-        try {{
-            for (var k = 0; k < Math.min(txt.length, 6); k++) {{
-                var ev = new Event('keydown', {{ bubbles:true }});
-                el.dispatchEvent(ev);
-            }}
-        }} catch(_) {{}}
-
-        // 5. 核心触发：input + change（让前端框架感知数据变化）
-        try {{ el.dispatchEvent(new Event('input',  {{ bubbles:true }})); }} catch(_) {{}}
-        try {{ el.dispatchEvent(new Event('change', {{ bubbles:true }})); }} catch(_) {{}}
-
-        // 6. blur 失焦（表示用户写完了）
-        try {{ el.dispatchEvent(new Event('blur', {{ bubbles:true }})); }} catch(_) {{}}
-        try {{ el.blur(); }} catch(_) {{}}
-
+        __wjxFillTextLike(el, txt);
         return true;
     """
 

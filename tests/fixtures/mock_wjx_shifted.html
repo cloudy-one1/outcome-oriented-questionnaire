@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>问卷星 Mock - 模板改版形态（降级定位验收）</title>
+<style>
+  body { font-family: "Microsoft YaHei", sans-serif; max-width: 720px; margin: 20px auto; padding: 0 16px; background: #fafafa; }
+  .div_question { background: #fff; border: 1px solid #eee; border-radius: 8px; padding: 16px 20px; margin: 12px 0; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+  .qtitle { font-size: 15px; font-weight: 600; color: #333; margin-bottom: 10px; }
+  .qtitle .idx { color: #f60; margin-right: 4px; }
+  .field { padding-left: 6px; }
+  label.opt { display: block; padding: 6px 2px; color: #444; cursor: pointer; user-select: none; }
+  input[type="radio"], input[type="checkbox"] { margin-right: 8px; transform: scale(1.1); }
+  textarea, input[type="text"], input[type="tel"], select { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #d0d0d0; border-radius: 4px; font-size: 14px; font-family: inherit; }
+  select { background: #fff; height: 36px; }
+  input[type="submit"] {
+    margin-top: 20px; padding: 10px 32px; background: #f60; color: #fff;
+    border: 0; border-radius: 4px; font-size: 15px; cursor: pointer;
+  }
+</style>
+</head>
+<body>
+
+<h2 style="text-align:center;color:#333;">模板改版形态 Mock（v4.4 降级定位）</h2>
+<p style="text-align:center;color:#999;font-size:12px;">
+  模拟平台改版：选项控件的 id/name 全部漂移（q1radio / optq1_N / phone_input），
+  题目容器换成另一种已知模板形态（div_question_N / div5），但 topic/type 属性与
+  题干文本保留 —— 探测（非锚定 q(\d+) 正则 + div 容器回退）仍然认得出全部题目，
+  主交互脚本的精确选择器（#qN_M / input[name=qN] / #qN）全部失配。
+</p>
+
+<!-- Q1 单选：id/name 漂移，topic/type 属性保留。
+     探测侧：name="q1radio" 命中非锚定 /q(\d+)/ → q=1 ✓
+     主交互侧：#q1_N ✗、input[name="q1"] ✗ → 必须靠降级定位 -->
+<div id="div_question_1" class="div_question" topic="1" type="3" req="1">
+  <div class="qtitle"><span class="idx">1.</span>您的性别是？（单选）</div>
+  <div class="field">
+    <label class="opt"><input type="radio" name="q1radio" id="optq1_1" value="1">男</label>
+    <label class="opt"><input type="radio" name="q1radio" id="optq1_2" value="2">女</label>
+    <label class="opt"><input type="radio" name="q1radio" id="optq1_3" value="3">其他 / 不愿透露</label>
+    <label class="opt"><input type="radio" name="q1radio" id="optq1_4" value="4">保密</label>
+  </div>
+</div>
+
+<!-- Q2 多选：同款漂移；第 6 项自带填空框（结构保留，框 id 无所谓 ——
+     选项自带框的识别走 optionBlankInput 的结构判据） -->
+<div id="div_question_2" class="div_question" topic="2" type="4" req="1">
+  <div class="qtitle"><span class="idx">2.</span>您平时常用的信息获取渠道有？（多选）</div>
+  <div class="field">
+    <label class="opt"><input type="checkbox" name="q2box" id="optq2_1" value="1">微信公众号</label>
+    <label class="opt"><input type="checkbox" name="q2box" id="optq2_2" value="2">微博</label>
+    <label class="opt"><input type="checkbox" name="q2box" id="optq2_3" value="3">B站</label>
+    <label class="opt"><input type="checkbox" name="q2box" id="optq2_4" value="4">小红书</label>
+    <label class="opt"><input type="checkbox" name="q2box" id="optq2_5" value="5">知乎</label>
+    <label class="opt"><input type="checkbox" name="q2box" id="optq2_6" value="6">其他
+      <input type="text" class="underline" id="blankq2_6_text" maxlength="6" placeholder="请注明">
+    </label>
+  </div>
+</div>
+
+<!-- Q3 下拉：未漂移（对照组 —— 主路径应正常工作，不需要降级） -->
+<div id="div_question_3" class="div_question" topic="3" type="7" req="1">
+  <div class="qtitle"><span class="idx">3.</span>您所在的城市？（下拉选择）</div>
+  <div class="field">
+    <select name="q3" id="selectq3">
+      <option value="">-- 请选择 --</option>
+      <option value="1">北京</option>
+      <option value="2">上海</option>
+      <option value="3">广州</option>
+      <option value="4">深圳</option>
+      <option value="5">杭州</option>
+      <option value="6">成都</option>
+      <option value="7">西安</option>
+      <option value="8">其他</option>
+    </select>
+  </div>
+</div>
+
+<!-- Q5 填空：容器用第三种已知形态 #div5（探测的文本框回退判据
+     closest('[id*="div"]') + /div(\d+)/ 靠它认出 q=5），控件 id/name 彻底漂移。
+     注意控件 id 不能含 "q5" 子串 —— 主路径的 input[id*='q5'] 会兜住它。 -->
+<div id="div5" class="div_question" topic="5" type="1" req="1">
+  <div class="qtitle"><span class="idx">5.</span>请填写您的手机号码</div>
+  <div class="field">
+    <input type="tel" id="phone_input" name="phone_input" placeholder="手机号">
+  </div>
+</div>
+
+<div style="text-align:center;">
+  <input type="submit" id="submit_button" value="提交问卷">
+</div>
+
+<script>
+// 与 mock_wjx.html 相同的提交行为（AJAX 式成功文案 + 点击计数）
+window.__submitClicks = 0;
+window.__lastCheckedValue = function (name) {
+  var r = document.querySelector('input[name="' + name + '"]:checked');
+  return r ? r.value : null;
+};
+// 必填校验：勾中自带填空框的选项却没写字 → alert 拒收（与真问卷星一致）
+window.__blankViolation = function () {
+  var bad = null;
+  Array.prototype.forEach.call(
+    document.querySelectorAll('input[type="checkbox"], input[type="radio"]'),
+    function (ctl) {
+      if (!ctl.checked) return;
+      var box = ctl.closest ? ctl.closest('label, li, td') : null;
+      if (!box) return;
+      var t = box.querySelector('input[type="text"], textarea');
+      if (t && !(t.value || '').trim()) bad = ctl.id || ctl.name || '';
+    });
+  return bad;
+};
+(function () {
+  var btn = document.getElementById('submit_button');
+  if (!btn) return;
+  btn.addEventListener('click', function (ev) {
+    if (ev && ev.preventDefault) ev.preventDefault();
+    window.__submitClicks += 1;
+    var violation = window.__blankViolation();
+    if (violation) {
+      window.alert('有一项勾了"其他"却没填写');
+      return;
+    }
+    window.setTimeout(function () {
+      var box = document.createElement('div');
+      box.id = 'submit_result';
+      box.className = 'submit-succ';
+      box.textContent = '提交成功，感谢您的参与！';
+      document.body.appendChild(box);
+    }, 150);
+  });
+})();
+</script>
+
+</body>
+</html>

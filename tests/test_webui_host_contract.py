@@ -97,6 +97,7 @@ def test_the_form_becomes_exactly_this_run_state(tmp_path) -> None:
     session.set_field("no_record_text", True)
     session.set_field("manual_submit", True)
     session.set_field("quota", True)
+    session.set_field("fallback_locate", True)
 
     args, kwargs = start(session)
     state = kwargs["state"]
@@ -110,11 +111,13 @@ def test_the_form_becomes_exactly_this_run_state(tmp_path) -> None:
     # v4.2 配额调度：开关必须真传进引擎，且隐含 target-success（-n 即目标成功份数）
     assert kwargs["quota_mode"] is True, "配额开关必须真传进引擎，不能只改了界面"
     assert kwargs["target_success"] is True, "配额的 C1 语义要求循环跑到成功数达标"
+    # v4.4 降级定位：开关必须真传进引擎，不能只改了界面
+    assert kwargs["fallback_locate"] is True, "降级定位必须真传进引擎，不能只改了界面"
     # 宿主标签是唯一一处刻意写进库里的宿主信息（runs.error_message 尾部）
     assert kwargs["error_suffix"] == "Web · browser=chrome uc=True"
     assert set(kwargs) == {
         "browser", "use_uc", "history_db", "weight_config", "no_record_text",
-        "manual_submit", "target_success", "quota_mode",
+        "manual_submit", "target_success", "quota_mode", "fallback_locate",
         "state", "on_round", "log", "stop_check", "error_suffix",
     }, "交给引擎的关键字集合变了 —— 少一个参数就是少一条契约"
 

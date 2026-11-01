@@ -11,22 +11,22 @@
 
 | 范围 | 离线覆盖率 |
 |---|---|
-| 全部 | **92.6%** |
-| `src/` | 91.2%（5436 条语句剩 476 行） |
-| `webui/` | 98.0%（1421 条语句剩 28 行） |
+| 全部 | **92.7%** |
+| `src/` | 91.3%（5499 条语句剩 476 行） |
+| `webui/` | 98.0%（1427 条语句剩 28 行） |
 
 #### 已补齐的缺口（"补齐前"一列是登记时的实测）
 
 | 模块 | 补齐前 | 现在 | 契约测试 |
 |---|---|---|---|
 | `src/logging_setup.py` | 0% | **100.0%**（剩 0 行） | `tests/test_logging_setup.py` |
-| `src/browser/driver_factory.py` | 9% | **98.4%**（剩 3 行） | `tests/test_driver_factory_offline.py` |
+| `src/browser/driver_factory.py` | 9% | **98.5%**（剩 3 行） | `tests/test_driver_factory_offline.py` |
 | `src/pipeline.py` | 26% | **97.0%**（剩 7 行，v3.0 加了分页与弹窗诊断分支） | `tests/test_pipeline_core.py`、`tests/test_pipeline_waits.py` |
 | `src/verification.py` | 34% | **98.0%**（剩 2 行，非 Windows 降级桩本机不可达） | `tests/test_verification_flow.py` |
 | `src/browser/__init__.py` | 52.2% | **100.0%**（剩 0 行） | `tests/test_browser_facade_offline.py` |
 | `src/interactions/choices.py` | 58.8% | **100.0%**（剩 0 行） | `tests/test_choices_interaction.py` |
 | `src/interactions/sort.py` | 22.2% | **100.0%**（剩 0 行） | `tests/test_sort_interaction.py` |
-| `src/cli.py` | 74.3% | **82.0%**（剩 104 行，剩余是 run_batch 内的浏览器接线与降级分支） | `tests/test_cli_exit_and_reports.py`、`tests/test_cli_main.py`、`tests/test_cli_batch.py` |
+| `src/cli.py` | 74.3% | **81.9%**（剩 105 行，剩余是 run_batch 内的浏览器接线与降级分支） | `tests/test_cli_exit_and_reports.py`、`tests/test_cli_main.py`、`tests/test_cli_batch.py` |
 
 #### 仍然没有防线的地方
 

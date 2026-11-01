@@ -156,9 +156,12 @@ def _answer_current_page(
     run_id: int | None = None,
     submission_index: int | None = None,
     no_record_text: bool = False,
+    fallback_locate: bool = False,
 ) -> tuple[str, set[int], int, set[int]]:
     """等题 → 探测 → 断点续填扫描 → 逐题作答，只管**当前可见的那一页**。
 
+    :param fallback_locate: v4.4 降级定位开关，逐题透传给
+        :func:`_answer_one_question`（主选择器失配时用题干/属性锚点重试）。
     :return: ``(status, 本页题号集合, 跳过已答数, 回执说没落上的题号)``；
              status 为 ``"ok"`` 表示这一页该答的都过了，``"failed"`` 表示
              等待/探测环节就没过（调用方负责切回默认上下文并计本轮失败）。
@@ -243,6 +246,7 @@ def _answer_current_page(
             run_id=run_id,
             submission_index=submission_index,
             no_record_text=no_record_text,
+            fallback_locate=fallback_locate,
         ):
             failed_writes.add(q_num)
 
@@ -363,6 +367,7 @@ def _do_one_submission_core(
     stop_check: Callable[[], bool] | None = None,
     rescue_gaps: bool = False,
     manual_submit: bool = False,
+    fallback_locate: bool = False,
 ) -> SubmitOutcome:
     """单次提交的真正实现（无外层重试，由调用者包 retry）。
 
@@ -383,6 +388,9 @@ def _do_one_submission_core(
         （半份问卷交上去就是平台上一条收不回来的真实回收记录）。
         成功与否仍走同一套三态判定；等到超时没人点是"这一份没交出去"，计失败。
         与 ``--headless`` 互斥，互斥在 argparse 就拒掉，这里没有无头分支。
+    :param fallback_locate: v4.4 降级定位开关。主交互选择器失配（平台改版）时，
+        用题干/属性锚点重定位元素再试一次（见 ``interactions/_relocate.py``）；
+        默认 False —— 行为与此前逐位一致。
     """
 
     # Step 0 换一个人。放在这里（而不是 CLI/GUI 的批次循环里）是为了同时满足两件事：
@@ -459,6 +467,7 @@ def _do_one_submission_core(
             run_id=run_id,
             submission_index=submission_index,
             no_record_text=no_record_text,
+            fallback_locate=fallback_locate,
         )
         skipped_total += page_skipped
         detected_total += len(qnums)
@@ -611,6 +620,7 @@ def run_one_submission(
     stop_check: Callable[[], bool] | None = None,
     rescue_gaps: bool = False,
     manual_submit: bool = False,
+    fallback_locate: bool = False,
 ) -> SubmitOutcome:
     """外层 retry + 清理 + 重抛异常（供 GUI / CLI 批处理循环调用）。
 
@@ -621,6 +631,7 @@ def run_one_submission(
       既不被本函数的 ``except Exception`` 清理分支吞掉，也不在重试范围内）
     - ``rescue_gaps``：v3.1 补漏轮，见 :func:`_do_one_submission_core`
     - ``manual_submit``：v3.3 人工提交，见 :func:`_do_one_submission_core`
+    - ``fallback_locate``：v4.4 降级定位，见 :func:`_do_one_submission_core`
     """
     try:
         outcome = _do_one_submission_core(
@@ -634,6 +645,7 @@ def run_one_submission(
             stop_check=stop_check,
             rescue_gaps=rescue_gaps,
             manual_submit=manual_submit,
+            fallback_locate=fallback_locate,
         )
     except Exception as e:
         # Ctrl+C/SystemExit 直接上抛（不做任何清理尝试以免吞）

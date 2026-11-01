@@ -143,11 +143,11 @@ def test_multi_fills_blank_only_for_selected_option(monkeypatch) -> None:
     fills: list[tuple[int, Any, str]] = []
     monkeypatch.setattr(
         "src.pipeline_stages.question_stage.js_click_question_options",
-        lambda driver, q, qtype, values: True,
+        lambda driver, q, qtype, values, **_kw: True,
     )
     monkeypatch.setattr(
         "src.pipeline_stages.question_stage.js_fill_option_blank",
-        lambda driver, q, choice, text: fills.append((q, choice, text)) or True,
+        lambda driver, q, choice, text, **_kw: fills.append((q, choice, text)) or True,
     )
 
     q = {"q": 2, "type": "multi", "choices": [1, 2, 3], "blank_options": [2, 3]}
@@ -167,7 +167,7 @@ def test_unselected_blank_option_is_not_touched(monkeypatch) -> None:
     }
     monkeypatch.setattr(
         "src.pipeline_stages.question_stage.js_click_question_options",
-        lambda driver, q, qtype, values: True,
+        lambda driver, q, qtype, values, **_kw: True,
     )
     monkeypatch.setattr(
         "src.pipeline_stages.question_stage.js_fill_option_blank",
@@ -188,11 +188,11 @@ def test_blank_fill_failure_flips_question_to_failed(monkeypatch) -> None:
     _force_pick_value_3()
     monkeypatch.setattr(
         "src.pipeline_stages.question_stage.js_click_question_options",
-        lambda driver, q, qtype, values: True,
+        lambda driver, q, qtype, values, **_kw: True,
     )
     monkeypatch.setattr(
         "src.pipeline_stages.question_stage.js_fill_option_blank",
-        lambda driver, q, choice, text: False,
+        lambda driver, q, choice, text, **_kw: False,
     )
     assert _answer_one_question(
         RecordingDriver(),
@@ -207,7 +207,7 @@ def test_blank_fill_exception_is_swallowed_as_failure(monkeypatch) -> None:
     _force_pick_value_3()
     monkeypatch.setattr(
         "src.pipeline_stages.question_stage.js_click_question_options",
-        lambda driver, q, qtype, values: True,
+        lambda driver, q, qtype, values, **_kw: True,
     )
 
     def _boom(*a: Any, **k: Any) -> bool:
@@ -235,7 +235,7 @@ def test_replayed_single_overrides_the_weight_config(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "src.pipeline_stages.question_stage.js_click_question_options",
-        lambda _d, _q, _t, vals: clicked.append(list(vals)) or True,
+        lambda _d, _q, _t, vals, **_kw: clicked.append(list(vals)) or True,
     )
     monkeypatch.setattr(
         "src.pipeline_stages.question_stage.generate_answer_v2",
@@ -260,7 +260,7 @@ def test_single_production_entry_consults_the_plan(monkeypatch) -> None:
     clicked: list[list] = []
     monkeypatch.setattr(
         "src.pipeline_stages.question_stage.js_click_question_options",
-        lambda _d, _q, _t, vals: clicked.append(list(vals)) or True,
+        lambda _d, _q, _t, vals, **_kw: clicked.append(list(vals)) or True,
     )
     monkeypatch.setattr(
         "src.plan.forced_choice",
@@ -321,7 +321,7 @@ def test_replayed_text_lands_in_the_dom_and_history(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "src.pipeline_stages.question_stage.js_fill_text",
-        lambda _d, qnum, text: filled.append((qnum, text)) or True,
+        lambda _d, qnum, text, **_kw: filled.append((qnum, text)) or True,
     )
     recorded: list = []
 
