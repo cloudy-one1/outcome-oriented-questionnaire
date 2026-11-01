@@ -36,6 +36,7 @@ from selenium import webdriver  # noqa: E402
 
 from src.browser import driver_factory as df  # noqa: E402
 from src.browser.driver_factory import (  # noqa: E402
+    STEALTH_EXTRA_ARGS,
     _apply_stealth_cdp,
     _apply_user_agent_override,
     _cdp_extra_headers,
@@ -359,7 +360,8 @@ def test_edge_ua_builds_edge_metadata_payload() -> None:
     _apply_user_agent_override(d, EDGE_UA, browser="edge")
     assert _ua_override_params(d) == {
         "userAgent": EDGE_UA,
-        "acceptLanguage": "zh-CN,zh;q=0.9",
+        # v4.4：与 _cdp_extra_headers 的 Accept-Language 同源（此前两处不一致）
+        "acceptLanguage": "zh-CN,zh;q=0.9,en;q=0.8",
         "platform": "Windows",
         "userAgentMetadata": {
             "brands": _expected_brands(brand="Microsoft Edge", version="131"),
@@ -369,9 +371,23 @@ def test_edge_ua_builds_edge_metadata_payload() -> None:
             "model": "",
             "mobile": False,
             "bitness": "64",
-            "wow64": True,
+            # v4.4：wow64 从 UA 推导 —— EDGE_UA 是 Win64; x64，不是 WOW64
+            "wow64": False,
         },
     }
+
+
+def test_wow64_flag_derived_from_the_ua() -> None:
+    """v4.4：wow64 此前恒为 true —— WOW64 指"32 位进程跑在 64 位系统"，
+    对 Win64; x64 的 UA 是错的，与 UA 自相矛盾就是 client-hints 特征。"""
+    wow64_ua = EDGE_UA.replace("Win64; x64", "WOW64")
+    d = FakeDriver()
+    _apply_user_agent_override(d, wow64_ua, browser="edge")
+    assert _ua_override_params(d)["userAgentMetadata"]["wow64"] is True
+
+    d2 = FakeDriver()
+    _apply_user_agent_override(d2, "", browser="edge")
+    assert _ua_override_params(d2)["userAgentMetadata"]["wow64"] is False
 
 
 def test_chrome_ua_builds_google_chrome_metadata_payload() -> None:
@@ -767,6 +783,73 @@ def test_discard_quits_a_healthy_driver() -> None:
     d = FakeDriver()
     _discard(d)
     assert d.quit_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# 10. v4.4 stealth 加固的回归门禁（对照 Scrapling 审计，见 docs/stealth_audit.md）
+# ---------------------------------------------------------------------------
+def test_stealth_js_passes_node_syntax_check(tmp_path: Any) -> None:
+    """整个 stealth 注入层最重的一条教训：defaultState 里 background-sync /
+    idle-detection / window-management 三个键没加引号，整段 JS 是 SyntaxError，
+    而 CDP addScriptToEvaluateOnNewDocument 对解析失败**静默不执行**——
+    也就是说 v4.4 之前全部指纹伪装从未生效过。离线断言只做字符串比对抓不到
+    这种错，node --check 是唯一门禁。"""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node 不在 PATH 上，无法做 JS 语法门禁")
+    js_file = tmp_path / "stealth.js"
+    js_file.write_text(
+        build_stealth_js(
+            screen_w=SCREEN_W,
+            screen_h=SCREEN_H,
+            avail_top=AVAIL_TOP,
+            device_memory=DEVICE_MEMORY,
+            hw_concurrency=HW_CONCURRENCY,
+            timezone_offset_min=TIMEZONE_OFFSET_MIN,
+        ),
+        encoding="utf-8",
+    )
+    proc = subprocess.run([node, "--check", str(js_file)], capture_output=True, text=True)
+    assert proc.returncode == 0, f"stealth JS 语法错误（等于整体死代码）：\n{proc.stderr}"
+
+
+def test_stealth_extra_args_land_on_every_browser_path(env: Harness) -> None:
+    """Edge / Chrome 原生 / Chrome UC 三条路径都要带上 v4.4 新参数。"""
+    paths = [
+        arguments_of(create_edge_driver()),
+        arguments_of(create_chrome_driver()),
+        arguments_of(create_chrome_driver(use_uc=True)),
+    ]
+    for args in paths:
+        for extra in STEALTH_EXTRA_ARGS:
+            assert extra in args, f"{extra} 缺席某条浏览器路径"
+
+
+def test_hw_presets_keep_device_memory_within_spec() -> None:
+    """navigator.deviceMemory 规范上限是 8（>8GB 一律报 8），报 16 直接自曝伪造。"""
+    for device_memory, _hw in HW_PRESETS:
+        assert 1 <= device_memory <= 8
+
+
+def test_stealth_js_contains_v44_hardening_markers() -> None:
+    js = build_stealth_js(
+        screen_w=SCREEN_W,
+        screen_h=SCREEN_H,
+        avail_top=AVAIL_TOP,
+        device_memory=DEVICE_MEMORY,
+        hw_concurrency=HW_CONCURRENCY,
+        timezone_offset_min=TIMEZONE_OFFSET_MIN,
+    )
+    assert "'$cdc_'" in js and "'$wdc_'" in js
+    assert "'background-sync'" in js  # 连字符键必须带引号（见 node --check 门禁的 docstring）
+    assert "Object.create(PluginArray.prototype)" in js
+    assert "pdfViewerEnabled" in js
+    assert "'Asia/Shanghai'" in js
+    assert "Notification.permission" in js
+    assert "WebGL2RenderingContext" in js
 
 
 # ---------------------------------------------------------------------------

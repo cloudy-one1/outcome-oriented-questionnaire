@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>stealth probe</title>
+</head>
+<body>
+<h1>stealth probe</h1>
+<script>
+/*
+ * Stealth 注入层验收探针（配合 tests/test_stealth_e2e.py）。
+ *
+ * 设计要点：
+ *  - 每项检查独立 try/catch，单项失败不影响其余结果；
+ *  - $cdc_* 清扫是延迟执行的（300ms 重扫），所以探针页自己在文档加载后立刻
+ *    种两个假 chromedriver 变量，800ms 后（第一轮重扫已跑过）再记录结果；
+ *  - 全部结果写入 window.__PROBE，并以 window.__PROBE_READY = true 作为就绪信号，
+ *    测试侧轮询就绪位后一次性读取，避免竞态。
+ */
+window.__PROBE = {};
+(function() {
+    'use strict';
+
+    // 种两个假 chromedriver 变量（正常窗口下应被 sweep 清掉）
+    window.$cdc_probemarker_ = { x: 1 };
+    document.$cdc_probemarker2_ = { y: 1 };
+
+    var checks = {};
+    function t(name, fn) {
+        try { checks[name] = fn(); } catch (e) { checks[name] = 'ERR:' + (e && e.message || e); }
+    }
+
+    // ---- navigator.webdriver（三层防御） ----
+    t('webdriver_false', function() { return navigator.webdriver === false; });
+    t('webdriver_locked', function() {
+        var d = Object.getOwnPropertyDescriptor(navigator, 'webdriver');
+        return !!(d && d.configurable === false);
+    });
+    t('webdriver_write_blocked', function() {
+        // defineProperty 劫持应静默拒绝（返回 navigator 且值不变）；
+        // 真实浏览器里这行会成功把值改成 true —— 该检查天然区分两种环境
+        var r = Object.defineProperty(navigator, 'webdriver', { get: function() { return true; } });
+        return r === navigator && navigator.webdriver === false;
+    });
+    t('webdriver_getter_tostring', function() {
+        var d = Object.getOwnPropertyDescriptor(navigator, 'webdriver');
+        return d.get.toString() === 'function get webdriver() { [native code] }';
+    });
+
+    // ---- 语言/硬件/形态 ----
+    t('language', function() {
+        return navigator.language === 'zh-CN' && navigator.languages.join() === 'zh-CN,zh,en';
+    });
+    t('plugins_five', function() { return navigator.plugins.length === 5; });
+    t('plugins_prototypes', function() {
+        return navigator.plugins instanceof PluginArray && navigator.plugins[0] instanceof Plugin;
+    });
+    t('mime_prototypes', function() {
+        return navigator.mimeTypes.length === 2 && navigator.mimeTypes[0] instanceof MimeType;
+    });
+    t('plugins_named_item', function() {
+        var p = navigator.plugins.namedItem('PDF Viewer');
+        return !!p && p.name === 'PDF Viewer';
+    });
+    t('pdf_viewer_enabled', function() { return navigator.pdfViewerEnabled === true; });
+    t('device_memory_capped', function() { return navigator.deviceMemory <= 8; });
+    t('connection_stable', function() {
+        // 连读两次值必须一致（v4.4 前 getter 每次读取重新随机）
+        var r1 = navigator.connection.rtt, d1 = navigator.connection.downlink;
+        var r2 = navigator.connection.rtt, d2 = navigator.connection.downlink;
+        return r1 === r2 && d1 === d2;
+    });
+
+    // ---- 一致性 ----
+    t('notification_default', function() {
+        return window.Notification ? Notification.permission === 'default' : 'no-notification-api';
+    });
+    t('intl_timezone', function() {
+        return Intl.DateTimeFormat().resolvedOptions().timeZone === 'Asia/Shanghai';
+    });
+    t('tz_offset', function() { return new Date().getTimezoneOffset() === -480; });
+
+    // ---- window.chrome / toString ----
+    t('chrome_csi', function() {
+        return typeof window.chrome === 'object' && typeof window.chrome.csi === 'function';
+    });
+    t('csi_tostring', function() {
+        return window.chrome.csi.toString() === 'function csi() { [native code] }';
+    });
+
+    // ---- screen/window 自洽 ----
+    t('screen_outer_consistent', function() {
+        return window.outerWidth === screen.width && window.outerHeight === screen.height;
+    });
+
+    // ---- WebGL（真实 context 的 getParameter 也要被拦） ----
+    function webglCheck(makeCtx) {
+        return function() {
+            var c = document.createElement('canvas');
+            var gl = makeCtx(c);
+            if (!gl) return 'no-webgl-context';
+            var ext = gl.getExtension('WEBGL_debug_renderer_info');
+            if (!ext) return 'no-ext';
+            var viaExt = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+            var direct = gl.getParameter(0x9246);  // 绕过扩展对象直接取 —— 一样要被拦
+            var ok = function(v) { return typeof v === 'string' && v.indexOf('ANGLE (Intel') === 0; };
+            return ok(viaExt) && ok(direct);
+        };
+    }
+    t('webgl_masked', webglCheck(function(c) {
+        return c.getContext('webgl') || c.getContext('experimental-webgl');
+    }));
+    t('webgl2_masked', webglCheck(function(c) { return window.WebGL2RenderingContext ? c.getContext('webgl2') : null; }));
+
+    // ---- $cdc_* 清扫（等 300ms 重扫跑完再记结果） ----
+    setTimeout(function() {
+        checks.cdc_sweep = (typeof window.$cdc_probemarker_ === 'undefined')
+            && (typeof document.$cdc_probemarker2_ === 'undefined');
+        window.__PROBE = checks;
+        window.__PROBE_READY = true;
+    }, 800);
+})();
+</script>
+</body>
+</html>

@@ -18,12 +18,21 @@
   │   ├─ permissions.query 劫持（notifications/geolocation/midi/clipboard 等）
   │   ├─ Function.prototype.toString 劫持（Selenium 注入的函数会有[native code]检查）
   │   ├─ __defineProperty__ 劫持，阻止问卷星把 webdriver 写回
-  │   ├─ 清理 cdc_ / __driver_evaluate / __webdriver_script_fn 等 selenium 属性
-  │   ├─ WebGL debugRendererInfo 指纹扰动（vendor/renderer 轻微抖动）
-  │   └─ navigator.keyboard / navigator.webkitPersistentStorage 伪造
+  │   ├─ 清理 $cdc_ / cdc_ / __driver_evaluate / __webdriver_script_fn 等 selenium 属性
+  │   ├─ WebGL debugRendererInfo 伪装（固定主流 Win10+ Intel 核显，WebGL1/2 + 真实
+  │   │   context 的 getParameter 双面拦截）
+  │   ├─ navigator.keyboard 伪造 / Notification.permission 对齐 / Intl 时区对齐
+  │   └─ plugins 走真原型链（5 个 PDF 插件，instanceof 成立）
   └─ CDP Network.setExtraHTTPHeaders
       ├─ 添加 Accept / Sec-CH-UA* / Client Hints 等真实浏览器的请求头
-      └─ Accept-Language: zh-CN,zh;q=0.9,en;q=0.8
+      └─ Accept-Language: zh-CN,zh;q=0.9,en;q=0.8（与 UA override 的 acceptLanguage 同源）
+
+  浏览器级反检测参数（v4.4 对照 Scrapling STEALTH_ARGS 补入，见 docs/stealth_audit.md）
+  ├─ --disable-ipc-flooding-protection（对抗 CDP/IPC 调用频率检测）
+  ├─ --force-color-profile=srgb（稳定 canvas/WebGL 渲染输出）
+  ├─ --blink-settings=primaryHoverType=2,...primaryPointerType=4（声明"主输入是鼠标"）
+  └─ --fingerprinting-canvas-image-data-noise（Chrome 原生 canvas 指纹噪声，渲染进程
+      加噪，没有可被 toString 检出的 JS hook）
 
   稳定性层
   ├─ 启动参数加 --disable-backgrounding-occluded-windows 防止页面被降频
@@ -58,6 +67,27 @@ from ..utils import pick_user_agent
 
 # UA 里读不出版本号时的兜底大版本（保持与历史行为一致）
 _FALLBACK_CHROME_MAJOR = "131"
+
+# Accept-Language 的唯一来源：CDP 额外请求头与 UA override 的 acceptLanguage
+# 必须同源 —— 两处不一致（v4.4 前一个是 zh-CN,zh;q=0.9,en;q=0.8、一个是
+# zh-CN,zh;q=0.9）正是 HTTP 层与 JS 层语言指纹互相打架的自爆特征。
+# 取值与 stealth JS 里 navigator.languages = ['zh-CN','zh','en'] 对齐。
+_ACCEPT_LANGUAGE = "zh-CN,zh;q=0.9,en;q=0.8"
+
+# v4.4 对照 Scrapling STEALTH_ARGS / patchright 补入的浏览器级反检测参数。
+# 逐条理由见 docs/stealth_audit.md；都是 Chrome/Edge 通用 switch，老内核不认识
+# 的会静默忽略，没有兼容性风险。
+STEALTH_EXTRA_ARGS: tuple[str, ...] = (
+    # 对抗基于 CDP/IPC 调用频率的自动化检测
+    "--disable-ipc-flooding-protection",
+    # 稳定色彩输出：canvas/WebGL 指纹跨启动一致的前提
+    "--force-color-profile=srgb",
+    # 声明"主输入是鼠标"：自动化/无头环境缺这个声明是特征（照抄 Scrapling 取值）
+    "--blink-settings=primaryHoverType=2,availableHoverTypes=2,"
+    "primaryPointerType=4,availablePointerTypes=4",
+    # Chrome 原生 canvas 指纹噪声：渲染进程加噪，没有可被 toString 检出的 JS hook
+    "--fingerprinting-canvas-image-data-noise",
+)
 
 
 def _ua_major_version(ua: str | None, *, browser: str = "edge") -> str | None:
@@ -96,7 +126,7 @@ def _cdp_extra_headers(*, browser: str = "edge", ua: str | None = None) -> dict[
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,"
                   "image/avif,image/webp,image/apng,*/*;q=0.8,"
                   "application/signed-exchange;v=b3;q=0.7",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Accept-Language": _ACCEPT_LANGUAGE,
         "Accept-Encoding": "gzip, deflate, br",
         # User-Agent Client Hints（与 UA 字符串一致）
         "Sec-CH-UA": sec_ch_ua,
@@ -206,6 +236,9 @@ def create_edge_driver(
     opts.add_argument("--disable-renderer-backgrounding")          # 不把 renderer 进程后台化
     opts.add_argument("--dns-prefetch-disable")                    # 减少 DNS 预取造成的"请求风暴"
     opts.add_argument("--disable-hang-monitor")                    # 禁用浏览器页面挂起监视器（避免误杀）
+    # v4.4：浏览器级反检测参数（理由见模块头 / docs/stealth_audit.md）
+    for _extra in STEALTH_EXTRA_ARGS:
+        opts.add_argument(_extra)
 
     # UA + 窗口尺寸（配合 screen 指纹）
     # v4.1：补 `--` 前缀 —— Chromium 只把 `-`/`/` 开头的 token 当 switch，
@@ -294,7 +327,7 @@ def _apply_user_agent_override(driver: Any, ua: str, *, browser: str) -> None:
         "Network.setUserAgentOverride",
         {
             "userAgent": ua,
-            "acceptLanguage": "zh-CN,zh;q=0.9",
+            "acceptLanguage": _ACCEPT_LANGUAGE,
             "platform": "Windows",
             "userAgentMetadata": {
                 "brands": [
@@ -312,7 +345,9 @@ def _apply_user_agent_override(driver: Any, ua: str, *, browser: str) -> None:
                 "model": "",
                 "mobile": False,
                 "bitness": "64",
-                "wow64": True,
+                # v4.4：wow64 从 UA 推导 —— WOW64 指"32 位进程跑在 64 位系统"，
+                # UA 是 Win64; x64 时硬编码 true 与 UA 自相矛盾（此前恒为 true）
+                "wow64": "WOW64" in (ua or ""),
             },
         },
     )
@@ -422,6 +457,8 @@ def create_chrome_driver(
             uc_opts.add_argument("--disable-renderer-backgrounding")
             uc_opts.add_argument("--dns-prefetch-disable")
             uc_opts.add_argument("--disable-hang-monitor")
+            for _extra in STEALTH_EXTRA_ARGS:
+                uc_opts.add_argument(_extra)
 
             # 通知/密码气泡禁用
             prefs = {
@@ -496,6 +533,8 @@ def create_chrome_driver(
     opts.add_argument("--disable-renderer-backgrounding")
     opts.add_argument("--dns-prefetch-disable")
     opts.add_argument("--disable-hang-monitor")
+    for _extra in STEALTH_EXTRA_ARGS:
+        opts.add_argument(_extra)
 
     # UA + 窗口尺寸（同 Edge：switch 必须带 `--` 前缀，见上文 v4.1 注释）
     opts.add_argument(f"--user-agent={ua}")

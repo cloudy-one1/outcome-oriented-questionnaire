@@ -176,8 +176,10 @@ SCREEN_PRESETS: list[tuple[int, int, int]] = [
 ]
 
 # 常见的 deviceMemory / hardwareConcurrency 组合（中国办公电脑主流配置）
+# v4.4：deviceMemory 钳在 ≤8 —— Chrome 的 navigator.deviceMemory 规范上限就是 8
+#（>8GB 一律报 8），此前 (16, 12)/(16, 16) 两组会让 deviceMemory===16 直接自曝伪造
 HW_PRESETS: list[tuple[int, int]] = [
-    (8, 8), (8, 12), (16, 12), (16, 16), (8, 6), (4, 4),
+    (8, 8), (8, 12), (8, 16), (4, 8), (8, 6), (4, 4),
 ]
 
 # Windows 时区（中国标准时间，UTC+8，分钟为单位的负值）
