@@ -2,7 +2,50 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [未发布]
+## [4.4.0] - 2026-11-08
+
+### 新增（stealth 对照 Scrapling 审计补强 —— 修复整层死代码等 16 项）
+
+对照 [D4Vinci/Scrapling](https://github.com/D4Vinci/Scrapling)（BSD-3）两代 stealth
+实现逐文件审计 `driver_factory_stealth.py` / `driver_factory.py` / `config.py`，
+16 项处置，完整对照表与明确不做项见 `docs/stealth_audit.md`：
+
+- **P0 整层死代码**：permissions 静态表里 `background-sync` / `idle-detection` /
+  `window-management` 三个带连字符的键没加引号 → 整段 stealth JS 是 SyntaxError，
+  而 CDP `addScriptToEvaluateOnNewDocument` 对解析失败静默不执行 —— **v4.4 之前
+  390 行指纹伪装 JS 从未生效过**，问卷星没拦住靠的只是浏览器级参数。三键加引号，
+  并补两道门禁：生成 JS 过 `node --check`（语法死代码门禁）+ 经 driver factory
+  真启动的探针页 E2E（20+ 项指纹逐项断言）。
+- **P0 真 bug**：`$cdc_` / `$wdc_` 前缀漏扫（`indexOf==0` 永远扫不到 `$` 开头的
+  经典 chromedriver 变量）；`HW_PRESETS` deviceMemory 钳 ≤8（规范上限 8，报 16
+  自曝）；connection rtt/downlink 改为每文档加载算一次（连读两次值会变 = 机器人
+  特征）；acceptLanguage 两处同源收口；wow64 从 UA 推导；两处 doc/code 漂移修正。
+- **P1 形态加固**：`__nativeLike` 登记表堵匿名 getter 的 toString 源码穿透；
+  plugins 重写为 5 个 PDF 插件 + Plugin/PluginArray 真原型链；伪造属性 configurable
+  对齐真实浏览器（webdriver 例外保持锁死）；PermissionStatus 真原型构造；
+  Notification.permission 与静态表联动；Intl 时区与 getTimezoneOffset -480 对齐；
+  WebGL1/2 + 真实 context 的 getParameter 双面拦截；pdfViewerEnabled 补齐。
+- **P2 参数层**（对照 Scrapling STEALTH_ARGS，三路径接入）：
+  `--disable-ipc-flooding-protection`、`--force-color-profile=srgb`、
+  `--blink-settings` 指针声明、`--fingerprinting-canvas-image-data-noise`
+  （原生 canvas 噪声，无 JS hook 可检）。
+
+### 新增（选择器降级定位层 —— 主选择器失配时按题干/属性锚点重定位）
+
+借鉴 Scrapling 的"元素自动重定位"思想，应对平台改版导致精确 id/name 定位失配：
+
+- 主交互脚本失配时二次尝试 `div[topic]` 属性锚点 → 题干文本锚点重定位再作答一次；
+  容器内控件数与探测 choices 数对不上**宁可放弃不猜点**（错选是收不回来的真实回收）。
+- 事件链提取为 `_scripts.interaction_chain_helper_script`，主点击/填空脚本与
+  relocated 脚本共用同一份（同源原则；"找不到就 return false"的原子回执契约不变）。
+- 覆盖单选 / 多选 / 单框填空 / 选项自带填空；多空填空不接（槽名丢了说明探测层已失配）。
+- **默认关**，`--fallback-locate` 开启；CLI / webui（新增勾选框 + 启动一刻冻结）
+  全链路透传；重定位成功打 `[relocate] Q{n}` 诊断行（属性锚点 / 题干锚点）。
+- 验收：`mock_wjx_shifted.html`（模拟改版：控件 id/name 漂移、容器换已知模板形态、
+  topic/题干保留）真浏览器 E2E 证明开启后全链路提交成功、关闭后失配题照旧落空
+  （降级层没有暗中常开）；题干腿 / 数量守恒各有独立用例；离线接线契约
+  `test_fallback_locate.py`（失败路径才付费、回执不放松、分发器透传三断言）；
+  relocated builders 进 JS 语法矩阵（`node --check`）。
 
 ## [4.3.1] - 2026-11-01
 
