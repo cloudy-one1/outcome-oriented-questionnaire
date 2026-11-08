@@ -67,9 +67,8 @@ docs/*
 !docs/coverage.md
 !docs/scope.md
 !docs/stealth_audit.md
-# README 顶部「介绍视频」的成片与封面 —— 首页链接着它们，同属对外门面
+# README 顶部「介绍视频」的成片与循环预览 —— 首页链接着它们，同属对外门面
 !docs/promo.mp4
-!docs/promo-poster.png
 !docs/promo-teaser.gif
 
 # ---------- 运行产物：含 PII，绝不该进版本库 ----------
