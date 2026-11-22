@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wjx-autofill"
-version = "4.4.0"
+version = "4.5.0"
 description = "问卷星批量假答卷制造工具（假身份合成 + 加权/配额/信度控制作答 + 反检测指纹 + CLI / Web 控制台双入口）"
 readme = "README.md"
 requires-python = ">=3.10"
