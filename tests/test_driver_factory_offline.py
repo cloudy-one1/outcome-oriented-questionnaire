@@ -861,3 +861,28 @@ def test_missing_stub_fails_instead_of_opening_a_browser() -> None:
         create_edge_driver()
     with pytest.raises(AssertionError, match="不允许创建真实"):
         create_chrome_driver(use_uc=True)  # uc 不在 sys.modules → 回退原生 → 同样被拦
+
+
+def test_stealth_cdp_degradation_is_visible_not_silent(capsys) -> None:
+    """v4.5：(a)/(c) 两步失败必须留一行用户看得见的话 —— v4.4 的教训。
+
+    降级语义不变（两步失败照旧吞掉、不影响建驱动），但"吞"不能等于"没人知道"：
+    UA 头 / UA 覆写缺失时页面看到的是真实 UA，与注入层指纹自相矛盾。
+    """
+    d = FakeDriver(fail_on=("Network.setExtraHTTPHeaders",))
+    _apply_stealth_cdp(
+        d, ua=EDGE_UA, browser="edge",
+        screen_w=SCREEN_W, screen_h=SCREEN_H, avail_top=AVAIL_TOP,
+        device_memory=DEVICE_MEMORY, hw_concurrency=HW_CONCURRENCY,
+    )
+    out = capsys.readouterr().out
+    assert "[stealth]" in out and "setExtraHTTPHeaders" in out
+
+    d2 = FakeDriver(fail_on=("Network.setUserAgentOverride",))
+    _apply_stealth_cdp(
+        d2, ua=EDGE_UA, browser="edge",
+        screen_w=SCREEN_W, screen_h=SCREEN_H, avail_top=AVAIL_TOP,
+        device_memory=DEVICE_MEMORY, hw_concurrency=HW_CONCURRENCY,
+    )
+    out2 = capsys.readouterr().out
+    assert "[stealth]" in out2 and "setUserAgentOverride" in out2

@@ -1209,3 +1209,34 @@ def test_manual_submit_forwards_the_stop_predicate() -> None:
     with stages(wait_for_manual_submit=wait):
         _core(FakeDriver(), ManualHoldLock(), stop_check=chk, manual_submit=True)
     assert wait.call_args.kwargs["stop_check"] is chk
+
+
+# ---------------------------------------------------------------------------
+#  v4.5：UNKNOWN 收尾的清理异常同样不能外漏（重复提交的第三条路径）
+# ---------------------------------------------------------------------------
+def test_unknown_path_reset_failure_does_not_propagate() -> None:
+    """UNKNOWN 收尾里 default_content 抛 NoSuchWindowException → 仍返回 UNKNOWN。
+
+    点击已发生、状态未定：这句清理裸奔时异常会冒到
+    @retry_with_backoff(retry_on=(WebDriverException,))，把这份"也许已被收下"的
+    问卷整份重填重交。成功分支的同类修复见
+    test_success_path_reset_failure_does_not_propagate；FAILED 分支不在此列 ——
+    服务端明确拒收后重跑是设计语义。
+    """
+    driver = FakeDriver(switch_error=NoSuchWindowException("no such window"))
+    with stages(find_and_click_submit=SUBMIT_UNKNOWN):
+        assert _core(driver, ManualHoldLock()) == SUBMIT_UNKNOWN
+    assert driver.switch_to.calls == 1
+
+
+def test_unknown_path_reset_failure_does_not_retrigger_submission() -> None:
+    """端到端夹逼：UNKNOWN + 清理异常 → run_one_submission 只跑一次 core。
+
+    只测 core 不上抛还不够 —— 若有人把这条清理改回裸奔，重跑会在
+    find_and_click_submit 上现形：第二次点击 = 同一份问卷交两遍。
+    """
+    driver = FakeDriver(switch_error=NoSuchWindowException("jumped"))
+    with stages(find_and_click_submit=SUBMIT_UNKNOWN) as st:
+        result = pipeline.run_one_submission(driver, SURVEY_URL, ManualHoldLock())
+    assert result == SUBMIT_UNKNOWN
+    st.find_and_click_submit.assert_called_once()

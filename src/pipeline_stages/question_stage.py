@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any, Callable
 
@@ -74,7 +75,7 @@ def _wait_for_questions(
             raise SubmissionAborted("用户在等待题目渲染期间请求停止")
         try:
             found = driver.execute_script(
-                f"return document.querySelectorAll('{selector}').length > 0"
+                f"return document.querySelectorAll({json.dumps(selector)}).length > 0"
             )
         except TRANSIENT_DOM_EXCEPTIONS:
             return False
@@ -229,7 +230,9 @@ def _answer_one_question(
                 _e, action="批量点击选项", question=qnum, qtype=qtype,
                 recovery="降级为逐一点击",
             ))
-            is_ok = True
+            # v4.5：先记 True 是回执失真 —— answer_values 为空时逐一点击一次都不
+            # 会跑，本题什么都没写却回执成功。没有可补写的内容就不该声称成功。
+            is_ok = bool(answer_values)
             for c in answer_values:
                 if not js_click_option(driver, qnum, c):
                     is_ok = False

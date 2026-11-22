@@ -556,7 +556,17 @@ def _do_one_submission_core(
         print("  [提交] 状态未知：按钮已点击但未观察到成功信号（超时 / AJAX / 服务端拒绝）"
               "→ 保守计为失败")
         _report_submit_diagnostics(driver)
-        driver.switch_to.default_content()
+        # v4.5：点击已发生、状态未定 —— 这句清理绝不能把 WebDriverException 漏给
+        # 外层的 @retry_with_backoff(retry_on=(WebDriverException,))，否则这份
+        # "也许已经被收下"的问卷会被整份重填重交（重复提交）。这是该缺陷的第三条
+        # 路径：前两条是 submit.py 的重复点击与成功分支的裸清理（下面 588 起那句
+        # 注释）。FAILED 分支不在此列 —— 服务端明确拒收后重跑是设计语义。
+        try:
+            driver.switch_to.default_content()
+        except TRANSIENT_DOM_EXCEPTIONS:
+            pass
+        except Exception as _e:
+            raise_non_recoverable(_e)
         return SUBMIT_UNKNOWN
 
     # 提交后偶尔也会弹最终验证

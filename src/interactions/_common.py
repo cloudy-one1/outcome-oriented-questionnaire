@@ -1,23 +1,21 @@
 """`interactions` 子模块共享的通用装饰器 / 常量。
 
 不建议直接 import 本模块（前面的 `_` 表示内部）；
-题型模块通过 `from ._common import js_execute_retry, click_after_pause, _JS_RETRYABLE` 复用。
+题型模块通过 `from ._common import js_execute_retry, _JS_RETRYABLE` 复用。
 """
 
 from __future__ import annotations
 
-import time
 from typing import Any, Callable, TypeVar
 
 from selenium.webdriver.common.by import By
 
-from ..config import CLICK_AFTER_HI, CLICK_AFTER_LO, CLICK_AFTER_MU, CLICK_AFTER_SIGMA
 from ..exceptions import (
     TRANSIENT_DOM_EXCEPTIONS,
     format_exc_log,
     raise_non_recoverable,
 )
-from ..utils import gaussian_seconds, human_pause, retry_with_backoff
+from ..utils import gaussian_seconds, retry_with_backoff
 
 
 _Fn = TypeVar("_Fn", bound=Callable[..., Any])
@@ -54,16 +52,6 @@ def js_execute_retry(max_attempts: int = 3,
 
 
 # ============================================================================
-#  点击后人类反应时间 sleep
-# ============================================================================
-def click_after_pause() -> float:
-    """在每次点击后 sleep 一段"人类反应时间"，返回实际 sleep 秒数。"""
-    return human_pause(
-        CLICK_AFTER_MU, CLICK_AFTER_SIGMA, CLICK_AFTER_LO, CLICK_AFTER_HI
-    )
-
-
-# ============================================================================
 #  常见 DOM 工具（submit 模块会用到 By，题型模块通常用纯 JS execute_script 所以不需要）
 # ============================================================================
 __all__ = [
@@ -73,7 +61,5 @@ __all__ = [
     "raise_non_recoverable",
     "_JS_RETRYABLE",
     "js_execute_retry",
-    "click_after_pause",
     "gaussian_seconds",
-    "time",
 ]

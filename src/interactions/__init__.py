@@ -36,7 +36,7 @@ from .submit import (
     find_and_click_submit,
 )
 # 通用：装饰器 + 点击后 sleep（保持原 interaction.py 的公开符号集合不变）
-from ._common import click_after_pause, js_execute_retry
+from ._common import js_execute_retry
 
 
 __all__ = [
@@ -59,6 +59,5 @@ __all__ = [
     "find_and_click_submit",
     "_wait_until_submit_effect",
     # 通用
-    "click_after_pause",
     "js_execute_retry",
 ]

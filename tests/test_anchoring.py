@@ -321,3 +321,18 @@ def test_legacy_schema_2_file_still_loads_and_validates(tmp_path) -> None:
     assert loaded[1]["weights"] == [0.2, 0.8]
     assert "anchor" not in loaded[1]
     assert validate_weight_config(loaded) == []
+
+
+def test_reset_reported_anchors_reopens_dedup_window() -> None:
+    """v4.5：去重窗口从"每进程"改为"每批次" —— reset 之后同样的未命中要重新报。
+
+    webui 是长驻进程：批次 2 的锚点失配若还被批次 1 的去重集合压着，用户看到的
+    是"第二批静默降级成等权"。cli.run_batch 的复位块现在每批调一次 reset。
+    """
+    cfg = {1: {"anchor": {"title": "您的性别"}, "type": "single", "weights": [1, 1]}}
+    questions = [{"q": 1, "type": "single", "title": "别的题"}]
+    first = anchoring.report_unmatched_anchors(cfg, questions)
+    assert first, "首次必须报"
+    assert anchoring.report_unmatched_anchors(cfg, questions) == []
+    anchoring.reset_reported_anchors()
+    assert anchoring.report_unmatched_anchors(cfg, questions), "reset 后必须重新报"

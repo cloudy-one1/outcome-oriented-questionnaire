@@ -2,6 +2,100 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [未发布]
+
+### 行为缺陷修复（引擎深审整改）
+
+七处修复各带一条离线回归测试；JS 相关的三处另有真浏览器 E2E 兜底。
+
+- **P0 重复提交第三条路径**（src/pipeline.py）：UNKNOWN 分支收尾的
+  ``driver.switch_to.default_content()`` 修复前裸在 try 外 —— 点击已发生、状态未定时，
+  一记瞬态 ``WebDriverException`` 会漏给 ``@retry_with_backoff(retry_on=WebDriverException)``
+  把这份"也许已被收下"的问卷整份重填重交。现与成功分支同一套护栏（吞瞬态、
+  非 Ctrl+C/SystemExit 不上抛）。FAILED 分支刻意不改：服务端明确拒收后重跑是
+  设计语义。回归：``test_unknown_path_reset_failure_does_not_propagate`` 与
+  端到端夹逼 ``test_unknown_path_reset_failure_does_not_retrigger_submission``
+  （重跑会在 find_and_click_submit 上现形）。
+- **JS 拼接两处隐患**：``verification.py`` 的关键词数组从 ``str(list())`` 换成
+  ``json.dumps``（Python repr 遇引号/反斜杠即非法 JS）；page_loader（2 处）、
+  page_nav、question_stage（各 1 处）的 ``querySelectorAll('{selector}')`` 裸内插
+  全部改走 ``json.dumps``。源码层由
+  ``test_no_bare_selector_interpolation_into_js_single_quotes`` 堵住整类写法回潮。
+- **回执诚实**（src/pipeline_stages/question_stage.py）：批量点击的瞬态降级路径
+  此前先置 ``is_ok=True`` 再逐个补点 —— ``answer_values`` 为空时一次都不写却回执
+  成功。改为 ``is_ok = bool(answer_values)``，没有可补写的内容就不声称成功。
+  （深审报告曾同场指出"回放空列表被 falsy 吞掉违背回放契约"——经对账
+  ``encode_cell`` 的契约明写"空格/解析不出 → None → 该题交回随机"，该项**撤回**，
+  不改。）
+- **stealth 降级留痕**（src/browser/driver_factory.py）：``setExtraHTTPHeaders`` 与
+  ``setUserAgentOverride`` 两步失败修复前被 ``except: pass`` 静默吞掉 —— v4.4
+  "stealth 从未生效过"事故走的正是这类无痕迹通道。降级语义不变，但现在各留一行
+  ``[stealth]`` 前缀的日志（回归：``test_stealth_cdp_degradation_is_visible_not_silent``）。
+- **end_replay 接线**（src/cli.py）：``--replay-file`` 的会话收尾此前全仓库零调用，
+  ``begin_replay`` 开启的进程级单例永不清理。main 的批次循环补 ``finally:
+  reverse_fill.end_replay()``，begin/end 成对。
+- **杂项**：``config.py`` 的 ``SUBMISSION_MAX_ATTEMPTS`` 注释与值对齐（值 2 =
+  首次 + 1 次重试，不是"重试 2 次"）；cli.py 四处函数内 ``import time as _t*``
+  别名收敛到顶层导入；``_common.py`` 的 ``__all__`` 不再导出 ``"time"`` 模块本身
+  （连带移除失用的 ``import time``）；根目录遗留的 ``t1.log`` 已删。
+
+### 死代码清理与语义可见化（引擎深审第二档）
+
+删除前逐个 grep 验证过"零生产调用"；一条深审指控经对账**撤回**（见上一节回放项）。
+
+- **models.py 4 个题型 dataclass 删除**（QuestionData / AnswerData / SubmitResult /
+  WeightConfigEntry，约 250 行）：v2.3 引入打算替换 dict 链路，v2.6 评估不采纳后
+  以"契约文档"名义空挂 9 个版本、零生产调用（生产引用全部是 models 内部自指与
+  docstring 提及）。死代码不该用文档身份续命，往返测试随删；留下的
+  QuestionType / SubmitOutcome / RunState 都在生产链路上。
+- **src/interaction.py 兼容层删除**：v2.3 为旧调用方保留的 re-export 壳，现全仓库
+  只有测试在 import —— 测试改走 ``src.interactions``（包 __init__ 的公开符号集
+  原样保留），壳退役。
+- **dialogs.py 只留活的部分**：``popup_confirm`` 与文件选择器一族
+  （``pick_open_path`` / ``pick_save_path`` 等）随 GUI 退役后零生产调用，删除；
+  提示三件套（popup_info/warning/error）是 qr_utils 与 webui 的活路径，保留。
+- **utils.py** ``equal_sample_no_replace`` 删除（全仓库零引用；模块头那句
+  "answering_v2 与等权分支共用这一份实现"一并修正——共用的是
+  ``weighted_sample_no_replace``，等权分支走它内部的 A-Res 兜底）。
+- **``click_after_pause`` + ``CLICK_AFTER_*`` 删除**：唯一生产消费者随 GUI 退役。
+- **锚点未命中提示按批次去重**（src/anchoring.py + cli.run_batch 复位块）：
+  ``_REPORTED`` 此前是进程级集合，webui 第二批次的失配会被第一批压住 ——
+  等于静默降级成等权还没人知道。``reset_reported_anchors`` 从"仅测试用"升级为
+  批次复位块的一员，与 distribution/quota/reverse_fill/alpha_plan 同一待遇。
+  回归：``test_reset_reported_anchors_reopens_dedup_window`` 与批次接线 spy 测试。
+- **配额账本的 UNKNOWN 缺口收尾播报**（cli.run_batch finally）：UNKNOWN 不占配额
+  是 quota.py 的成文语义，但"服务端可能已收卷而账本不知道"此前只活在注释里。
+  修语义（unknown 记账）会在另一头失守（没收下的份占掉名额），选择收尾报告
+  播报：unknown_count > 0 时打一行账本边界说明。
+  回归：``test_quota_closing_report_flags_unknown_ledger_gap``。
+
+净变化：-约 700 行死代码与死测试；覆盖率 92.8% 不降反稳（删掉的分母与分子同量）。
+
+### 定位改写与结构拆分（对照批判式审查的三条主线整改）
+
+行为语义不变，全部既有离线测试通过；两处结构整改各带一条新的离线防线。
+
+- **README 定位改写**：第一句从"批量填写与提交工具"改为它实际是的东西——批量假答卷
+  制造工具。新增「先说清楚：这是什么」一节，写明三件事：它做的是数据造假；**测试全绿
+  ≠ 工具能用**（全套门禁只对着仓库自编的 mock 页面与替身对象运行，真实平台改版或风控
+  升级不会有任何一条门禁变红）；深水区三项（`--alpha-target` / `--quota` /
+  `--replay-file`）只适用于自有或已获授权的测试问卷。免责声明同步改写，
+  pyproject description 对齐。
+- **detect_questions 拆注册表**（src/detection.py）：`detect_questions` 里约 500 行的
+  内联 JS 按 9 个识别段拆成模块级常量 + `_DETECTION_PASSES` 注册表，函数本体只剩
+  "拼装 + 执行 + 解析"。**顺序即语义**（矩阵量表只从 scale 手里抢、多空填空只从
+  scale/text 手里抢）写进注释，并由新测试
+  `test_detection_pass_registry_order_is_semantic` 钉住；组合后的整段脚本进
+  `node --check` 门禁（`test_detect_questions_composed_script_is_syntactically_valid_js`）
+  —— 拆分拼错了离线就能红，不用等 E2E。
+- **cli.py 三拆**：参数层拆到 `src/cli_args.py`（argparse 参数表 / 类型校验 /
+  `_sleep_until` 预约等待），报告层拆到 `src/cli_report.py`（实测 Cronbach α 报告与
+  投递分布摘要），批次编排（`run_batch` / `_run_batch_inner` / `main`）留在 cli.py。
+  移出的符号在 `src.cli` 以原名再导出——tests 对 `cli._sleep_until` /
+  `cli._report_reliability` 的打桩、`run_cli.py` 与 pyproject entry point 的
+  `src.cli:main` 不因搬家而变。cli.py 从约 1,450 行降到约 1,110 行，
+  参数与报告各自有了可单独阅读的家。
+
 ## [4.4.0] - 2026-11-08
 
 ### 新增（stealth 对照 Scrapling 审计补强 —— 修复整层死代码等 16 项）

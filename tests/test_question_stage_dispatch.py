@@ -385,3 +385,51 @@ def test_multi_blank_partial_failure_flips_question_to_failed(monkeypatch) -> No
     q = {"q": 14, "type": "text",
          "blanks": [{"id": "q14_0", "field": None}, {"id": "q14_1", "field": None}]}
     assert _answer_one_question(RecordingDriver(), q) is False
+
+
+# ---------------------------------------------------------------------------
+#  v4.5：批量点击的瞬态降级路径 —— 回执必须诚实
+# ---------------------------------------------------------------------------
+from unittest import mock as _mock  # noqa: E402
+from selenium.common.exceptions import WebDriverException  # noqa: E402
+
+
+def test_batch_click_transient_with_empty_values_is_not_a_success(monkeypatch) -> None:
+    """批量点击抛瞬态异常且没有可补写的内容 → 本题必须回执失败。
+
+    此前先置 is_ok=True 再逐个补点：answer_values 为空时循环一次都不跑，
+    本题什么都没写却回执成功 —— 回执失真是"页面空着却提交"的上游。
+    """
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.generate_answer_v2",
+        lambda _q: {"selected": []},
+    )
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.js_click_question_options",
+        _mock.Mock(side_effect=WebDriverException("boom")),
+    )
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.js_click_option",
+        _mock.Mock(name="should_not_be_called"),
+    )
+    monkeypatch.setattr("src.pipeline_stages.question_stage.human_pause", lambda *a, **k: None)
+    q = {"q": 2, "type": "multi", "choices": [1, 2, 3]}
+    assert _answer_one_question(RecordingDriver(), q) is False
+
+
+def test_batch_click_transient_with_values_still_retries_one_by_one(monkeypatch) -> None:
+    """对照：有内容可补时降级路径照旧 —— 逐个补点全成功则回执成功。"""
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.generate_answer_v2",
+        lambda _q: {"selected": [1, 2]},
+    )
+    monkeypatch.setattr(
+        "src.pipeline_stages.question_stage.js_click_question_options",
+        _mock.Mock(side_effect=WebDriverException("boom")),
+    )
+    clicks = _mock.Mock(side_effect=[True, True])
+    monkeypatch.setattr("src.pipeline_stages.question_stage.js_click_option", clicks)
+    monkeypatch.setattr("src.pipeline_stages.question_stage.human_pause", lambda *a, **k: None)
+    q = {"q": 2, "type": "multi", "choices": [1, 2, 3]}
+    assert _answer_one_question(RecordingDriver(), q) is True
+    assert clicks.call_count == 2

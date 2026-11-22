@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Sequence
 
 from selenium.common.exceptions import WebDriverException
@@ -40,8 +41,10 @@ QUESTION_CONTROL_SELECTOR: str = WJX.question_control_selector
 def _ensure_questions_context(driver: Any) -> bool:
     """确保当前 WebDriver 上下文指向包含题目的 frame。"""
     selector = QUESTION_CONTROL_SELECTOR
+    # v4.5：selector 经 json.dumps 进字面量 —— 内插单引号写法在选择器含 `'` 时
+    # 直接产出非法 JS；json.dumps 对任何内容都给出合法的 JS 字符串字面量
     has = driver.execute_script(
-        f"return document.querySelectorAll('{selector}').length"
+        f"return document.querySelectorAll({json.dumps(selector)}).length"
     )
     if has:
         return True
@@ -50,7 +53,7 @@ def _ensure_questions_context(driver: Any) -> bool:
     for i in range(iframes):
         driver.switch_to.frame(i)
         if driver.execute_script(
-            f"return document.querySelectorAll('{selector}').length"
+            f"return document.querySelectorAll({json.dumps(selector)}).length"
         ):
             return True
         driver.switch_to.default_content()

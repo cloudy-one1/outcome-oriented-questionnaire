@@ -372,8 +372,11 @@ def _apply_stealth_cdp(
             "Network.setExtraHTTPHeaders",
             {"headers": _cdp_extra_headers(browser=browser, ua=ua)},
         )
-    except Exception:
-        pass
+    except Exception as _e:
+        # v4.5：兼容性差异是预期降级，但绝不能静默 —— v4.4 的"stealth 从未生效过"
+        # 事故走的正是这类无痕迹通道。留一行用户看得见的话，半失效才有人知道。
+        print("  [stealth] Network.setExtraHTTPHeaders 失败（UA 相关请求头缺失，"
+              f"页面可见指纹可能与注入层不一致）: {type(_e).__name__}: {_e}")
 
     # (b) 每个新文档注入 Stealth JS
     stealth_js = build_stealth_js(
@@ -392,8 +395,11 @@ def _apply_stealth_cdp(
     # (c) UA + Client Hints 覆写
     try:
         _apply_user_agent_override(driver, ua, browser=browser)
-    except Exception:
-        pass
+    except Exception as _e:
+        # 同 (a)：降级可以，静默不行 —— UA 覆写失败时页面看到的是真实 UA，
+        # 与 (a)/(b) 注入的指纹自相矛盾，本身就是自爆特征
+        print("  [stealth] setUserAgentOverride 失败（页面将看到真实 UA）: "
+              f"{type(_e).__name__}: {_e}")
 
 
 def create_chrome_driver(

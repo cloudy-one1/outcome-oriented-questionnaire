@@ -115,12 +115,6 @@ RESTART_BROWSER_EVERY: int = 30
 #         让每次点击/等待的时间呈现高斯分布（模拟真实人类），
 #         而不是可疑的 uniform(min, max) 均匀分布。
 
-# 单个选项点击后的「人类反应 + 点击事件生效」等待
-CLICK_AFTER_MU: float = 0.22        # 均值（秒）
-CLICK_AFTER_SIGMA: float = 0.06     # 标准差
-CLICK_AFTER_LO: float = 0.1         # 下限（防止过快）
-CLICK_AFTER_HI: float = 0.5         # 上限（防止过慢）
-
 # 每道题之间的「思考时间」
 Q_THINK_MU: float = 0.5
 Q_THINK_SIGMA: float = 0.2
@@ -146,7 +140,7 @@ ROUND_LONG_PAUSE_HI: float = 20.0
 #  指数退避重试参数（用于页面加载/答题/提交偶发失败）
 # ============================================================================
 
-SUBMISSION_MAX_ATTEMPTS: int = 2          # 单次提交最多重试 2 次（总尝试 <= 2）
+SUBMISSION_MAX_ATTEMPTS: int = 2          # 单次提交总尝试上限（首次 + 1 次重试）
 SUBMISSION_INITIAL_DELAY: float = 1.2     # 首次重试等待秒
 SUBMISSION_BACKOFF: float = 2.0           # 等待倍率
 RETRY_JITTER: bool = True                 # 给等待时间加随机抖动（±50%）

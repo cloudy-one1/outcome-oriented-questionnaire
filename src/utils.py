@@ -338,7 +338,7 @@ def sanitize_weights(
 
 
 # ============================================================================
-#  加权无放回抽样 —— answering_v2 与等权分支共用这一份实现
+#  加权无放回抽样（单一实现：numpy 快路径 + A-Res 等价兜底）
 # ============================================================================
 
 def weighted_sample_no_replace(
@@ -402,14 +402,3 @@ def weighted_sample_no_replace(
               f"{take} 个（count 配置与权重矛盾应在配置校验期被拒）")
     pairs.sort(reverse=True)
     return sorted(item for _, item in pairs[:take])
-
-
-def equal_sample_no_replace(pool: list, k: int) -> list:
-    """无放回等概率抽样，返回升序结果。"""
-    n = len(pool)
-    if n == 0:
-        return []
-    k = max(1, min(int(k), n))
-    if _HAS_NUMPY:
-        return sorted(pool[int(i)] for i in np.random.choice(n, size=k, replace=False))
-    return sorted(random.sample(pool, k=k))

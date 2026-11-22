@@ -123,6 +123,679 @@ return JSON.stringify(out);
 """
 
 
+# ============================================================================
+#  detect_questions 的识别段：按题型一张注册表
+#
+#  这批常量原本是 detect_questions 里 ~500 行的内联 JS（Python 里写的前端）。
+#  拆开后每段只认一类题型、可单独阅读；detect_questions 只负责把注册表按序
+#  拼进同一次注入（"单次 execute_script，零额外 Selenium 往返"的设计不变）。
+#
+#  **顺序即语义，注册表不许随意重排**：后面的段读前面段写下的 ``type`` 来
+#  决定"认领还是跳过"—— 矩阵量表（5c）只从 scale 手里抢、多空填空（5d）只从
+#  scale/text 手里抢、排序（5b）不覆盖非 sort。顺序动一次，三类题型的归属就全变。
+# ============================================================================
+
+# ---- 1. 单选 / 多选：radio → single，checkbox → multi ----
+_PASS_SINGLE_MULTI: str = r"""
+function detectSingleMulti(map, slot) {
+// ---------- 1. 单选 / 多选（v1 逻辑，保持完全一致） ----------
+    var inputs = document.querySelectorAll(
+        'input[type="radio"], input[type="checkbox"]'
+    );
+    inputs.forEach(function(el) {
+        if (pageHidden(el)) return;
+        var m = (el.name || '').match(/q(\d+)/);
+        if (!m) m = (el.id || '').match(/q(\d+)/);
+        if (!m) return;
+        var q = parseInt(m[1]);
+        var s = slot(q);
+        if (!s.choices) s.choices = [];
+        s.type = (el.type === 'radio') ? 'single' : 'multi';
+
+        var v = parseInt(el.value);
+        if (!isNaN(v) && s.choices.indexOf(v) === -1) {
+            s.choices.push(v);
+            // 这一项自带填空框（"其他____"）。勾了它却不写文本，平台会按
+            // "该项内容未填写"拦下整题 —— 在本工具侧的样子是提交返回
+            // unknown，完全看不出是这一格空着。
+            if (optionBlankInput(el)) {
+                if (!s.blank_options) s.blank_options = [];
+                s.blank_options.push(v);
+            }
+        }
+    });
+}
+"""
+
+# ---- 2. 下拉：<select> 的 option 文本/数值进 choices ----
+_PASS_DROPDOWN: str = r"""
+function detectDropdown(map, slot) {
+// ---------- 2. 下拉（<select name=qN>） ----------
+    var selects = document.querySelectorAll('select');
+    selects.forEach(function(sel) {
+        if (pageHidden(sel)) return;
+        var nm = sel.name || '';
+        var id = sel.id || '';
+        var m = nm.match(/q(\d+)/) || id.match(/q(\d+)/) || id.match(/selectq(\d+)/);
+        if (!m) return;
+        var s = slot(m[1]);
+        s.type = 'dropdown';
+
+        var choices = [];
+        var opts = sel.querySelectorAll('option');
+        opts.forEach(function(opt) {
+            var val = opt.value;
+            if (val === '' || val === null || val === undefined) return;  // 跳过"请选择"空项
+            var num = parseInt(val);
+            choices.push(isNaN(num) ? val : num);
+        });
+        if (choices.length > 0) s.choices = choices;
+    });
+}
+"""
+
+# ---- 3. 量表：级数边界优先读隐藏 radio 的真实 value 区间 ----
+_PASS_SCALE: str = r"""
+function detectScale(map, slot) {
+// ---------- 3. 量表 / 评分（问卷星常用 .rate-star / .level / .score-area） ----------
+    // 特征：带 rate / star / level / score 的容器，内部子项数 = 分值级数
+    var sel = [
+        '[class*="rate"]', '[class*="star"]', '[class*="level"]',
+        '[class*="score"]', '[class*="rating"]',
+        'ul.rate', 'div.rate', 'ul.stars',
+    ].join(',');
+    var areas = document.querySelectorAll(sel);
+    var seen = new Set();
+    areas.forEach(function(area) {
+        if (pageHidden(area)) return;
+        // 找最近的题目容器，取其题号
+        var host = area.closest ? area.closest(
+            '.field,.div_question,.q-item,li,.question,div[id^="div"]'
+        ) : null;
+        var qid = null;
+        if (host) {
+            var idm = (host.id || '').match(/div(\d+)/) || (host.id || '').match(/q(\d+)/);
+            if (idm) qid = parseInt(idm[1]);
+        }
+        // 兜底：area 自身 id / data-q
+        if (!qid) {
+            var dm = (area.id || '').match(/q(\d+)/) ||
+                     (area.dataset && area.dataset.q && parseInt(area.dataset.q));
+            if (dm) qid = (typeof dm === 'number') ? dm : parseInt(dm[1]);
+        }
+        if (!qid || seen.has(qid)) return;
+        seen.add(qid);
+
+        // 真卷里评分条还有这一种长相：``ul.modlen5``，每个 li 一个 <a>，
+        // 既没有隐藏 radio 也没有数字文本 —— 下面的"数格子"规则数不到它，
+        // 于是级数算不出来、这题会被后面的填空分支捡走（2026-09-22 真卷 Q10）。
+        // li 的个数就是级数。
+        var modLenUl = (area.tagName === 'UL' && /modlen/i.test(area.className || ''))
+            ? area : (area.querySelector ? area.querySelector('ul[class*="modlen"]') : null);
+        if (modLenUl) {
+            var modLis = modLenUl.children;
+            var modLinks = 0;
+            for (var mi = 0; mi < modLis.length; mi++) {
+                if (modLis[mi].tagName === 'LI' && modLis[mi].querySelector('a')) modLinks += 1;
+            }
+            if (modLinks >= 2 && modLinks <= 12) {
+                var ms = slot(qid);
+                ms.type = 'scale';
+                ms.scale = modLinks;
+                ms.scale_min = 1;
+                return;
+            }
+        }
+
+        // ---- 量表边界：优先读隐藏 radio 的真实 value 区间 ----
+        // 此前这里写死 s.scale_min = 1 且 s.scale = 选项个数，
+        // 于是 2~10 分的量表被识别成 scale=9 / scale_min=1：
+        //   作答时永远点不到 10，还会去点根本不存在的 1。
+        // radio 的 value 才是权威边界；只有拿不到 radio 时才退回"数格子"。
+        var hiddenRadios = document.querySelectorAll(
+            'input[type="radio"][name="q' + qid + '"]'
+        );
+        var scaleVals = [];
+        hiddenRadios.forEach(function(r) {
+            var v = parseInt(r.value);
+            if (!isNaN(v)) scaleVals.push(v);
+        });
+
+        var levelMin, levelMax;
+        if (scaleVals.length >= 2) {
+            levelMin = Math.min.apply(null, scaleVals);
+            levelMax = Math.max.apply(null, scaleVals);
+        } else {
+            // 数内部"可选项"数量（li / a / span 带分数语义）
+            var kids = area.querySelectorAll('li, a, span, i');
+            var levelCount = 0;
+            kids.forEach(function(k) {
+                var cls = (k.className || '').toString();
+                if (/item|star|level|score|point|right|ok|full/.test(cls) ||
+                    /^\d+$/.test((k.textContent || '').trim())) {
+                    levelCount++;
+                }
+            });
+            // 常见 5 / 10 级兜底
+            if (levelCount < 2 || levelCount > 12) {
+                levelCount = hiddenRadios.length;
+            }
+            levelMin = 1;
+            levelMax = levelCount;
+        }
+
+        var levels = levelMax - levelMin + 1;
+        if (levels >= 2 && levels <= 12) {
+            var s = slot(qid);
+            s.type = 'scale';
+            s.scale = levelMax;
+            s.scale_min = levelMin;
+        }
+    });
+}
+"""
+
+# ---- 4. 填空：单框文本题（多空在 multi_blank 段） ----
+_PASS_TEXT: str = r"""
+function detectText(map, slot) {
+// ---------- 4. 填空（text / textarea / input[type=text]#qN） ----------
+    var fillables = document.querySelectorAll(
+        'input[type="text"], input[type="tel"], input[type="number"], input:not([type]), textarea'
+    );
+    fillables.forEach(function(el) {
+        if (el.disabled) return;
+        // 只读框里只把**日期题**放过去。真卷（2026-09-22 实测）的日期题长这样：
+        //   <input id="q15" name="q15" class="datebox" data-role="datebox"
+        //          verify="日期" readonly>
+        // 值是 laydate 面板选完后回写进这个框的，所以它天生只读 ——
+        // 一并跳过等于整题从探测结果里消失，症状是"必答题没答上"。
+        // 其余只读框（量表 / 矩阵的隐藏存储框）仍按老规则挡掉，不能放宽到这里。
+        var cls = (el.className || '').toString();
+        var verify = (el.getAttribute('verify') || '').trim();
+        var isDate = /(^|\s)datebox(\s|$)/.test(cls)
+                  || el.getAttribute('data-role') === 'datebox'
+                  || /日期|时间/.test(verify);
+        if (el.readOnly && !isDate) return;
+        if (pageHidden(el)) return;
+        // 不可见的文本控件不是给人填的：真卷上量表每级的标注文字装在一个
+        // display:none 的 textarea 里，被它勾走就把一道量表题判成填空
+        // （2026-09-22 真卷 Q10 的实际错法）。offsetParent 为 null 表示
+        // "没有任何可渲染的祖先"，比读 inline style 可靠 —— 隐藏常常来自 CSS 类。
+        if (el.offsetParent === null) return;
+        var id = el.id || '';
+        var name = el.name || '';
+        var m = id.match(/^q(\d+)$/) || id.match(/^answerq(\d+)$/) ||
+                name.match(/^q(\d+)$/) || id.match(/q(\d+)/);
+        if (!m) {
+            // 再找父级
+            var parent = el.closest ? el.closest('[id*="div"]') : null;
+            if (parent) {
+                var pm = (parent.id || '').match(/div(\d+)/);
+                if (pm) m = pm;
+            }
+        }
+        if (!m) return;
+        var qi = parseInt(m[1]);
+        // 如果该题已被判为 single/multi（即已有 radio/checkbox 同名），不覆盖
+        var existing = map[qi];
+        if (existing && existing.type !== undefined && existing.type !== 'text') return;
+
+        var s = slot(qi);
+        s.type = 'text';
+
+        // 字段类型先问平台，再猜题干：``verify`` 是问卷星明写在输入框上的
+        // 校验语义（真卷上见到 "日期"，同类项目还见过 "城市单选"）。
+        // 题干正则留着兜底 —— 大多数填空框根本没有 verify 属性。
+        var field = verifyFieldOf(el);
+        var txt = (el.placeholder || '') + '|' +
+                  (el.getAttribute('aria-label') || '') + '|';
+        // 往上找题目文字
+        var wrap = el.closest ? el.closest('.field,.div_question,.q-item,li,.question') : null;
+        if (wrap) txt += (wrap.textContent || '').substring(0, 80);
+
+        if (field === null) field = guessTextFieldFromText(txt);
+        s.field = field;
+
+        if (field === 'date') {
+            // laydate 的渲染参数就挂在这个框上（wjxdate.js 读的就是这两个属性）：
+            // ``datelimit`` 是 "min|max"，``datelimittype`` 1=月 / 3=日期时间 / 4=时间，
+            // 其余按日期。生成**范围外**的值会被平台自己的校验清掉，等于白答，
+            // 所以把边界一起带回去，让 answering_v2 照着格式与区间生成。
+            var kind = 'date';
+            var dlt = (el.getAttribute('datelimittype') || '').trim();
+            if (dlt === '1') kind = 'month';
+            else if (dlt === '3') kind = 'datetime';
+            else if (dlt === '4') kind = 'time';
+            s.date_kind = kind;
+            var lim = (el.getAttribute('datelimit') || '').split('|');
+            if (lim[0] && lim[0].trim()) s.date_min = lim[0].trim();
+            if (lim[1] && lim[1].trim()) s.date_max = lim[1].trim();
+        }
+    });
+}
+"""
+
+# ---- 5. 矩阵单选/多选：行控件 name 形如 qN_R ----
+_PASS_MATRIX: str = r"""
+function detectMatrix(map, slot) {
+// ---------- 5. 矩阵（每行一组控件，同题不同行 name 是 qN_1 / qN_2 ...） ----------
+    // radio → matrix_single，checkbox → matrix_multi。v3.0 之前这里只看 radio，
+    // 于是矩阵多选题被整题识别成"没有题目"或降级成单选，答出来的形状还不对。
+    var allBoxes = document.querySelectorAll(
+        'input[type="radio"], input[type="checkbox"]'
+    );
+    var matrixMap = {};  // qN -> { rows: Set(R), cols: Set(values), kind: 'radio'|'checkbox' }
+    allBoxes.forEach(function(r) {
+        if (pageHidden(r)) return;
+        var m = (r.name || '').match(/^q(\d+)_(\d+)$/);
+        if (!m) return;
+        var qN = parseInt(m[1]);
+        var rowN = parseInt(m[2]);
+        if (!matrixMap[qN]) {
+            matrixMap[qN] = { rows: new Set(), cols: new Set(), kinds: new Set() };
+        }
+        matrixMap[qN].rows.add(rowN);
+        matrixMap[qN].kinds.add(r.type);
+        var v = parseInt(r.value);
+        if (!isNaN(v)) matrixMap[qN].cols.add(v);
+    });
+
+    Object.keys(matrixMap).forEach(function(qN) {
+        var qi = parseInt(qN);
+        var s = slot(qi);
+        var entry = matrixMap[qN];
+        // 如果该题已被识别为 single/multi，且 matrix 的 row 只有 1 条 → 保留 single
+        if (s.type === 'single' || s.type === 'multi') {
+            if (entry.rows.size <= 1) return;
+        }
+        var rowsArr = Array.from(entry.rows).sort(function(a, b) { return a - b; });
+        var colsArr = Array.from(entry.cols).sort(function(a, b) { return a - b; });
+        if (rowsArr.length < 2 || colsArr.length < 2) return;
+        // 混合类型（既有 radio 又有 checkbox）按 radio 处理：行内单选是更强的约束
+        var isMulti = entry.kinds.has('checkbox') && !entry.kinds.has('radio');
+        s.type = isMulti ? 'matrix_multi' : 'matrix_single';
+        s.rows = rowsArr;
+        s.cols = colsArr;
+    });
+}
+"""
+
+# ---- 5c. 矩阵量表：table.matrix-rating + a[dval] ----
+_PASS_MATRIX_SCALE: str = r"""
+function detectMatrixScale(map, slot) {
+// ---------- 5c. 矩阵量表（真卷 type=6 的另一形态：格子里不是 radio 而是一排 <a>） ----------
+// 结构（2026-09-22 真卷实测）：``table.matrix-rating`` 里每个数据行是
+// ``<tr tp="d" fid="q7_0" id="drv7_1">``，行内一格一个 ``<a dval="1..5">``，
+// 而**提交槽名就写在行的 fid 上** —— 平台自己标的，不用像同类项目那样按
+// "容器子元素数 - 3" 去猜行数。
+// 为什么必须显式认下来：这种 table 的 class 含 "rating"，会被上面的量表分支
+// 先抢走 —— "两行各 5 级"于是被判成一个 4 级量表，作答点到根本不存在的控件上，
+// 症状要延后到提交那一步才暴露。
+    var tables = document.querySelectorAll('table[class*="matrix-rating"], table[class*="matrixtable"]');
+    tables.forEach(function(tb) {
+        if (pageHidden(tb)) return;
+        var dataRows = tb.querySelectorAll('tr[tp="d"][fid]');
+        if (dataRows.length < 1) return;
+        var host = tb.closest ? tb.closest('[topic], .field, .div_question, div[id^="div"]') : null;
+        var idm = (host && host.id) ? host.id.match(/div(\d+)/) : null;
+        if (!idm) return;
+        var qi = parseInt(idm[1]);
+        var existing = map[qi];
+        // 只从量表手里抢（那是本分支要修的错判）；别的题型已经认领就不动
+        if (existing && existing.type && existing.type !== 'scale') return;
+
+        var slots = [], cols = null, bad = false;
+        for (var r = 0; r < dataRows.length; r++) {
+            var fid = dataRows[r].getAttribute('fid');
+            var dv = Array.prototype.map.call(
+                dataRows[r].querySelectorAll('a[dval]'),
+                function (a) {
+                    var raw = a.getAttribute('dval');
+                    var n = parseInt(raw, 10);
+                    return String(raw) === String(n) ? n : raw;
+                });
+            if (!fid || dv.length < 2) { bad = true; return; }   // 宁缺毋滥：整表不认
+            slots.push(String(fid));
+            if (cols === null) cols = dv;
+            else if (dv.length !== cols.length) cols = null;      // 行间列数不齐，不是规整量表
+        }
+        if (bad || cols === null) return;
+
+        var s = slot(qi);
+        s.type = 'matrix_scale';
+        s.rows = slots;         // 提交槽名（fid），不是行号
+        s.cols = cols;
+        // 量表分支留下的痕迹必须清掉：留着会让结构签名与作答都读错
+        delete s.scale;
+        delete s.scale_min;
+        delete s.choices;
+        delete s.blank_options;
+    });
+}
+"""
+
+# ---- 5d. 多空填空：同题 ≥2 个可见 textarea（平台 type=9） ----
+_PASS_MULTI_BLANK: str = r"""
+function detectMultiBlank(map, slot) {
+// ---------- 5d. 多空填空（平台 type=9：一题多个可见 textarea，逐框写文本） ----------
+// 结构（2026-09-22 真卷 Q14 实测）：两个**可见**的 textarea#q14_0 / #q14_1
+// （一空一框，readOnly=false），外层 table.matrix-rating 的 class 含 "rating"
+// —— 会被第 3 步的量表分支先抢走；而它既没有 tr[tp="d"][fid] 也没有 a[dval]，
+// 矩阵量表分支（5c）接不住它。于是它顶着 scale 的判定被按量表作答，
+// 答案写错地方 —— 这是"探测自己判错题型"锚定看不穿的又一例（签名跟着探测走）。
+//
+// 认领条件刻意收窄：**同题 ≥2 个**可见、可写、id/name 形如 qN_M 的 textarea，
+// 且只从 scale / text 手里抢（那是两类已知错判）。矩阵量表的提交槽
+// （input#qN_M）不是 textarea，不会误伤；"其他____"的选项框（qN_M_text）
+// 被 $ 锚定与 isOptionLevelBlank 挡掉；只剩一框的不抢 —— 单框走第 4 步的
+// 填空路径，fill_text 的宽松 id 兜底本来就够得着它。
+    var boxes = {};   // qN -> [{token, el}]
+    document.querySelectorAll('textarea').forEach(function(el) {
+        if (el.disabled || el.readOnly) return;
+        if (pageHidden(el)) return;
+        if (el.offsetParent === null) return;
+        if (isOptionLevelBlank(el)) return;
+        var m = (el.id || '').match(/^q(\d+)_(\d+)$/)
+             || (el.name || '').match(/^q(\d+)_(\d+)$/);
+        if (!m) return;
+        var qn = parseInt(m[1]);
+        if (!boxes[qn]) boxes[qn] = [];
+        boxes[qn].push({ token: el.id || el.name, el: el });
+    });
+    Object.keys(boxes).forEach(function(qN) {
+        if (boxes[qN].length < 2) return;
+        var qi = parseInt(qN);
+        var existing = map[qi];
+        if (existing && existing.type && existing.type !== 'scale'
+                && existing.type !== 'text') return;
+
+        var s = slot(qi);
+        s.type = 'text';
+        // 每格的字段类型单独判：先问这一格自己的 verify，再猜它所在**行**的
+        // 标签文字，最后才退到题干 —— 行标签必须与题干分开猜，否则"姓名"行
+        // 会吃到同一题另一格"手机号"的关键词（猜的顺序里姓名在前）。
+        s.blanks = boxes[qN].map(function(b) {
+            var field = verifyFieldOf(b.el);
+            if (field === null) {
+                var rowTxt = '';
+                var row = b.el.closest ? b.el.closest('tr') : null;
+                if (row) {
+                    var cells = row.querySelectorAll('td, th');
+                    for (var ci = 0; ci < cells.length; ci++) {
+                        if (cells[ci].contains(b.el)) continue;
+                        rowTxt += (cells[ci].textContent || '') + '|';
+                    }
+                }
+                if (rowTxt) field = guessTextFieldFromText(rowTxt);
+            }
+            if (field === null) {
+                var wrap = b.el.closest ? b.el.closest('.field,.div_question,.q-item,.question') : null;
+                if (wrap) field = guessTextFieldFromText(wrap.textContent || '');
+            }
+            return { id: String(b.token), field: field };
+        });
+        // 量表分支的残留必须清掉（签名与作答都读它们）；顶层 field 是
+        // "单框"时代的语义，多框时以每格的为准，留着会误导配置与显示。
+        delete s.scale;
+        delete s.scale_min;
+        delete s.field;
+    });
+}
+"""
+
+# ---- 5b. 排序题：value / click 两种控件形态 ----
+_PASS_SORT: str = r"""
+function detectSort(map, slot) {
+// ---------- 5b. 排序题（两种控件形态，作答方式不同，见 src/interactions/sort.py） ----------
+// ① 逗号串形态（v3.0 认的那种）：ul 的 class 含 "sort"（老页面是 ul.lisort），
+//    提交值装在同域那**一个** ``input[name=qN]`` 里，形如 "3,1,2"。
+// ② 点击形态（2026-09-22 真卷实测）：``ul.ui-controlgroup.ui-listview``，
+//    每个 li 带一个 ``span.sortnum``（平台自己写名次的地方）和一个
+//    ``input[type=hidden][name=qN][value=序号]``。这些隐藏域的 value **恒为 1,2,3 不变**，
+//    排名只活在 **li 的 DOM 顺序**里；提交时同名 input 按 DOM 顺序一起交出去 ——
+//    实测按 3→1→2 点完之后 ``FormData.get('q12')`` 就是 "3,1,2"。
+//    所以这种形态**只能按目标顺序点击**：往第一个 input 里写 "3,1,2"，
+//    等于把选项 1 的身份换成了一串数字，交上去是脏数据。
+// 认不出题号就不认这题 —— 认错了比认不到更糟（会去重排别人的列表）。
+    var lists = document.querySelectorAll('ul, ol');
+    lists.forEach(function(ul) {
+        if (pageHidden(ul)) return;
+        var lis = [];
+        for (var i = 0; i < ul.children.length; i++) {
+            if (ul.children[i].tagName === 'LI') lis.push(ul.children[i]);
+        }
+        if (lis.length < 2) return;
+
+        // 点击形态的判据：每个 li 都有 sortnum + 一个 name=qN 的隐藏域。
+        // 要求"每个"而不是"有"，是为了不把别的带序号的列表认成排序题。
+        var clickQ = null, clickItems = [];
+        var allClick = lis.every(function(li) {
+            var num = li.querySelector('span.sortnum');
+            var hid = li.querySelector('input[type="hidden"]');
+            var m = hid ? (hid.name || hid.id || '').match(/^q(\d+)(?:_\d+)?$/) : null;
+            if (!num || !hid || !m) return false;
+            if (clickQ === null) clickQ = parseInt(m[1]);
+            else if (clickQ !== parseInt(m[1])) return false;
+            clickItems.push(hid.value !== '' ? String(hid.value) : String(clickItems.length + 1));
+            return true;
+        });
+
+        var cls = (ul.className || '').toString();
+        var s = null, q = null;
+
+        if (clickQ !== null && allClick) {
+            q = clickQ;
+            s = slot(q);
+            if (s.type && s.type !== 'sort') return;
+            s.type = 'sort';
+            s.items = clickItems;
+            s.sort_mode = 'click';
+            return;
+        }
+        if (!/sort/i.test(cls)) return;
+
+        var items = lis.map(function(li, idx) {
+            var v = li.getAttribute('value')
+                 || li.getAttribute('data-value')
+                 || li.getAttribute('data-id');
+            return v !== null && v !== '' ? v : String(idx + 1);
+        });
+
+        // ① 容器自身 id：问卷星常用 q13_list / sortq13 这类带题号前缀的 id
+        var um = (ul.id || '').match(/^q(\d+)(?:$|[^0-9])/);
+        if (um) q = parseInt(um[1]);
+        // ② 同域的隐藏 input（提交值就装在这里）—— 刻意不用 closest('[id]')，
+        //    那会先匹配到 ul 自己，把 scope 缩成一个查不到任何东西的节点
+        var scope = (ul.closest && ul.closest('.field, .div_question, .question'))
+                 || ul.parentNode;
+        var hidden = scope ? scope.querySelectorAll('input[type="hidden"]') : [];
+        for (var h = 0; h < hidden.length && q === null; h++) {
+            var hm = (hidden[h].name || hidden[h].id || '').match(/^q(\d+)$/);
+            if (hm) q = parseInt(hm[1]);
+        }
+        // ③ 题目容器 id（div13 / divquestion13）
+        if (q === null && scope && scope.id) {
+            var cm = scope.id.match(/(?:div|q)(\d+)$/);
+            if (cm) q = parseInt(cm[1]);
+        }
+        if (q === null) return;
+
+        s = slot(q);
+        if (s.type && s.type !== 'sort') return;   // 已被别的题型占用 → 不覆盖
+        s.type = 'sort';
+        s.items = items;
+        s.sort_mode = 'value';
+    });
+}
+"""
+
+# ---- 6. 题干文本：权重锚定用 ----
+_PASS_TITLES: str = r"""
+function detectTitles(map, slot) {
+// ---------- 6. 题干文本（v3.0 权重锚定用） ----------
+// 只取题面元素自己的文字，绝不退回到"整个容器 textContent" ——
+// 那样会把选项文案一起吸进来，作者改一个选项就换一道题，锚点比题号更脆。
+    var TITLE_SEL = '.topichtml, h2.t, .field-label, .quetitle,'
+                  + ' .question-title, .field-label-text, .qtitle,'
+                  + ' [class*="topichtml"]';
+    Object.keys(map).forEach(function(q) {
+        var s = map[q];
+        if (s.title) return;
+        var host = document.getElementById('divquestion' + q)
+                || document.getElementById('div_question_' + q);
+        if (!host) {
+            // 矩阵题的控件 name 是 qN_R（N 题号、R 行号），只查 [name="qN"] 会漏整道题
+            host = document.querySelector(
+                '[id="q' + q + '"], [name="q' + q + '"],'
+                + ' [id^="q' + q + '_"], [name^="q' + q + '_"]'
+            );
+        }
+        if (!host) return;
+        // 从命中的控件**往上爬**，逐层找题面：closest('.field') 只会停在
+        // 控件包装层，而题面是它的兄弟节点（真页面与 mock 都是这个结构）。
+        var text = '';
+        for (var node = host; node && node !== document.body; node = node.parentElement) {
+            if (!node.querySelector) break;
+            var t = node.querySelector(TITLE_SEL);
+            if (t) { text = t.textContent || ''; break; }
+        }
+        text = text.replace(/\s+/g, ' ').trim();
+        if (!text) return;
+        s.title = text.substring(0, 120);
+    });
+}
+"""
+
+# ---- 第 4 段与 5d 段共用的字段判定路：先问平台 verify 属性，再用文本线索兜底 ----
+# 两条路必须同源；多空填空的每格各判一次，行标签与题干分开猜。
+_FIELD_GUESS_JS: str = r"""
+// ---------- 工具：字段类型的两条判定路（第 4 步与 5d 共用，必须同源） ----------
+// 先问平台的 verify 属性（问卷星明写在输入框上的校验语义），再用文本线索猜。
+// 两条路拆成两个函数：多空填空的每一格都要各判一次，而"行标签"与"题干"
+// 必须分开猜 —— 行标签混进题干一起 match，"姓名"行会吃到同一题另一格
+// "手机号"的关键词（猜的顺序里姓名在前）。
+function verifyFieldOf(el) {
+    var verify = (el.getAttribute('verify') || '').trim();
+    var cls = (el.className || '').toString();
+    var isDate = /(^|\s)datebox(\s|$)/.test(cls)
+              || el.getAttribute('data-role') === 'datebox'
+              || /日期|时间/.test(verify);
+    var field = null;
+    if (isDate || /日期|时间/.test(verify)) field = 'date';
+    else if (/邮箱/.test(verify)) field = 'email';
+    else if (/手机|电话/.test(verify)) field = 'phone';
+    else if (/身份证|证件/.test(verify)) field = 'idcard';
+    else if (/数字|数值/.test(verify)) field = 'age';   // 纯数字框：按年龄档生成最安全
+    if (field === null) {
+        // 地区题的三条平台侧信号（同类项目在 HTML 里就是靠这三条认的）：
+        // 控件类名 get_Local、onclick 打开城市选择器 opencitybox、
+        // verify 写着省市/地区语义。判成 region 才能只交"省 市"，
+        // 判成 address 会把整条街道门牌塞进级联框。
+        var onclick = el.getAttribute('onclick') || '';
+        var isRegion = (el.classList && el.classList.contains('get_Local'))
+            || /opencitybox/i.test(onclick)
+            || /地图|省市|省份|城市|地区|区县/.test(verify);
+        if (isRegion) field = 'region';
+    }
+    return field;
+}
+function guessTextFieldFromText(txt) {
+    txt = String(txt || '').toLowerCase();
+    // 身份证放在最前：题干必然含"身份证/证件号"， specificity 最高；
+    // 漏了它 answer 侧会落到自由短句兜底 —— 18 位证件号的位置出现
+    // 一句"整体体验非常不错"，这份数据必废（v4.2 前正是这个形状）。
+    if (/身份证|证件号|证件号码/.test(txt)) return 'idcard';
+    if (/姓名|名字|name|您的称呼|称呼/.test(txt)) return 'name';
+    if (/手机|电话|mobile|phone|tel|联系方式/.test(txt)) return 'phone';
+    if (/邮箱|e-mail|email|mail/.test(txt)) return 'email';
+    if (/地址|住址|addr|address/.test(txt)) return 'address';
+    if (/所在地区|所在区域|省市|户籍地|现居住地区/.test(txt)) return 'region';
+    if (/年龄|岁数|age/.test(txt)) return 'age';
+    if (/公司|单位|学校|工作|org|company/.test(txt)) return 'company';
+    return null;
+}
+"""
+
+# ---- 后处理：排序 choices、清理改判后的顶层脏字段、按题号升序输出 ----
+_POSTPROCESS_JS: str = r"""
+function postprocessQuestions(map) {
+    var result = [];
+// ---------- 后处理：single/multi 的 choices 排序；清理 scale/text/matrix 的顶层脏字段；按题号升序输出 ----------
+Object.keys(map).forEach(function(q) {
+    var it = map[q];
+    if (it.type === 'scale' || it.type === 'text'
+            || it.type === 'matrix_single' || it.type === 'matrix_multi'
+            || it.type === 'matrix_scale') {
+        delete it.choices;
+        // 矩阵/量表的控件 name 也带 qN，第 1 步会把它们先记成选择题；
+        // 题型改判后这些"哪一项要填空"的结论不再适用于本体的定位方式。
+        delete it.blank_options;
+    }
+    if (it.choices && typeof it.choices.sort === 'function') {
+        it.choices.sort(function(a, b) {
+            if (typeof a === 'number' && typeof b === 'number') return a - b;
+            return String(a).localeCompare(String(b));
+        });
+    }
+});
+Object.keys(map)
+    .map(function(k) { return parseInt(k); })
+    .sort(function(a, b) { return a - b; })
+    .forEach(function(q) {
+        result.push(map[q]);
+    });
+
+return JSON.stringify(result);
+}
+"""
+
+# ---- 执行入口：map 与 slot 只在这里定义，各段以参数接收 ----
+# 段与段之间只通过 map 传话 —— 这正是"顺序即语义"的载体。
+_DETECT_RUNNER_JS: str = r"""
+return (function() {
+    var map = {};   // qnum(int) -> question dict
+
+    function slot(q) {
+        var qi = parseInt(q);
+        if (!map[qi]) map[qi] = { q: qi };
+        return map[qi];
+    }
+
+    var passes = [detectSingleMulti, detectDropdown, detectScale, detectText,
+                  detectMatrix, detectMatrixScale, detectMultiBlank, detectSort,
+                  detectTitles];
+    for (var i = 0; i < passes.length; i++) { passes[i](map, slot); }
+    return postprocessQuestions(map);
+})();
+"""
+
+# 注册表：detect_questions 与 JS 语法防线（tests/test_js_scripts.py）都从这里取段。
+# 元组序 = 注入执行序，见上方"顺序即语义"的说明。
+_DETECTION_PASSES: tuple[tuple[str, str], ...] = (
+    ("single_multi", _PASS_SINGLE_MULTI),
+    ("dropdown", _PASS_DROPDOWN),
+    ("scale", _PASS_SCALE),
+    ("text", _PASS_TEXT),
+    ("matrix", _PASS_MATRIX),
+    ("matrix_scale", _PASS_MATRIX_SCALE),
+    ("multi_blank", _PASS_MULTI_BLANK),
+    ("sort", _PASS_SORT),
+    ("titles", _PASS_TITLES),
+)
+
+
+def _compose_detect_script() -> str:
+    """拼出 detect_questions 的整段注入脚本（前导工具 + 各识别段 + 后处理 + 执行入口）。"""
+    return (
+        _OPTION_BLANK_JS
+        + _PAGE_HIDDEN_JS
+        + _FIELD_GUESS_JS
+        + "".join(js for _name, js in _DETECTION_PASSES)
+        + _POSTPROCESS_JS
+        + _DETECT_RUNNER_JS
+    )
+
+
 def detect_questions(driver: Any) -> list[dict]:
     """扫描当前页面，自动提取所有题目的结构信息（v2.0 全题型版）。
 
@@ -189,599 +862,7 @@ def detect_questions(driver: Any) -> list[dict]:
           {"q": 6, "type": "matrix_single",
            "rows": [1, 2, 3], "cols": [1, 2, 3, 4, 5]}
     """
-    raw = driver.execute_script(_OPTION_BLANK_JS + _PAGE_HIDDEN_JS + r"""
-return (function() {
-    var result = [];
-    var map = {};   // qnum(int) -> question dict
-
-    // ---------- 工具：向 map 合并 / 获取一题槽位 ----------
-    function slot(q) {
-        var qi = parseInt(q);
-        if (!map[qi]) map[qi] = { q: qi };
-        return map[qi];
-    }
-
-    // ---------- 工具：跳过"被分页容器隐藏"的控件（v3.0 多分页问卷） ----------
-    // pageHidden 本体在 _PAGE_HIDDEN_JS（与平台侧对拍共用，见那边注释）。
-
-    // ---------- 1. 单选 / 多选（v1 逻辑，保持完全一致） ----------
-    (function() {
-        var inputs = document.querySelectorAll(
-            'input[type="radio"], input[type="checkbox"]'
-        );
-        inputs.forEach(function(el) {
-            if (pageHidden(el)) return;
-            var m = (el.name || '').match(/q(\d+)/);
-            if (!m) m = (el.id || '').match(/q(\d+)/);
-            if (!m) return;
-            var q = parseInt(m[1]);
-            var s = slot(q);
-            if (!s.choices) s.choices = [];
-            s.type = (el.type === 'radio') ? 'single' : 'multi';
-
-            var v = parseInt(el.value);
-            if (!isNaN(v) && s.choices.indexOf(v) === -1) {
-                s.choices.push(v);
-                // 这一项自带填空框（"其他____"）。勾了它却不写文本，平台会按
-                // "该项内容未填写"拦下整题 —— 在本工具侧的样子是提交返回
-                // unknown，完全看不出是这一格空着。
-                if (optionBlankInput(el)) {
-                    if (!s.blank_options) s.blank_options = [];
-                    s.blank_options.push(v);
-                }
-            }
-        });
-    })();
-
-    // ---------- 2. 下拉（<select name=qN>） ----------
-    (function() {
-        var selects = document.querySelectorAll('select');
-        selects.forEach(function(sel) {
-            if (pageHidden(sel)) return;
-            var nm = sel.name || '';
-            var id = sel.id || '';
-            var m = nm.match(/q(\d+)/) || id.match(/q(\d+)/) || id.match(/selectq(\d+)/);
-            if (!m) return;
-            var s = slot(m[1]);
-            s.type = 'dropdown';
-
-            var choices = [];
-            var opts = sel.querySelectorAll('option');
-            opts.forEach(function(opt) {
-                var val = opt.value;
-                if (val === '' || val === null || val === undefined) return;  // 跳过"请选择"空项
-                var num = parseInt(val);
-                choices.push(isNaN(num) ? val : num);
-            });
-            if (choices.length > 0) s.choices = choices;
-        });
-    })();
-
-    // ---------- 3. 量表 / 评分（问卷星常用 .rate-star / .level / .score-area） ----------
-    (function() {
-        // 特征：带 rate / star / level / score 的容器，内部子项数 = 分值级数
-        var sel = [
-            '[class*="rate"]', '[class*="star"]', '[class*="level"]',
-            '[class*="score"]', '[class*="rating"]',
-            'ul.rate', 'div.rate', 'ul.stars',
-        ].join(',');
-        var areas = document.querySelectorAll(sel);
-        var seen = new Set();
-        areas.forEach(function(area) {
-            if (pageHidden(area)) return;
-            // 找最近的题目容器，取其题号
-            var host = area.closest ? area.closest(
-                '.field,.div_question,.q-item,li,.question,div[id^="div"]'
-            ) : null;
-            var qid = null;
-            if (host) {
-                var idm = (host.id || '').match(/div(\d+)/) || (host.id || '').match(/q(\d+)/);
-                if (idm) qid = parseInt(idm[1]);
-            }
-            // 兜底：area 自身 id / data-q
-            if (!qid) {
-                var dm = (area.id || '').match(/q(\d+)/) ||
-                         (area.dataset && area.dataset.q && parseInt(area.dataset.q));
-                if (dm) qid = (typeof dm === 'number') ? dm : parseInt(dm[1]);
-            }
-            if (!qid || seen.has(qid)) return;
-            seen.add(qid);
-
-            // 真卷里评分条还有这一种长相：``ul.modlen5``，每个 li 一个 <a>，
-            // 既没有隐藏 radio 也没有数字文本 —— 下面的"数格子"规则数不到它，
-            // 于是级数算不出来、这题会被后面的填空分支捡走（2026-09-22 真卷 Q10）。
-            // li 的个数就是级数。
-            var modLenUl = (area.tagName === 'UL' && /modlen/i.test(area.className || ''))
-                ? area : (area.querySelector ? area.querySelector('ul[class*="modlen"]') : null);
-            if (modLenUl) {
-                var modLis = modLenUl.children;
-                var modLinks = 0;
-                for (var mi = 0; mi < modLis.length; mi++) {
-                    if (modLis[mi].tagName === 'LI' && modLis[mi].querySelector('a')) modLinks += 1;
-                }
-                if (modLinks >= 2 && modLinks <= 12) {
-                    var ms = slot(qid);
-                    ms.type = 'scale';
-                    ms.scale = modLinks;
-                    ms.scale_min = 1;
-                    return;
-                }
-            }
-
-            // ---- 量表边界：优先读隐藏 radio 的真实 value 区间 ----
-            // 此前这里写死 s.scale_min = 1 且 s.scale = 选项个数，
-            // 于是 2~10 分的量表被识别成 scale=9 / scale_min=1：
-            //   作答时永远点不到 10，还会去点根本不存在的 1。
-            // radio 的 value 才是权威边界；只有拿不到 radio 时才退回"数格子"。
-            var hiddenRadios = document.querySelectorAll(
-                'input[type="radio"][name="q' + qid + '"]'
-            );
-            var scaleVals = [];
-            hiddenRadios.forEach(function(r) {
-                var v = parseInt(r.value);
-                if (!isNaN(v)) scaleVals.push(v);
-            });
-
-            var levelMin, levelMax;
-            if (scaleVals.length >= 2) {
-                levelMin = Math.min.apply(null, scaleVals);
-                levelMax = Math.max.apply(null, scaleVals);
-            } else {
-                // 数内部"可选项"数量（li / a / span 带分数语义）
-                var kids = area.querySelectorAll('li, a, span, i');
-                var levelCount = 0;
-                kids.forEach(function(k) {
-                    var cls = (k.className || '').toString();
-                    if (/item|star|level|score|point|right|ok|full/.test(cls) ||
-                        /^\d+$/.test((k.textContent || '').trim())) {
-                        levelCount++;
-                    }
-                });
-                // 常见 5 / 10 级兜底
-                if (levelCount < 2 || levelCount > 12) {
-                    levelCount = hiddenRadios.length;
-                }
-                levelMin = 1;
-                levelMax = levelCount;
-            }
-
-            var levels = levelMax - levelMin + 1;
-            if (levels >= 2 && levels <= 12) {
-                var s = slot(qid);
-                s.type = 'scale';
-                s.scale = levelMax;
-                s.scale_min = levelMin;
-            }
-        });
-    })();
-
-    // ---------- 工具：字段类型的两条判定路（第 4 步与 5d 共用，必须同源） ----------
-    // 先问平台的 verify 属性（问卷星明写在输入框上的校验语义），再用文本线索猜。
-    // 两条路拆成两个函数：多空填空的每一格都要各判一次，而"行标签"与"题干"
-    // 必须分开猜 —— 行标签混进题干一起 match，"姓名"行会吃到同一题另一格
-    // "手机号"的关键词（猜的顺序里姓名在前）。
-    function verifyFieldOf(el) {
-        var verify = (el.getAttribute('verify') || '').trim();
-        var cls = (el.className || '').toString();
-        var isDate = /(^|\s)datebox(\s|$)/.test(cls)
-                  || el.getAttribute('data-role') === 'datebox'
-                  || /日期|时间/.test(verify);
-        var field = null;
-        if (isDate || /日期|时间/.test(verify)) field = 'date';
-        else if (/邮箱/.test(verify)) field = 'email';
-        else if (/手机|电话/.test(verify)) field = 'phone';
-        else if (/身份证|证件/.test(verify)) field = 'idcard';
-        else if (/数字|数值/.test(verify)) field = 'age';   // 纯数字框：按年龄档生成最安全
-        if (field === null) {
-            // 地区题的三条平台侧信号（同类项目在 HTML 里就是靠这三条认的）：
-            // 控件类名 get_Local、onclick 打开城市选择器 opencitybox、
-            // verify 写着省市/地区语义。判成 region 才能只交"省 市"，
-            // 判成 address 会把整条街道门牌塞进级联框。
-            var onclick = el.getAttribute('onclick') || '';
-            var isRegion = (el.classList && el.classList.contains('get_Local'))
-                || /opencitybox/i.test(onclick)
-                || /地图|省市|省份|城市|地区|区县/.test(verify);
-            if (isRegion) field = 'region';
-        }
-        return field;
-    }
-    function guessTextFieldFromText(txt) {
-        txt = String(txt || '').toLowerCase();
-        // 身份证放在最前：题干必然含"身份证/证件号"， specificity 最高；
-        // 漏了它 answer 侧会落到自由短句兜底 —— 18 位证件号的位置出现
-        // 一句"整体体验非常不错"，这份数据必废（v4.2 前正是这个形状）。
-        if (/身份证|证件号|证件号码/.test(txt)) return 'idcard';
-        if (/姓名|名字|name|您的称呼|称呼/.test(txt)) return 'name';
-        if (/手机|电话|mobile|phone|tel|联系方式/.test(txt)) return 'phone';
-        if (/邮箱|e-mail|email|mail/.test(txt)) return 'email';
-        if (/地址|住址|addr|address/.test(txt)) return 'address';
-        if (/所在地区|所在区域|省市|户籍地|现居住地区/.test(txt)) return 'region';
-        if (/年龄|岁数|age/.test(txt)) return 'age';
-        if (/公司|单位|学校|工作|org|company/.test(txt)) return 'company';
-        return null;
-    }
-
-    // ---------- 4. 填空（text / textarea / input[type=text]#qN） ----------
-    (function() {
-        var fillables = document.querySelectorAll(
-            'input[type="text"], input[type="tel"], input[type="number"], input:not([type]), textarea'
-        );
-        fillables.forEach(function(el) {
-            if (el.disabled) return;
-            // 只读框里只把**日期题**放过去。真卷（2026-09-22 实测）的日期题长这样：
-            //   <input id="q15" name="q15" class="datebox" data-role="datebox"
-            //          verify="日期" readonly>
-            // 值是 laydate 面板选完后回写进这个框的，所以它天生只读 ——
-            // 一并跳过等于整题从探测结果里消失，症状是"必答题没答上"。
-            // 其余只读框（量表 / 矩阵的隐藏存储框）仍按老规则挡掉，不能放宽到这里。
-            var cls = (el.className || '').toString();
-            var verify = (el.getAttribute('verify') || '').trim();
-            var isDate = /(^|\s)datebox(\s|$)/.test(cls)
-                      || el.getAttribute('data-role') === 'datebox'
-                      || /日期|时间/.test(verify);
-            if (el.readOnly && !isDate) return;
-            if (pageHidden(el)) return;
-            // 不可见的文本控件不是给人填的：真卷上量表每级的标注文字装在一个
-            // display:none 的 textarea 里，被它勾走就把一道量表题判成填空
-            // （2026-09-22 真卷 Q10 的实际错法）。offsetParent 为 null 表示
-            // "没有任何可渲染的祖先"，比读 inline style 可靠 —— 隐藏常常来自 CSS 类。
-            if (el.offsetParent === null) return;
-            var id = el.id || '';
-            var name = el.name || '';
-            var m = id.match(/^q(\d+)$/) || id.match(/^answerq(\d+)$/) ||
-                    name.match(/^q(\d+)$/) || id.match(/q(\d+)/);
-            if (!m) {
-                // 再找父级
-                var parent = el.closest ? el.closest('[id*="div"]') : null;
-                if (parent) {
-                    var pm = (parent.id || '').match(/div(\d+)/);
-                    if (pm) m = pm;
-                }
-            }
-            if (!m) return;
-            var qi = parseInt(m[1]);
-            // 如果该题已被判为 single/multi（即已有 radio/checkbox 同名），不覆盖
-            var existing = map[qi];
-            if (existing && existing.type !== undefined && existing.type !== 'text') return;
-
-            var s = slot(qi);
-            s.type = 'text';
-
-            // 字段类型先问平台，再猜题干：``verify`` 是问卷星明写在输入框上的
-            // 校验语义（真卷上见到 "日期"，同类项目还见过 "城市单选"）。
-            // 题干正则留着兜底 —— 大多数填空框根本没有 verify 属性。
-            var field = verifyFieldOf(el);
-            var txt = (el.placeholder || '') + '|' +
-                      (el.getAttribute('aria-label') || '') + '|';
-            // 往上找题目文字
-            var wrap = el.closest ? el.closest('.field,.div_question,.q-item,li,.question') : null;
-            if (wrap) txt += (wrap.textContent || '').substring(0, 80);
-
-            if (field === null) field = guessTextFieldFromText(txt);
-            s.field = field;
-
-            if (field === 'date') {
-                // laydate 的渲染参数就挂在这个框上（wjxdate.js 读的就是这两个属性）：
-                // ``datelimit`` 是 "min|max"，``datelimittype`` 1=月 / 3=日期时间 / 4=时间，
-                // 其余按日期。生成**范围外**的值会被平台自己的校验清掉，等于白答，
-                // 所以把边界一起带回去，让 answering_v2 照着格式与区间生成。
-                var kind = 'date';
-                var dlt = (el.getAttribute('datelimittype') || '').trim();
-                if (dlt === '1') kind = 'month';
-                else if (dlt === '3') kind = 'datetime';
-                else if (dlt === '4') kind = 'time';
-                s.date_kind = kind;
-                var lim = (el.getAttribute('datelimit') || '').split('|');
-                if (lim[0] && lim[0].trim()) s.date_min = lim[0].trim();
-                if (lim[1] && lim[1].trim()) s.date_max = lim[1].trim();
-            }
-        });
-    })();
-
-    // ---------- 5. 矩阵（每行一组控件，同题不同行 name 是 qN_1 / qN_2 ...） ----------
-    (function() {
-        // radio → matrix_single，checkbox → matrix_multi。v3.0 之前这里只看 radio，
-        // 于是矩阵多选题被整题识别成"没有题目"或降级成单选，答出来的形状还不对。
-        var allBoxes = document.querySelectorAll(
-            'input[type="radio"], input[type="checkbox"]'
-        );
-        var matrixMap = {};  // qN -> { rows: Set(R), cols: Set(values), kind: 'radio'|'checkbox' }
-        allBoxes.forEach(function(r) {
-            if (pageHidden(r)) return;
-            var m = (r.name || '').match(/^q(\d+)_(\d+)$/);
-            if (!m) return;
-            var qN = parseInt(m[1]);
-            var rowN = parseInt(m[2]);
-            if (!matrixMap[qN]) {
-                matrixMap[qN] = { rows: new Set(), cols: new Set(), kinds: new Set() };
-            }
-            matrixMap[qN].rows.add(rowN);
-            matrixMap[qN].kinds.add(r.type);
-            var v = parseInt(r.value);
-            if (!isNaN(v)) matrixMap[qN].cols.add(v);
-        });
-
-        Object.keys(matrixMap).forEach(function(qN) {
-            var qi = parseInt(qN);
-            var s = slot(qi);
-            var entry = matrixMap[qN];
-            // 如果该题已被识别为 single/multi，且 matrix 的 row 只有 1 条 → 保留 single
-            if (s.type === 'single' || s.type === 'multi') {
-                if (entry.rows.size <= 1) return;
-            }
-            var rowsArr = Array.from(entry.rows).sort(function(a, b) { return a - b; });
-            var colsArr = Array.from(entry.cols).sort(function(a, b) { return a - b; });
-            if (rowsArr.length < 2 || colsArr.length < 2) return;
-            // 混合类型（既有 radio 又有 checkbox）按 radio 处理：行内单选是更强的约束
-            var isMulti = entry.kinds.has('checkbox') && !entry.kinds.has('radio');
-            s.type = isMulti ? 'matrix_multi' : 'matrix_single';
-            s.rows = rowsArr;
-            s.cols = colsArr;
-        });
-    })();
-
-    // ---------- 5c. 矩阵量表（真卷 type=6 的另一形态：格子里不是 radio 而是一排 <a>） ----------
-    // 结构（2026-09-22 真卷实测）：``table.matrix-rating`` 里每个数据行是
-    // ``<tr tp="d" fid="q7_0" id="drv7_1">``，行内一格一个 ``<a dval="1..5">``，
-    // 而**提交槽名就写在行的 fid 上** —— 平台自己标的，不用像同类项目那样按
-    // "容器子元素数 - 3" 去猜行数。
-    // 为什么必须显式认下来：这种 table 的 class 含 "rating"，会被上面的量表分支
-    // 先抢走 —— "两行各 5 级"于是被判成一个 4 级量表，作答点到根本不存在的控件上，
-    // 症状要延后到提交那一步才暴露。
-    (function() {
-        var tables = document.querySelectorAll('table[class*="matrix-rating"], table[class*="matrixtable"]');
-        tables.forEach(function(tb) {
-            if (pageHidden(tb)) return;
-            var dataRows = tb.querySelectorAll('tr[tp="d"][fid]');
-            if (dataRows.length < 1) return;
-            var host = tb.closest ? tb.closest('[topic], .field, .div_question, div[id^="div"]') : null;
-            var idm = (host && host.id) ? host.id.match(/div(\d+)/) : null;
-            if (!idm) return;
-            var qi = parseInt(idm[1]);
-            var existing = map[qi];
-            // 只从量表手里抢（那是本分支要修的错判）；别的题型已经认领就不动
-            if (existing && existing.type && existing.type !== 'scale') return;
-
-            var slots = [], cols = null, bad = false;
-            for (var r = 0; r < dataRows.length; r++) {
-                var fid = dataRows[r].getAttribute('fid');
-                var dv = Array.prototype.map.call(
-                    dataRows[r].querySelectorAll('a[dval]'),
-                    function (a) {
-                        var raw = a.getAttribute('dval');
-                        var n = parseInt(raw, 10);
-                        return String(raw) === String(n) ? n : raw;
-                    });
-                if (!fid || dv.length < 2) { bad = true; return; }   // 宁缺毋滥：整表不认
-                slots.push(String(fid));
-                if (cols === null) cols = dv;
-                else if (dv.length !== cols.length) cols = null;      // 行间列数不齐，不是规整量表
-            }
-            if (bad || cols === null) return;
-
-            var s = slot(qi);
-            s.type = 'matrix_scale';
-            s.rows = slots;         // 提交槽名（fid），不是行号
-            s.cols = cols;
-            // 量表分支留下的痕迹必须清掉：留着会让结构签名与作答都读错
-            delete s.scale;
-            delete s.scale_min;
-            delete s.choices;
-            delete s.blank_options;
-        });
-    })();
-
-    // ---------- 5d. 多空填空（平台 type=9：一题多个可见 textarea，逐框写文本） ----------
-    // 结构（2026-09-22 真卷 Q14 实测）：两个**可见**的 textarea#q14_0 / #q14_1
-    // （一空一框，readOnly=false），外层 table.matrix-rating 的 class 含 "rating"
-    // —— 会被第 3 步的量表分支先抢走；而它既没有 tr[tp="d"][fid] 也没有 a[dval]，
-    // 矩阵量表分支（5c）接不住它。于是它顶着 scale 的判定被按量表作答，
-    // 答案写错地方 —— 这是"探测自己判错题型"锚定看不穿的又一例（签名跟着探测走）。
-    //
-    // 认领条件刻意收窄：**同题 ≥2 个**可见、可写、id/name 形如 qN_M 的 textarea，
-    // 且只从 scale / text 手里抢（那是两类已知错判）。矩阵量表的提交槽
-    // （input#qN_M）不是 textarea，不会误伤；"其他____"的选项框（qN_M_text）
-    // 被 $ 锚定与 isOptionLevelBlank 挡掉；只剩一框的不抢 —— 单框走第 4 步的
-    // 填空路径，fill_text 的宽松 id 兜底本来就够得着它。
-    (function() {
-        var boxes = {};   // qN -> [{token, el}]
-        document.querySelectorAll('textarea').forEach(function(el) {
-            if (el.disabled || el.readOnly) return;
-            if (pageHidden(el)) return;
-            if (el.offsetParent === null) return;
-            if (isOptionLevelBlank(el)) return;
-            var m = (el.id || '').match(/^q(\d+)_(\d+)$/)
-                 || (el.name || '').match(/^q(\d+)_(\d+)$/);
-            if (!m) return;
-            var qn = parseInt(m[1]);
-            if (!boxes[qn]) boxes[qn] = [];
-            boxes[qn].push({ token: el.id || el.name, el: el });
-        });
-        Object.keys(boxes).forEach(function(qN) {
-            if (boxes[qN].length < 2) return;
-            var qi = parseInt(qN);
-            var existing = map[qi];
-            if (existing && existing.type && existing.type !== 'scale'
-                    && existing.type !== 'text') return;
-
-            var s = slot(qi);
-            s.type = 'text';
-            // 每格的字段类型单独判：先问这一格自己的 verify，再猜它所在**行**的
-            // 标签文字，最后才退到题干 —— 行标签必须与题干分开猜，否则"姓名"行
-            // 会吃到同一题另一格"手机号"的关键词（猜的顺序里姓名在前）。
-            s.blanks = boxes[qN].map(function(b) {
-                var field = verifyFieldOf(b.el);
-                if (field === null) {
-                    var rowTxt = '';
-                    var row = b.el.closest ? b.el.closest('tr') : null;
-                    if (row) {
-                        var cells = row.querySelectorAll('td, th');
-                        for (var ci = 0; ci < cells.length; ci++) {
-                            if (cells[ci].contains(b.el)) continue;
-                            rowTxt += (cells[ci].textContent || '') + '|';
-                        }
-                    }
-                    if (rowTxt) field = guessTextFieldFromText(rowTxt);
-                }
-                if (field === null) {
-                    var wrap = b.el.closest ? b.el.closest('.field,.div_question,.q-item,.question') : null;
-                    if (wrap) field = guessTextFieldFromText(wrap.textContent || '');
-                }
-                return { id: String(b.token), field: field };
-            });
-            // 量表分支的残留必须清掉（签名与作答都读它们）；顶层 field 是
-            // "单框"时代的语义，多框时以每格的为准，留着会误导配置与显示。
-            delete s.scale;
-            delete s.scale_min;
-            delete s.field;
-        });
-    })();
-
-    // ---------- 5b. 排序题（两种控件形态，作答方式不同，见 src/interactions/sort.py） ----------
-    // ① 逗号串形态（v3.0 认的那种）：ul 的 class 含 "sort"（老页面是 ul.lisort），
-    //    提交值装在同域那**一个** ``input[name=qN]`` 里，形如 "3,1,2"。
-    // ② 点击形态（2026-09-22 真卷实测）：``ul.ui-controlgroup.ui-listview``，
-    //    每个 li 带一个 ``span.sortnum``（平台自己写名次的地方）和一个
-    //    ``input[type=hidden][name=qN][value=序号]``。这些隐藏域的 value **恒为 1,2,3 不变**，
-    //    排名只活在 **li 的 DOM 顺序**里；提交时同名 input 按 DOM 顺序一起交出去 ——
-    //    实测按 3→1→2 点完之后 ``FormData.get('q12')`` 就是 "3,1,2"。
-    //    所以这种形态**只能按目标顺序点击**：往第一个 input 里写 "3,1,2"，
-    //    等于把选项 1 的身份换成了一串数字，交上去是脏数据。
-    // 认不出题号就不认这题 —— 认错了比认不到更糟（会去重排别人的列表）。
-    (function() {
-        var lists = document.querySelectorAll('ul, ol');
-        lists.forEach(function(ul) {
-            if (pageHidden(ul)) return;
-            var lis = [];
-            for (var i = 0; i < ul.children.length; i++) {
-                if (ul.children[i].tagName === 'LI') lis.push(ul.children[i]);
-            }
-            if (lis.length < 2) return;
-
-            // 点击形态的判据：每个 li 都有 sortnum + 一个 name=qN 的隐藏域。
-            // 要求"每个"而不是"有"，是为了不把别的带序号的列表认成排序题。
-            var clickQ = null, clickItems = [];
-            var allClick = lis.every(function(li) {
-                var num = li.querySelector('span.sortnum');
-                var hid = li.querySelector('input[type="hidden"]');
-                var m = hid ? (hid.name || hid.id || '').match(/^q(\d+)(?:_\d+)?$/) : null;
-                if (!num || !hid || !m) return false;
-                if (clickQ === null) clickQ = parseInt(m[1]);
-                else if (clickQ !== parseInt(m[1])) return false;
-                clickItems.push(hid.value !== '' ? String(hid.value) : String(clickItems.length + 1));
-                return true;
-            });
-
-            var cls = (ul.className || '').toString();
-            var s = null, q = null;
-
-            if (clickQ !== null && allClick) {
-                q = clickQ;
-                s = slot(q);
-                if (s.type && s.type !== 'sort') return;
-                s.type = 'sort';
-                s.items = clickItems;
-                s.sort_mode = 'click';
-                return;
-            }
-            if (!/sort/i.test(cls)) return;
-
-            var items = lis.map(function(li, idx) {
-                var v = li.getAttribute('value')
-                     || li.getAttribute('data-value')
-                     || li.getAttribute('data-id');
-                return v !== null && v !== '' ? v : String(idx + 1);
-            });
-
-            // ① 容器自身 id：问卷星常用 q13_list / sortq13 这类带题号前缀的 id
-            var um = (ul.id || '').match(/^q(\d+)(?:$|[^0-9])/);
-            if (um) q = parseInt(um[1]);
-            // ② 同域的隐藏 input（提交值就装在这里）—— 刻意不用 closest('[id]')，
-            //    那会先匹配到 ul 自己，把 scope 缩成一个查不到任何东西的节点
-            var scope = (ul.closest && ul.closest('.field, .div_question, .question'))
-                     || ul.parentNode;
-            var hidden = scope ? scope.querySelectorAll('input[type="hidden"]') : [];
-            for (var h = 0; h < hidden.length && q === null; h++) {
-                var hm = (hidden[h].name || hidden[h].id || '').match(/^q(\d+)$/);
-                if (hm) q = parseInt(hm[1]);
-            }
-            // ③ 题目容器 id（div13 / divquestion13）
-            if (q === null && scope && scope.id) {
-                var cm = scope.id.match(/(?:div|q)(\d+)$/);
-                if (cm) q = parseInt(cm[1]);
-            }
-            if (q === null) return;
-
-            s = slot(q);
-            if (s.type && s.type !== 'sort') return;   // 已被别的题型占用 → 不覆盖
-            s.type = 'sort';
-            s.items = items;
-            s.sort_mode = 'value';
-        });
-    })();
-
-    // ---------- 6. 题干文本（v3.0 权重锚定用） ----------
-    // 只取题面元素自己的文字，绝不退回到"整个容器 textContent" ——
-    // 那样会把选项文案一起吸进来，作者改一个选项就换一道题，锚点比题号更脆。
-    (function() {
-        var TITLE_SEL = '.topichtml, h2.t, .field-label, .quetitle,'
-                      + ' .question-title, .field-label-text, .qtitle,'
-                      + ' [class*="topichtml"]';
-        Object.keys(map).forEach(function(q) {
-            var s = map[q];
-            if (s.title) return;
-            var host = document.getElementById('divquestion' + q)
-                    || document.getElementById('div_question_' + q);
-            if (!host) {
-                // 矩阵题的控件 name 是 qN_R（N 题号、R 行号），只查 [name="qN"] 会漏整道题
-                host = document.querySelector(
-                    '[id="q' + q + '"], [name="q' + q + '"],'
-                    + ' [id^="q' + q + '_"], [name^="q' + q + '_"]'
-                );
-            }
-            if (!host) return;
-            // 从命中的控件**往上爬**，逐层找题面：closest('.field') 只会停在
-            // 控件包装层，而题面是它的兄弟节点（真页面与 mock 都是这个结构）。
-            var text = '';
-            for (var node = host; node && node !== document.body; node = node.parentElement) {
-                if (!node.querySelector) break;
-                var t = node.querySelector(TITLE_SEL);
-                if (t) { text = t.textContent || ''; break; }
-            }
-            text = text.replace(/\s+/g, ' ').trim();
-            if (!text) return;
-            s.title = text.substring(0, 120);
-        });
-    })();
-
-    // ---------- 后处理：single/multi 的 choices 排序；清理 scale/text/matrix 的顶层脏字段；按题号升序输出 ----------
-    Object.keys(map).forEach(function(q) {
-        var it = map[q];
-        if (it.type === 'scale' || it.type === 'text'
-                || it.type === 'matrix_single' || it.type === 'matrix_multi'
-                || it.type === 'matrix_scale') {
-            delete it.choices;
-            // 矩阵/量表的控件 name 也带 qN，第 1 步会把它们先记成选择题；
-            // 题型改判后这些"哪一项要填空"的结论不再适用于本体的定位方式。
-            delete it.blank_options;
-        }
-        if (it.choices && typeof it.choices.sort === 'function') {
-            it.choices.sort(function(a, b) {
-                if (typeof a === 'number' && typeof b === 'number') return a - b;
-                return String(a).localeCompare(String(b));
-            });
-        }
-    });
-    Object.keys(map)
-        .map(function(k) { return parseInt(k); })
-        .sort(function(a, b) { return a - b; })
-        .forEach(function(q) {
-            result.push(map[q]);
-        });
-
-    return JSON.stringify(result);
-})();
-    """)
+    raw = driver.execute_script(_compose_detect_script())
     return json.loads(raw)
 
 

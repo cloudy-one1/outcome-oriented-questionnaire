@@ -170,7 +170,7 @@ def lookup_weight_entry(q: dict, cfg: dict | None = None) -> dict | None:
 
 
 # ============================================================================
-#  未命中报告（每进程每条锚点最多提示一次）
+#  未命中报告（每批次每条锚点最多提示一次；批次复位由 cli.run_batch 调 reset）
 # ============================================================================
 _REPORTED: set[str] = set()
 _REPORTED_LOCK = threading.Lock()
@@ -203,8 +203,9 @@ def report_unmatched_anchors(cfg: dict, questions: list[dict]) -> list[str]:
     """``unmatched_anchors`` + 去重打印。返回本次**新**提示的行。
 
     探测每份问卷都会跑一次，同一份预设的未命中提示一次就够（17 份刷 17 行会把
-    真正的运行信息埋掉）。集合是进程级状态，与 ``logging_setup._CONFIGURED``
-    同类，测试需快照/还原。
+    真正的运行信息埋掉）。去重窗口是**批次级**：``cli.run_batch`` 的复位块每批
+    调一次 :func:`reset_reported_anchors`，长驻宿主（webui）里第二批次的失配
+    不会再被第一批次的集合压住。
     """
     fresh: list[str] = []
     with _REPORTED_LOCK:
@@ -217,7 +218,7 @@ def report_unmatched_anchors(cfg: dict, questions: list[dict]) -> list[str]:
 
 
 def reset_reported_anchors() -> None:
-    """清空去重集合（仅测试用）。"""
+    """清空去重集合（cli.run_batch 的批次复位块每批调用；测试也用它还原现场）。"""
     with _REPORTED_LOCK:
         _REPORTED.clear()
 

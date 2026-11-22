@@ -692,3 +692,27 @@ def test_abort_check_none_keeps_the_full_wait(clock) -> None:
     assert clock.slept == [2, 2, 2, 2]
     assert d.refreshes == 1, "超时路径仍要刷新页面"
     assert lock.is_holding is False
+
+
+def test_keyword_array_is_json_encoded_not_python_repr() -> None:
+    """v4.5：_url_title_body_verification 的关键词数组必须经 json.dumps 进 JS。
+
+    str(list()) 是 Python repr：关键词一旦含引号/反斜杠就是非法 JS，而这条
+    检测函数的失败会被当成"检测路径坏了"而非"关键词写错了"。json.dumps 对
+    任何内容都给出合法 JS 字面量 —— 与 _scripts.py 全部 19 处的纪律同一条。
+    """
+    import json as _json
+
+    class _RecordingDriver:
+        def __init__(self) -> None:
+            self.scripts: list[str] = []
+
+        def execute_script(self, script: str, *_a: Any, **_k: Any) -> Any:
+            self.scripts.append(script)
+            return False
+
+    driver = _RecordingDriver()
+    verification._url_title_body_verification(driver)
+    script = driver.scripts[0]
+    assert _json.dumps(list(verification.CAPTCHA_KEYWORDS)) in script
+    assert "['" not in script, "Python repr 数组混进了 JS 字面量"

@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 import threading
@@ -135,8 +136,10 @@ def _dom_has_verification(driver: Any) -> bool:
 
 def _url_title_body_verification(driver: Any) -> bool:
     """信号 b)：URL / 标题 / body 文本中文关键词检查。"""
+    # v4.5：关键词数组必须走 json.dumps —— str(list()) 是 Python repr，关键词一旦
+    # 含引号/反斜杠就是非法 JS（对照 _scripts.py 全部 19 处的同一条纪律）
     return driver.execute_script("""
-        var kw = """ + str(list(CAPTCHA_KEYWORDS)) + """.map(function(s){return s.toLowerCase()});
+        var kw = """ + json.dumps(list(CAPTCHA_KEYWORDS)) + """.map(function(s){return s.toLowerCase()});
         try {
             var url = (location.href || '').toLowerCase();
             if (/verify|captcha|antispam|validate|turing|check-human/.test(url)) return true;

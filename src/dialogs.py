@@ -1,17 +1,14 @@
-"""弹窗间接层：把「要人看一眼 / 点一下」的动作从具体 toolkit 里解出来。
+"""弹窗间接层：把「要人看一眼」的动作从具体 toolkit 里解出来。
 
 WHY：gui/ 此前有 9 处直调 ``tkinter.messagebox``，一调用就阻塞等真人点掉，离线
-测试只能把整段分支绕开 —— 这是 ``gui/app.py``、``gui/controller.py`` 两块覆盖率
-长期停在 25% / 13% 的直接原因（当年 README「仍然没有防线的地方」表里那两行的理由就是
-"模态对话框"）。现在出口收敛成一个可注册的 handler：GUI 启动时注入真 messagebox，
-CLI 与测试不注入就拿到**确定性默认值**，于是"弹窗之后走哪条路"第一次变成能在 CI
-里钉住的契约。
+测试只能把整段分支绕开。现在出口收敛成一个可注册的 handler：宿主启动时注入
+真实现（webui 注册的是"转 ValidationError"），CLI 与测试不注入就拿到**确定性
+默认值**，于是"弹窗之后走哪条路"第一次变成能在 CI 里钉住的契约。
 
-确认类默认 ``False`` 而不是 ``True``：确认框问的都是"要不要多做一件事"（续传上次
-批次、覆盖当前配置），无人应答时不做比做错容易恢复。
-
-文件选择框（``pick_open_path`` / ``pick_save_path``）走同一套分层，默认值是
-``None`` —— 与"用户按了取消"同义，四个调用点本来就有那条分支。
+v4.0 桌面版退役后剩下的生产调用方是 ``src/qr_utils.py``（二维码导入的三种
+提示）与 webui 的服务层。曾经的 confirm 出口与文件选择器（``pick_open_path`` /
+``pick_save_path``）随 GUI 一起没了调用方，v4.5 删除 —— 现存生产方只用提示
+三件套，见 ``_ask``。
 """
 
 from __future__ import annotations
@@ -21,7 +18,7 @@ from typing import Any, Callable
 
 logger = logging.getLogger("wjx.dialogs")
 
-PopupKind = str  # "info" | "warning" | "error" | "confirm"
+PopupKind = str  # "info" | "warning" | "error"
 PopupHandler = Callable[[PopupKind, str, str], Any]
 
 _handler: PopupHandler | None = None
@@ -67,52 +64,3 @@ def popup_warning(title: str, message: str) -> None:
 
 def popup_error(title: str, message: str) -> None:
     _ask("error", title, message, None)
-
-
-def popup_confirm(title: str, message: str) -> bool:
-    """是/否确认。无宿主或宿主抛错时返回 ``False``（理由见模块 docstring）。"""
-    return bool(_ask("confirm", title, message, False))
-
-
-# ============================================================================
-#  文件选择框：同一类阻塞，只是答案是路径而不是"是/否"
-# ============================================================================
-FilePickerKind = str  # "open" | "save"
-FilePicker = Callable[[FilePickerKind, dict[str, Any]], "str | None"]
-
-_picker: FilePicker | None = None
-
-
-def register_file_picker(picker: FilePicker | None) -> None:
-    global _picker
-    _picker = picker
-
-
-def current_file_picker() -> FilePicker | None:
-    return _picker
-
-
-def _pick(kind: FilePickerKind, options: dict[str, Any]) -> "str | None":
-    picker = _picker
-    if picker is None:
-        logger.warning("[picker:%s] %s（无 GUI 宿主，视为未选文件）", kind, options)
-        return None
-    try:
-        return picker(kind, options) or None
-    except Exception as exc:
-        # 与 popup 同一套理由：选文件失败不该让调用它的命令整段崩掉。
-        logger.warning(
-            "[picker:%s] 文件宿主执行失败，视为未选文件: %s: %s",
-            kind, type(exc).__name__, exc,
-        )
-        return None
-
-
-def pick_open_path(**options: Any) -> "str | None":
-    """``None`` = 用户取消 —— 四个调用点本来就各有"没选就不做"的分支。"""
-    return _pick("open", options)
-
-
-def pick_save_path(**options: Any) -> "str | None":
-    return _pick("save", options)
-

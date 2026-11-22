@@ -460,6 +460,54 @@ def test_script_is_syntactically_valid_js(name: str) -> None:
     )
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="本机无 node，跳过 JS 语法解析")
+def test_detect_questions_composed_script_is_syntactically_valid_js() -> None:
+    """v4.5：探测脚本拆成注册表段后，整段组合必须仍可被 node 解析。
+
+    detect_questions 从单块内联 JS 改成"前导工具 + 各题型段 + 后处理 + 执行入口"
+    的拼接（src/detection.py 的 _compose_detect_script）。拼接错了只有真浏览器
+    E2E 能发现 —— 这条把语法错误挡在离线层。各段自身的语义由 E2E 验证，
+    这里只管"拼起来是合法 JS"。
+    """
+    from src.detection import _compose_detect_script
+
+    body = _compose_detect_script()
+    # execute_script 的内容是函数体（含 return），必须包进 function 才能独立解析
+    wrapped = "function __probe() {" + body + "\n}\n"
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".js", delete=False, encoding="utf-8"
+    ) as fh:
+        fh.write(wrapped)
+        path = fh.name
+    try:
+        proc = subprocess.run(
+            ["node", "--check", path], capture_output=True, text=True, timeout=30
+        )
+    finally:
+        os.unlink(path)
+    assert proc.returncode == 0, (
+        f"detect_questions 组合脚本语法非法：\n{proc.stderr.strip()[:400]}\n"
+        f"--- 前 200 字符 ---\n{body[:200]}"
+    )
+
+
+def test_detection_pass_registry_order_is_semantic() -> None:
+    """探测注册表的顺序是语义，不是排版：后面的段读前面段写下的 type 决定认领。
+
+    矩阵量表（matrix_scale）只从 scale 手里抢、多空填空（multi_blank）只从
+    scale/text 手里抢 —— 顺序重排一次，三类题型的归属就全变，而离线 mock
+    对此毫无感知（它们只喂脚本、不执行脚本），只有 E2E 能看见。
+    """
+    from src.detection import _DETECTION_PASSES
+
+    names = [name for name, _js in _DETECTION_PASSES]
+    assert names[0] == "single_multi", "选择题是所有改判的基准，必须最先跑"
+    assert names.index("scale") < names.index("matrix_scale")
+    assert names.index("scale") < names.index("multi_blank")
+    assert names.index("text") < names.index("multi_blank")
+    assert names.index("titles") == len(names) - 1, "题干提取必须最后跑"
+
+
 def test_all_script_builders_are_covered_by_syntax_cases() -> None:
     """防止新增脚本生成器却忘了加进语法防线。
 
@@ -475,3 +523,23 @@ def test_all_script_builders_are_covered_by_syntax_cases() -> None:
     keys = list(_SCRIPT_CASES)
     missing = [b for b in builders if not any(k == b or k.startswith(b + "_") for k in keys)]
     assert not missing, f"以下脚本生成器未纳入 JS 语法测试：{missing}"
+
+
+def test_no_bare_selector_interpolation_into_js_single_quotes() -> None:
+    """v4.5：选择器内插进 JS 只许走 json.dumps，不许裸 ``querySelectorAll('{x}')``。
+
+    page_loader / page_nav / question_stage 曾有四处该形态的内插 —— 选择器含
+    单引号时拼出来的是非法 JS，而这类错误 node --check 与离线 mock 都看不见
+    （值来自常量，拼接发生在运行时）。这条在源码层堵住整类写法回潮。
+    """
+    import pathlib as _pathlib
+    import re as _re
+
+    src_root = _pathlib.Path(__file__).resolve().parent.parent / "src"
+    offenders = [
+        str(p.relative_to(src_root.parent))
+        for p in src_root.rglob("*.py")
+        if "__pycache__" not in str(p)
+        and _re.search(r"querySelectorAll\('\{", p.read_text(encoding="utf-8"))
+    ]
+    assert not offenders, f"仍有裸内插 selector 的 JS 拼接：{offenders}"

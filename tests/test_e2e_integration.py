@@ -521,7 +521,7 @@ def test_full_pipeline_fill_and_history(driver, history_db):
     """端到端：检测 → 生成答案 → 填写 DOM → 落 history → 断言 DOM/DB。"""
     from src.detection import detect_questions
     from src.answering_v2 import generate_answer
-    from src.interaction import (
+    from src.interactions import (
         js_click_question_options,
         js_fill_text,
         js_set_scale,
@@ -760,7 +760,7 @@ def test_full_pipeline_fill_and_history(driver, history_db):
 
 def test_submit_clicks_once_and_detects_ajax_success(driver):
     """提交必须恰好点一次，并通过页面文案（而非 URL 变化）判定成功。"""
-    from src.interaction import SUBMIT_SUCCESS, find_and_click_submit
+    from src.interactions import SUBMIT_SUCCESS, find_and_click_submit
 
     assert driver.execute_script("return window.__submitClicks;") == 0
 
@@ -823,7 +823,7 @@ def test_submit_does_not_reclick_when_page_is_busy(driver):
     """
     from selenium.common.exceptions import WebDriverException
 
-    from src.interaction import find_and_click_submit
+    from src.interactions import find_and_click_submit
 
     before = driver.execute_script("return window.__submitClicks;")
 

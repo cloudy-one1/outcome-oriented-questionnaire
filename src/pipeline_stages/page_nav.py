@@ -36,7 +36,7 @@ NEXT_PAGE_SELECTORS: list[str] = list(WJX.next_page_selectors)
 # 分页结构探测：至少要看到 2 个分页容器才承认"这是分页问卷"
 _PAGE_WRAPPER_SEL = WJX.page_wrapper_selector
 _DETECT_PAGES_JS = f"""
-var nodes = document.querySelectorAll('{_PAGE_WRAPPER_SEL}');
+var nodes = document.querySelectorAll({json.dumps(_PAGE_WRAPPER_SEL)});
 var ctl = [];
 for (var i = 0; i < nodes.length; i++) {{
     var n = nodes[i];

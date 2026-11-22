@@ -1,13 +1,19 @@
 # 问卷星自动填写工具
 
-> 基于 Selenium Stealth 的问卷星批量填写与提交工具：加权随机作答、人类行为模拟、可靠的三态提交语义，提供 CLI 与本地 Web 控制台两种入口。
+> 问卷星（wjx.cn）的批量假答卷制造工具：合成含真校验位身份证号的假身份作答，按权重 / 配额 / 信度（Cronbach α）目标控制答案分布，模拟人类行为并注入反检测指纹，把"看起来像真人填的问卷"成批提交上去。提供 CLI 与本地 Web 控制台两种入口。
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![CI](https://github.com/cloudy-one1/outcome-oriented-questionnaire/actions/workflows/ci.yml/badge.svg)](https://github.com/cloudy-one1/outcome-oriented-questionnaire/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/Version-4.4.0-brightgreen.svg)](CHANGELOG.md)
 
-本工具仅供学习与研究 Selenium 浏览器自动化技术使用，请遵守问卷星平台使用条款与相关法律法规（见[免责声明](#免责声明)）。
+## 先说清楚：这是什么
+
+**它做的事是数据造假。** 每一份提交都是一个虚构的"人"：身份信息由 `src/persona.py` 合成（身份证号按 GB/T 2260 号段组装、校验位真算），答案由加权随机 / 配额 / 信度控制生成，行为与指纹为绕过机器识别而随机化。它有没有"价值"，取决于平台和看答卷的人分不分得出真假 —— 本 README 其余部分描述的所有能力，都服务于这一点。
+
+**测试全绿 ≠ 工具能用。** 全套门禁（离线套件、浏览器 E2E、类型检查）只对着仓库里自编的 mock 页面（`tests/fixtures/`）与替身对象运行；E2E 的"真浏览器"指真的 Edge/Chrome 加载本地 mock HTML，不是真实问卷星页面。平台改版或风控升级，不会有任何一条门禁变红 —— 判断工具是否仍然可用，只能在自有或已获授权的问卷上实测。
+
+**用之前想清楚。** 对真实投放的问卷批量提交假答卷，违反问卷星使用条款，也可能违反相关法律法规；三项深水区能力（`--alpha-target` / `--quota` / `--replay-file`）可以刻意制造"通过信度检验"的数据，只适用于自有或已获授权的测试问卷。其余边界与取舍见[免责声明](#免责声明)。
 
 ## 介绍视频
 
@@ -173,12 +179,12 @@ python -m ruff check . && npx pyright             # 静态检查 + 类型检查
 
 ## 免责声明
 
-本工具仅供学习和研究 Selenium 自动化技术使用。请遵守问卷星平台的使用条款和相关法律法规，不得用于刷票、刷量等任何违规或违法用途。使用者需自行承担所有责任。
+如[开头](#先说清楚这是什么)所述：本工具批量制造假问卷数据，对真实投放的问卷使用它违反问卷星平台使用条款，可能违反相关法律法规，并会污染依赖该问卷得出的任何结论。使用者自行承担全部责任；本项目按 MIT 提供代码，不对任何使用后果负责。
 
 `--alpha-target` 让工具的能力边界从"填得完"扩到"让造出来的数据通过信度检验"，
 `--quota` 把自定义比例从概率收敛升级为**记账精确**的批量配额，
 `--replay-file` 则是把真实答卷搬进提交链路。这三件事**只适用于自有或已获授权的测试问卷**
-（验证算法用）；拿它们去生产环境里制造"看着像真研究数据"的样本，就是本段禁止的刷量本身
+（验证算法用）；拿它们去生产环境里制造"看着像真研究数据"的样本，就是开头所说的数据造假本身
 （设计稿对这一条的表述见 [DESIGN_reliability_alpha.md](docs/design/DESIGN_reliability_alpha.md) §0
 与 [DESIGN_quota_scheduling.md](docs/design/DESIGN_quota_scheduling.md)）。
 

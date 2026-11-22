@@ -1,17 +1,14 @@
-"""V2.3 数据模型单元测试。
+"""``src/models.py`` 的数据契约测试。
 
-覆盖 ``src/models.py`` 引入的 4 个 dataclass + QuestionType 枚举:
+覆盖三个仍在生产链路上的模型：
 
   - QuestionType.from_str 别名解析 + 大小写 + 未知抛 ValueError
   - QuestionType 与字符串字面量 == 兼容（QuestionType.SINGLE == "single"）
-  - QuestionData.from_dict / as_dict 互逆（含 6 类题型）
-  - AnswerData.from_dict / as_dict 互逆（含 6 类题型）
-  - SubmitResult.success / failed / unknown 工厂 + is_* 属性
-  - WeightConfigEntry.from_dict / as_dict 互逆（含 6 类题型）
+  - RunState 状态对象的计数与 history 状态判定
 
-设计要求（对照「代码可读性改进建议」第三章）:
-  - 数据模型必须与现有 dict 接口双向兼容,保证旧代码无破坏
-  - QuestionType 用枚举替代散落的字符串字面量,减少拼写错误风险
+v2.3 曾引入的 4 个题型 dataclass（QuestionData/AnswerData/SubmitResult/
+WeightConfigEntry）零生产调用、以"契约文档"名义空挂 9 个版本，v4.5 删除；
+本文件当年的往返用例随之退役 —— 死代码不再用测试续命。
 """
 
 from __future__ import annotations
@@ -24,15 +21,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 
-from src.interaction import SUBMIT_FAILED, SUBMIT_SUCCESS, SUBMIT_UNKNOWN
 from src.models import (
     QUESTION_TYPE_ALIASES,
-    AnswerData,
-    QuestionData,
     QuestionType,
     RunState,
-    SubmitResult,
-    WeightConfigEntry,
     normalize_question_type,
 )
 
@@ -86,189 +78,6 @@ class TestQuestionType(unittest.TestCase):
         """``str(QuestionType.SINGLE)`` 应返回 ``"single"`` 而非 ``"QuestionType.SINGLE"``。"""
         self.assertEqual(str(QuestionType.SINGLE), "single")
         self.assertEqual(str(QuestionType.MATRIX_SINGLE), "matrix_single")
-
-
-class TestQuestionDataRoundtrip(unittest.TestCase):
-    """QuestionData from_dict / as_dict 互逆性。"""
-
-    def test_single_question_roundtrip(self) -> None:
-        """单选题 dict → QuestionData → dict 应等价。"""
-        d = {"q": 1, "type": "single", "choices": [1, 2, 3, 4]}
-        q = QuestionData.from_dict(d)
-        self.assertEqual(q.q, 1)
-        self.assertEqual(q.type, QuestionType.SINGLE)
-        self.assertEqual(q.choices, [1, 2, 3, 4])
-        self.assertEqual(q.as_dict(), d)
-
-    def test_multi_question_roundtrip(self) -> None:
-        d = {"q": 2, "type": "multi", "choices": [1, 2, 3]}
-        q = QuestionData.from_dict(d)
-        self.assertEqual(q.type, QuestionType.MULTI)
-        self.assertEqual(q.as_dict(), d)
-
-    def test_dropdown_question_roundtrip(self) -> None:
-        """下拉题 choices 可以是 str 列表。"""
-        d = {"q": 3, "type": "dropdown", "choices": ["A", "B", "C"]}
-        q = QuestionData.from_dict(d)
-        self.assertEqual(q.type, QuestionType.DROPDOWN)
-        self.assertEqual(q.choices, ["A", "B", "C"])
-        self.assertEqual(q.as_dict(), d)
-
-    def test_scale_question_roundtrip(self) -> None:
-        d = {"q": 4, "type": "scale", "scale": 5, "scale_min": 1}
-        q = QuestionData.from_dict(d)
-        self.assertEqual(q.type, QuestionType.SCALE)
-        self.assertEqual(q.scale, 5)
-        self.assertEqual(q.scale_min, 1)
-        self.assertEqual(q.as_dict(), d)
-
-    def test_text_question_roundtrip(self) -> None:
-        d = {"q": 5, "type": "text", "field": "name"}
-        q = QuestionData.from_dict(d)
-        self.assertEqual(q.type, QuestionType.TEXT)
-        self.assertEqual(q.field, "name")
-        self.assertEqual(q.as_dict(), d)
-
-    def test_matrix_question_roundtrip(self) -> None:
-        d = {"q": 6, "type": "matrix_single", "rows": [1, 2, 3], "cols": [1, 2, 3, 4, 5]}
-        q = QuestionData.from_dict(d)
-        self.assertEqual(q.type, QuestionType.MATRIX_SINGLE)
-        self.assertEqual(q.rows, [1, 2, 3])
-        self.assertEqual(q.cols, [1, 2, 3, 4, 5])
-        self.assertEqual(q.as_dict(), d)
-
-    def test_question_with_unknown_type_falls_back_to_single(self) -> None:
-        """未知题型字符串应落回 SINGLE（与 answering_v2 兜底一致）,不抛异常。"""
-        q = QuestionData.from_dict({"q": 99, "type": "weird_type", "choices": [1]})
-        self.assertEqual(q.type, QuestionType.SINGLE)
-
-
-class TestAnswerDataRoundtrip(unittest.TestCase):
-    """AnswerData from_dict / as_dict 互逆性。"""
-
-    def test_single_answer_roundtrip(self) -> None:
-        d = {"type": "single", "selected": [3]}
-        a = AnswerData.from_dict(d)
-        self.assertEqual(a.type, QuestionType.SINGLE)
-        self.assertEqual(a.selected, [3])
-        self.assertEqual(a.as_dict(), d)
-
-    def test_multi_answer_roundtrip(self) -> None:
-        d = {"type": "multi", "selected": [1, 3]}
-        a = AnswerData.from_dict(d)
-        self.assertEqual(a.type, QuestionType.MULTI)
-        self.assertEqual(a.selected, [1, 3])
-        self.assertEqual(a.as_dict(), d)
-
-    def test_scale_answer_roundtrip(self) -> None:
-        d = {"type": "scale", "value": 5}
-        a = AnswerData.from_dict(d)
-        self.assertEqual(a.type, QuestionType.SCALE)
-        self.assertEqual(a.value, 5)
-        self.assertEqual(a.as_dict(), d)
-
-    def test_text_answer_roundtrip(self) -> None:
-        d = {"type": "text", "text": "张三", "field": "name"}
-        a = AnswerData.from_dict(d)
-        self.assertEqual(a.type, QuestionType.TEXT)
-        self.assertEqual(a.text, "张三")
-        self.assertEqual(a.field, "name")
-        self.assertEqual(a.as_dict(), d)
-
-    def test_matrix_answer_roundtrip(self) -> None:
-        d = {"type": "matrix_single", "rows": {1: 3, 2: 5, 3: 1}}
-        a = AnswerData.from_dict(d)
-        self.assertEqual(a.type, QuestionType.MATRIX_SINGLE)
-        self.assertEqual(a.rows, {1: 3, 2: 5, 3: 1})
-        self.assertEqual(a.as_dict(), d)
-
-
-class TestSubmitResult(unittest.TestCase):
-    """SubmitResult 工厂与状态属性。"""
-
-    def test_success_factory_and_properties(self) -> None:
-        r = SubmitResult.success(elapsed_ms=150, selector="#divSubmit")
-        self.assertTrue(r.is_success)
-        self.assertFalse(r.is_failed)
-        self.assertFalse(r.is_unknown)
-        self.assertEqual(r.outcome, SUBMIT_SUCCESS)
-        self.assertEqual(r.elapsed_ms, 150)
-        self.assertEqual(r.detail.get("selector"), "#divSubmit")
-
-    def test_failed_factory_carries_reason(self) -> None:
-        r = SubmitResult.failed("按钮定位失败", selector_list=["#a", "#b"])
-        self.assertTrue(r.is_failed)
-        self.assertFalse(r.is_success)
-        self.assertEqual(r.outcome, SUBMIT_FAILED)
-        self.assertEqual(r.reason, "按钮定位失败")
-        self.assertEqual(r.detail.get("selector_list"), ["#a", "#b"])
-
-    def test_unknown_factory_carries_reason(self) -> None:
-        r = SubmitResult.unknown("等待 URL 变化超时", elapsed_ms=6000, timeout=6.0)
-        self.assertTrue(r.is_unknown)
-        self.assertFalse(r.is_failed)
-        self.assertEqual(r.outcome, SUBMIT_UNKNOWN)
-        self.assertEqual(r.reason, "等待 URL 变化超时")
-        self.assertEqual(r.detail.get("timeout"), 6.0)
-
-
-class TestWeightConfigEntryRoundtrip(unittest.TestCase):
-    """WeightConfigEntry from_dict / as_dict 互逆性。"""
-
-    def test_single_weight_roundtrip(self) -> None:
-        d = {"type": "single", "weights": [0.1, 0.3, 0.5, 0.1]}
-        w = WeightConfigEntry.from_dict(d)
-        self.assertEqual(w.type, QuestionType.SINGLE)
-        self.assertEqual(w.weights, [0.1, 0.3, 0.5, 0.1])
-        self.assertEqual(w.as_dict(), d)
-
-    def test_multi_weight_roundtrip_with_count(self) -> None:
-        d = {
-            "type": "multi",
-            "weights": [0.1, 0.2, 0.3, 0.4],
-            "count_options": [2, 3],
-            "count_weights": [0.4, 0.6],
-        }
-        w = WeightConfigEntry.from_dict(d)
-        self.assertEqual(w.type, QuestionType.MULTI)
-        self.assertEqual(w.count_options, [2, 3])
-        self.assertEqual(w.count_weights, [0.4, 0.6])
-        self.assertEqual(w.as_dict(), d)
-
-    def test_scale_weight_roundtrip(self) -> None:
-        d = {"type": "scale", "scale": 5, "weights": [0.0, 0.0, 0.1, 0.4, 0.5]}
-        w = WeightConfigEntry.from_dict(d)
-        self.assertEqual(w.type, QuestionType.SCALE)
-        self.assertEqual(w.scale, 5)
-        self.assertEqual(w.as_dict(), d)
-
-    def test_text_weight_roundtrip_with_options(self) -> None:
-        d = {"type": "text", "field": "name", "options": ["张三", "李四"]}
-        w = WeightConfigEntry.from_dict(d)
-        self.assertEqual(w.type, QuestionType.TEXT)
-        self.assertEqual(w.field, "name")
-        self.assertEqual(w.options, ["张三", "李四"])
-        self.assertEqual(w.as_dict(), d)
-
-    def test_matrix_weight_roundtrip(self) -> None:
-        d = {
-            "type": "matrix_single",
-            "rows": [1, 2, 3],
-            "cols": [1, 2, 3, 4, 5],
-            "row_weights": {
-                "1": [0.0, 0.0, 0.1, 0.4, 0.5],
-                "2": [0.1, 0.2, 0.3, 0.3, 0.1],
-                "3": [1.0, 0.0, 0.0, 0.0, 0.0],
-            },
-        }
-        w = WeightConfigEntry.from_dict(d)
-        self.assertEqual(w.type, QuestionType.MATRIX_SINGLE)
-        self.assertEqual(w.rows, [1, 2, 3])
-        self.assertEqual(w.cols, [1, 2, 3, 4, 5])
-        self.assertEqual(w.row_weights["1"], [0.0, 0.0, 0.1, 0.4, 0.5])
-        # as_dict 应保留 row_weights 的键类型(JSON 友好 str)
-        out = w.as_dict()
-        self.assertEqual(out["row_weights"], d["row_weights"])
 
 
 class TestRunState(unittest.TestCase):
