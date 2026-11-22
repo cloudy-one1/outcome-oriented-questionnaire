@@ -127,7 +127,7 @@ def drift_report() -> dict[int, dict[str, float]]:
         if st.delivered <= 0:
             continue
         worst = 0.0
-        for idx, cnt in st.counts.items():
+        for cnt in st.counts.values():
             worst = max(worst, abs(cnt / st.delivered))
         out[qnum] = {"delivered": float(st.delivered), "max_share": worst}
     return out

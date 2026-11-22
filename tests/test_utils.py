@@ -89,7 +89,7 @@ class TestRetryWithBackoff(unittest.TestCase):
         # 4 次调用 → 3 次等待 (attempt 1→2, 2→3, 3→4)
         self.assertEqual(len(delays), 3)
         expected = [0.01, 0.02, 0.04]
-        for got, exp in zip(delays, expected):
+        for got, exp in zip(delays, expected, strict=True):
             self.assertAlmostEqual(got, exp, delta=1e-6)
 
     def test_jitter_keeps_delay_within_range(self) -> None:
@@ -108,7 +108,7 @@ class TestRetryWithBackoff(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             f()
         base = [0.08, 0.16, 0.32]
-        for got, b in zip(delays, base):
+        for got, b in zip(delays, base, strict=True):
             self.assertGreaterEqual(got, 0.5 * b)
             self.assertLessEqual(got, 1.5 * b)
 

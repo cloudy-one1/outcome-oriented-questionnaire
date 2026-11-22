@@ -405,7 +405,7 @@ def build_plan(
         # 夹在中间"就是细化窗口。取第一个跨零区间；浮点噪声造成的局部反号在这里
         # 最多让窗口选偏一格，后面 4 次线性内插会收回来。
         bracket: Optional[tuple[tuple[float, float], tuple[float, float]]] = None
-        for lo, hi in zip(scored, scored[1:]):
+        for lo, hi in zip(scored, scored[1:], strict=False):  # 刻意错位配对相邻元素
             if (lo[1] - target) * (hi[1] - target) <= 0.0:
                 bracket = (lo, hi)
                 break
@@ -455,7 +455,7 @@ def build_plan(
 
     planned: dict[int, tuple[int, ...]] = {}
     quotas: dict[int, tuple[int, ...]] = {}
-    for spec, row in zip(items, rows):
+    for spec, row in zip(items, rows, strict=True):
         planned[spec.qnum] = row
         quotas[spec.qnum] = tuple(spec.quota)
 
@@ -466,7 +466,7 @@ def build_plan(
     # 所以无论 α 落不落在目标上，逐题配额都是精确的；绝不为了把 α 凑上去动一格。
     # 下面这段是把这件事**验证**一遍（正常永不触发，触发即内核 bug），
     # 而不是给它一条"那就牺牲配额"的退路。
-    for spec, row in zip(items, rows):
+    for spec, row in zip(items, rows, strict=True):
         realized = _realized_counts(row, spec.options)
         if realized != tuple(spec.quota):
             notes.append(

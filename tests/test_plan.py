@@ -217,7 +217,7 @@ def test_measured_alpha_is_monotone_non_decreasing_in_target() -> None:
         observed.append(measured)
         sigmas.append(plan.sigma_e)
 
-    for earlier, later in zip(observed, observed[1:]):
+    for earlier, later in zip(observed, observed[1:], strict=False):  # 刻意错位配对
         assert earlier <= later + 1e-9, f"实测 α 随目标反降：{observed}"
     assert observed[-1] - observed[0] > 0.10          # 差异得是实打实的，不是贴着噪声
     # 目标越高 ⇒ 允许的错误方差越小 ⇒ σ_e 越小（与解析值同向）

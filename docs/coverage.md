@@ -12,7 +12,7 @@
 | 范围 | 离线覆盖率 |
 |---|---|
 | 全部 | **92.8%** |
-| `src/` | 91.4%（5364 条语句剩 459 行） |
+| `src/` | 91.4%（5352 条语句剩 459 行） |
 | `webui/` | 98.0%（1427 条语句剩 28 行） |
 
 #### 已补齐的缺口（"补齐前"一列是登记时的实测）
@@ -33,7 +33,7 @@
 | 模块 | 离线覆盖率 | 为什么还留着 |
 |---|---|---|
 | `src/pipeline_stages/question_stage.py` | 70.2% | 逐题 DOM 交互主干：等待、「哪道题调哪个填充器」的分发、带框选项只勾不填的降级都已有离线测试（`tests/test_question_stage_dispatch.py`），真实点击仍靠 E2E |
-| `src/qr_utils.py` | 51.5% | 缺口全在「真的解一张图」那 16 行：要 OpenCV，而 CI 口径不装可选依赖，`tests/test_qr_utils.py` 里两条真读图用例因此 skip。缺依赖时的降级顺序、失败路径提示几次与是哪一类、解不出必给 None 都已有契约。该模块 v3.4 从 `gui/` 移到 `src/`，v4.0 桌面版退役后它是 webui 独占的可选依赖路径 |
+| `src/qr_utils.py` | 51.4% | 缺口全在「真的解一张图」那 16 行：要 OpenCV，而 CI 口径不装可选依赖，`tests/test_qr_utils.py` 里两条真读图用例因此 skip。缺依赖时的降级顺序、失败路径提示几次与是哪一类、解不出必给 None 都已有契约。该模块 v3.4 从 `gui/` 移到 `src/`，v4.0 桌面版退役后它是 webui 独占的可选依赖路径 |
 
 > 本块由 `python scripts/coverage_doc.py --write` 从 `coverage.json` 生成，`--check` 已进 CI 当门禁
 > —— 手改这里的数字会在下次推送时红掉。`--write` 会拒绝装了 `opencv-python` /

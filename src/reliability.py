@@ -98,7 +98,8 @@ def cronbach_alpha(items: Sequence[Sequence[float]]) -> float | None:
         return math.fsum((x - mean) ** 2 for x in xs) / (n - 1)
 
     item_var_sum = math.fsum(_var(row) for row in items)
-    totals = [math.fsum(col) for col in zip(*items)]
+    # strict=True：行参差（漏记一格）会让 α 静默算错而不是报错
+    totals = [math.fsum(col) for col in zip(*items, strict=True)]
     var_total = _var(totals)
     if var_total <= 0.0:
         return None
@@ -345,7 +346,7 @@ def measure_dimensions(
         obs_max = max(max(r) for r in matrix)
         if rev_applied:
             flipped: list[list[float]] = []
-            for q, row in zip(usable, matrix):
+            for q, row in zip(usable, matrix, strict=True):
                 if q in reverse_set:
                     flip = min(row) + max(row)
                     flipped.append([flip - x for x in row])

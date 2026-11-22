@@ -1491,7 +1491,7 @@ def test_a_fully_done_or_zero_done_batch_is_not_offered(tmp_path):
         sess, svc, calls, _db = make_runner(tmp_path, prev=prev)
         sess.set_field("url", "https://x.test/s")
         asked: list = []
-        svc._confirm = lambda title, msg: asked.append(title) or False
+        svc._confirm = lambda title, msg, _a=asked: _a.append(title) or False
         svc.start_run()
         assert svc.wait_for_run(5)
         assert asked == []

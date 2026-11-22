@@ -126,7 +126,7 @@ def test_the_two_code_spaces_are_not_one() -> None:
     """拿官方 `q_type` 替换页面容器 `type` 码表，会把填空题当成分页栏 —— 这条专门挡它。"""
     api = SNAPSHOT["api_qtype_codes"]
     by_name = {entry.label: code for code, entry in WJX_TYPE_CODES.items()}   # 码就是字典的键
-    for ours_label, (our_code, official_name, official_q_type) in DIVERGENT.items():
+    for ours_label, (our_code, official_name, _official_q_type) in DIVERGENT.items():
         assert our_code in WJX_TYPE_CODES, f"我们的容器码 {our_code}（{ours_label}）不在码表里了"
         assert by_name[ours_label] == our_code
         assert api[official_name][0] != int(our_code), (

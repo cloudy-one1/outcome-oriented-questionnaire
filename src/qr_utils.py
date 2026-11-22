@@ -1,6 +1,11 @@
 """二维码解析工具。
 
-依赖 OpenCV（pip install opencv-python），未安装时返回 None 并给出提示。
+依赖 OpenCV（pip install opencv-python，numpy 随其自带），未安装时返回 None
+并给出提示。
+
+v4.5：numpy 的导入从模块级无条件语句收进下面的可选块 —— 此前它顶着"可选
+依赖路径"的名字却在导入层硬性要求 numpy，核心依赖一移除 numpy 本模块就
+炸掉别人的收集（test_qr_utils 在无 numpy 环境收集即错）。
 """
 
 from __future__ import annotations
@@ -8,23 +13,24 @@ from __future__ import annotations
 import importlib
 from typing import Any
 
-import numpy as np
-
 # 提示出口走 src.dialogs 间接层：本模块因此不再 import tkinter，在没有显示的
 # 环境里也能被导入，失败路径的"提示了几次、是哪一类"由离线测试钉住。
 from src.dialogs import popup_error, popup_info, popup_warning
 
-# OpenCV — 用于二维码解析（可选依赖）。
+# OpenCV + numpy — 用于二维码解析（可选依赖，numpy 随 opencv-python 自带）。
 # 用 importlib 而不是 "try: import cv2 / except ImportError + # type: ignore"：
 # 后者在装了 cv2 的环境里被 pyright 判成冗余 ignore，在没装的环境里又报模块解析不了，
 # 两侧各留一条 warning —— 数量会随环境 ±1，gui 纳入门禁时必须先把它消掉（v2.8）。
 cv2: Any = None
+np: Any = None
 try:
     cv2 = importlib.import_module("cv2")
+    np = importlib.import_module("numpy")
 except ImportError:
-    pass
+    cv2 = None
+    np = None
 
-_HAS_CV2 = cv2 is not None
+_HAS_CV2 = cv2 is not None and np is not None
 
 
 def has_cv2() -> bool:

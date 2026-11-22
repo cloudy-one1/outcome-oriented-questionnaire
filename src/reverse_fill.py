@@ -634,7 +634,7 @@ def _option_pairs(question: dict[str, Any]) -> list[tuple[Any, str]]:
     """``(选项 value, 选项文本)`` 对；value 进答案，文本只用来认格子。"""
     choices = list(question.get("choices") or [])
     texts = _option_texts(question, choices)
-    return list(zip(choices, texts))
+    return list(zip(choices, texts, strict=True))
 
 
 def _option_texts(question: dict[str, Any], choices: list[Any]) -> list[str]:

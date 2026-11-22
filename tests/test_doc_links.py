@@ -82,7 +82,7 @@ LINKS = local_links()
 pytestmark = pytest.mark.skipif(not LINKS, reason="对外文档里一个本地链接都没有，没什么可查的")
 
 
-@pytest.mark.parametrize("doc,link", LINKS, ids=[f"{d.name}:{l}" for d, l in LINKS])
+@pytest.mark.parametrize("doc,link", LINKS, ids=[f"{d.name}:{lk}" for d, lk in LINKS])
 def test_local_link_resolves(doc: Path, link: str) -> None:
     path, _, anchor = link.partition("#")
     target = (doc.parent / path).resolve() if path else doc
@@ -94,7 +94,7 @@ def test_local_link_resolves(doc: Path, link: str) -> None:
             f"标题改过名，或者当初就没这个标题")
 
 
-@pytest.mark.parametrize("doc,link", LINKS, ids=[f"{d.name}:{l}" for d, l in LINKS])
+@pytest.mark.parametrize("doc,link", LINKS, ids=[f"{d.name}:{lk}" for d, lk in LINKS])
 def test_linked_file_is_in_the_repository(doc: Path, link: str) -> None:
     """本地存在不等于仓库里有 —— ``docs/*`` 那条忽略规则就是专坑这一步的。"""
     path = link.partition("#")[0]

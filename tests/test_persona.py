@@ -34,7 +34,8 @@ def _fresh_persona():
 
 def _check_digit(body17: str) -> str:
     """ISO 7064 MOD 11-2：与 src/persona 无关的第二份实现。"""
-    return _ID_CHECK[sum(int(c) * w for c, w in zip(body17, _ID_WEIGHTS)) % 11]
+    return _ID_CHECK[sum(int(c) * w for c, w in zip(body17, _ID_WEIGHTS,
+                                                    strict=True)) % 11]
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +88,7 @@ def test_id_card_region_uses_the_real_gb_city_code() -> None:
                for name, real in cities}
     assert claimed, "地区表不能是空的"
     # 名录里每个市的 4 位市码必须落在 GB 序上（省码 + 两位数字）
-    for (prov, name), code4 in claimed.items():
+    for (_prov, name), code4 in claimed.items():
         assert re.fullmatch(r"\d{2}", str(code4)), (name, code4)
     # 按省抽人，前 6 位必须与该省名录中某条 (码) 精确一致（不是"顺位拼出来"的值）
     per_province = {}

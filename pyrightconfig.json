@@ -19,9 +19,15 @@
   // v4.2：scripts/ 纳入 —— 三个门禁脚本（coverage_doc / e2e_gate / ci_annotate）
   // 自己写坏了类型只有跑起来才炸，行为测试兜不住类型面。tests/ 仍留门外：
   // 1.2 万行测试的类型收益低、改动成本高，是记录在案的决策（见 test_ci_guards）。
+  //
+  // v4.5：basic → **standard**（pyright 的默认档，比 basic 多出覆写兼容性等
+  // 一批诊断）。升档当天只暴露 1 条真问题（server.py 的 log_message 形参改名），
+  // 当场修掉。再往上的 strict 实测 1224 条 —— 全是 JS↔Python 边界的
+  // reportUnknown* 系列，types 化是一次专门的类型化战役（探测 dict、答案 dict、
+  // 配置 dict 三大边界），不做半吊子开闸。
   "include": ["src", "webui", "scripts", "run_cli.py", "run_web.py", "conftest.py"],
   "exclude": ["**/__pycache__", ".pytest_cache", ".ruff_cache"],
-  "typeCheckingMode": "basic",
+  "typeCheckingMode": "standard",
   "pythonVersion": "3.10",
   "reportMissingImports": "warning",
   "reportMissingModuleSource": "none",

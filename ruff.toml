@@ -20,5 +20,11 @@ select = [
     "F401",  # 未使用的 import（防止"看着在用其实没接"）
     "F841",  # 赋值后从未使用的局部变量（--resume 类接线断裂的信号）
     "F541",  # 无占位符的 f-string（print 文案里的假 f-string）
+    # V4.5 加严（对照批判式审查的"门禁话术跑在配置前面"）：
+    "E7",   # pycodestyle 比较类：== None/True/False、裸 except、lambda 赋值、
+            # 歧义单字符名 —— 全是零误报的确定性缺陷
+    "W",    # 尾随空白/空行噪音（--fix 全自动，零语义风险）
+    "B",    # flake8-bugbear：可变默认参数、except 里裸 raise、循环绑定陷阱等
+            # 确定性正确性检查（B020/B905 一类需逐条看，真误报用 per-file-ignores）
 ]
 

@@ -269,7 +269,7 @@ def _id_card(rng: random.Random, region6: str, birth: str, gender: str) -> str:
     seq = rng.randint(0, 99) * 10               # 前两位顺序码
     last = seq + (1 if gender == "M" else 2)    # 末位奇=男、偶=女（2 而非 0，避免全偶）
     body = f"{region6}{birth}{last:03d}"
-    total = sum(int(ch) * w for ch, w in zip(body, _ID_WEIGHTS))
+    total = sum(int(ch) * w for ch, w in zip(body, _ID_WEIGHTS, strict=True))
     return body + _ID_CHECK_CHARS[total % 11]
 
 

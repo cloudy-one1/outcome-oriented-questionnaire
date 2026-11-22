@@ -13,19 +13,20 @@
 #
 #  审查 P2-4 整改：
 #    - 依赖版本锁定到具体 minor.patch，避免环境差异导致回归难以复现
-#    - 实测可用版本（Python 3.13.2 + selenium 4.39.0 + numpy 2.2.4）
+#    - 实测可用版本（Python 3.13.2 + selenium 4.39.0）
 #    - 如需完全可复现构建，可执行 `pip freeze > requirements.lock` 生成
 #      含传递依赖的完整锁定文件，或用 `pip install --require-hashes -r ...`
 #      （需配合 `pip-compile` / `pip-tools` 生成带哈希的 lock 文件）
+#
+#  v4.5：numpy 移出核心依赖 —— 抽样改走 utils.py 的纯 stdlib A-Res 实现
+#  （分布等价，见该函数 docstring）；opencv-python 装上时会自己带上 numpy，
+#  二维码可选路径不受影响。
 # ============================================================================
 
 # ---- 核心依赖（必须，已锁定到实测可用版本） ----
 # selenium 4.x 内置 Selenium Manager 自动管理 Edge / Chrome WebDriver，
 # 不需要再单独下载 driver 二进制；4.39 LTS 经过实测可稳定跑通 V2 全题型 E2E。
 selenium==4.39.0
-# numpy 已升级到 2.x（V2.2.4 实测可正常处理多选题无放回加权抽样，
-# 旧版 requirements.txt 写的 <2.0 会让新装环境装到 1.26 反而与 Python 3.13 不兼容）。
-numpy==2.2.4
 
 # ---- 可选依赖（功能增强 / 反检测，已锁定版本） ----
 # undetected-chromedriver==3.5.5  # [仅 Chrome] 更强的反检测模式；

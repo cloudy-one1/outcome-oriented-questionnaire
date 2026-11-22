@@ -4,6 +4,29 @@
 
 ## [未发布]
 
+### 依赖瘦身与门禁加严（批判式审查清单的最后两项）
+
+- **numpy 移出核心依赖**：加权无放回抽样并成一条腿 —— utils 的
+  `weighted_sample_no_replace` 删掉 `np.random.choice` 快路径，只留纯 stdlib 的
+  A-Res（Efraimidis & Spirakis）实现。两条腿分布等价但 RNG 流不同，行为差异只会
+  来自"修了一边忘了另一边"（v2.x 真实发生过）；并腿后 `requirements.txt` /
+  `pyproject.toml` 双删 `numpy==2.2.4`（test_packaging 的镜像契约钉着两边一致）。
+  验证方式：门禁 venv 卸载 numpy 后全量离线套件 1669 项全过 —— 无隐藏依赖。
+- **顺手抓到的潜伏 bug**：`src/qr_utils.py` 顶着"可选依赖路径"的名字，却在导入层
+  无条件 `import numpy` —— 核心依赖一移除，test_qr_utils 的收集直接炸。numpy 与
+  cv2 一起收进可选块（numpy 随 opencv-python 自带，两条判断合一）。
+- **ruff 门禁加严**：新增 `E7`（比较类确定性缺陷）/ `W`（空白噪音，--fix 自动）/
+  `B`（flake8-bugbear）三组规则，对照审查指出的"门禁话术跑在配置前面"。存量 20 条
+  全部清零，其中 B905 逐处定案：等长不变量（身份证校验位、spec×plan、α 转置等）
+  显式 `strict=True` —— 行参差从静默算错变成当场报错；刻意错位配对
+  （`zip(scored, scored[1:])` 一类）显式 `strict=False` 并注明为什么。
+  B023 抓到 test_webui_service 一处循环内 lambda 绑定外层变量的隐患，默认参数绑定修复。
+- **pyright basic → standard**：升档实测只暴露 1 条真问题（`log_message` 形参改名
+  与基类不兼容覆写），当场修掉。再上一档 strict 实测 **1224 条**，全是 JS↔Python
+  边界的 reportUnknown* 系列（探测/答案/配置三大 dict 边界）—— types 化是一次
+  专门的类型化战役，不做半吊子开闸，记档于此。
+
+
 ## [4.5.0] - 2026-11-22
 
 ### 行为缺陷修复（引擎深审整改）

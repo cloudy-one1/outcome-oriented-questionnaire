@@ -138,7 +138,7 @@ def test_alpha_rises_with_k_at_fixed_rho() -> None:
 
     assert observed[0] < observed[1] < observed[2]
     expected = [k * rho / (1.0 + rho * (k - 1)) for k in ks]   # 0.800 / 0.889 / 0.941
-    for got, exp in zip(observed, expected):
+    for got, exp in zip(observed, expected, strict=True):
         assert got == pytest.approx(exp, abs=0.06)
 
 

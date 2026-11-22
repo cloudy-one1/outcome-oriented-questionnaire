@@ -17,17 +17,6 @@ import threading
 import time
 from typing import Any, Callable, Optional, TypeVar, cast
 
-# numpy 可选：装了就用其高效的无放回加权抽样，没装走纯 Python A-Res 算法
-# numpy 是可选依赖。显式把 np 声明成 Any，避免 pyright 把它推成
-# "Module | None" 后，对 np.random.choice 报 reportOptionalMemberAccess。
-np: Any
-try:
-    import numpy as np
-    _HAS_NUMPY: bool = True
-except Exception:  # pragma: no cover - 环境缺 numpy 时走纯 Python 路径
-    np = None
-    _HAS_NUMPY = False
-
 
 _Fn = TypeVar("_Fn", bound=Callable[..., Any])
 
@@ -338,7 +327,7 @@ def sanitize_weights(
 
 
 # ============================================================================
-#  加权无放回抽样（单一实现：numpy 快路径 + A-Res 等价兜底）
+#  加权无放回抽样（单一实现：A-Res，纯 stdlib）
 # ============================================================================
 
 def weighted_sample_no_replace(
@@ -348,10 +337,12 @@ def weighted_sample_no_replace(
 ) -> list:
     """从 ``pool`` 里按 ``weights`` 无放回抽 k 个，返回**升序**结果。
 
-    单一实现的原因：这段逻辑此前在 answering.py 与 answering_v2.py 各有一份
-    （都是 A-Res / numpy 概率法），而两副本的行为并不相同 ——
-    answering.py 的 numpy 分支缺非法权重守卫，全 0 权重直接 ZeroDivisionError，
-    answering_v2 那份早就修好了。副本只要存在，就会出现"修了一边忘了另一边"。
+    单一实现：A-Res（Efraimidis & Spirakis），key = log(u)/w 取 top-k ——
+    与"逐项按剩余权重不放回抽样"同分布。v4.5 前这里还有一条 numpy
+    ``np.random.choice`` 快路径，两条腿的分布等价但 RNG 流不同，行为差异
+    只会来自"修了一边忘了另一边"（v2.x 时代真实发生过：answering.py 的
+    numpy 分支缺非法权重守卫直接 ZeroDivisionError）；A-Res 纯 stdlib
+    几十行，索性并成一条腿，numpy 依赖随之移除。
 
     非法权重（长度不符 / NaN / 总和为 0）一律降级为等概率抽样，
     判定与 :func:`weights_are_usable` 共用同一把尺子。
@@ -370,30 +361,12 @@ def weighted_sample_no_replace(
     k = max(1, min(int(k), n))
 
     usable = weights_are_usable(weights, n)
-    positive_cnt = (
-        sum(1 for w in weights if w > 0) if usable else 0
-    )
 
-    if _HAS_NUMPY and (not usable or positive_cnt >= k):
-        if usable:
-            total = sum(weights)
-            probs = [w / total for w in weights]
-            picked = np.random.choice(n, size=k, replace=False, p=probs)
-        else:
-            picked = np.random.choice(n, size=k, replace=False)
-        return sorted(pool[int(i)] for i in picked)
-
-    # A-Res（Efraimidis & Spirakis）：key = log(u)/w，取 top-k。
-    # v4.2 起**零权重不进池**（0 = 绝不选择）：无 numpy 的环境里正权重本来就
-    # 不该被 floor 改变抽序，零权重则无论 k 多大都不许凑数。
     pairs: list[tuple[float, Any]] = []
     for i in range(n):
-        if usable:
-            w = float(weights[i])
-            if w <= 0:
-                continue
-        else:
-            w = 1.0
+        w = float(weights[i]) if usable else 1.0
+        if usable and w <= 0:
+            continue    # 0 = 绝不选择：零权重不进抽样池，k 再大也不许凑数
         pairs.append((math.log(random.random()) / w, pool[i]))
     take = min(k, len(pairs))
     if usable and take < k:

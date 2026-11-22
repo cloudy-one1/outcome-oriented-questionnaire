@@ -208,7 +208,7 @@ def number_delta(old_line: str, new_line: str, spec: dict[str, Any]) -> bool:
     new = list(NUM_RE.finditer(new_line))
     if len(old) != len(new):
         return False
-    for left, right in zip(old, new):
+    for left, right in zip(old, new, strict=True):  # 上面刚断言过 len 相等
         limit = spec["tolerance_pp"] if left.group().endswith("%") else spec["tolerance_lines"]
         if abs(float(left.group().rstrip("%")) - float(right.group().rstrip("%"))) > limit:
             return False
@@ -219,7 +219,9 @@ def compare(doc: str, block: str, spec: dict[str, Any]) -> list[str]:
     want = splice(doc, block).split("\n")
     have = doc.split("\n")
     problems: list[str] = []
-    for index, (want_line, have_line) in enumerate(zip(want, have), start=1):
+    # strict=False：want（重拼后的全文）与 have 的总行数可以合法地不同（块行数变了），
+    # 截断的尾部会在错位之后被逐行报出 —— 这里要的是「报问题」而不是「抛异常」
+    for index, (want_line, have_line) in enumerate(zip(want, have, strict=False), start=1):
         if want_line != have_line and not number_delta(want_line, have_line, spec):
             problems.append(f"  {DOC.name}:{index}\n    落盘: {have_line}\n    应为: {want_line}")
     return problems

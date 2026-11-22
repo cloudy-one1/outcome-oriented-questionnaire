@@ -82,8 +82,10 @@ class WebUIRequestHandler(BaseHTTPRequestHandler):
     api: Api
     protocol_version = "HTTP/1.1"        # SSE 要长连接，必须 1.1 + 显式 Content-Length
 
-    def log_message(self, fmt: str, *args: Any) -> None:      # 别往 stderr 刷
-        logger.debug("webui %s - " + fmt, self.address_string(), *args)
+    def log_message(self, format: str, *args: Any) -> None:   # 别往 stderr 刷
+        # 形参名与基类一致（可被按名调用）：改名会被 pyright 的
+        # reportIncompatibleMethodOverride 判为不兼容覆写（v4.5 升 standard 时暴露）
+        logger.debug("webui %s - " + format, self.address_string(), *args)
 
     # ------------------------------------------------------------ 方法入口
 

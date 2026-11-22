@@ -32,7 +32,6 @@ classifiers = [
 ]
 dependencies = [
   "selenium==4.39.0",
-  "numpy==2.2.4",
 ]
 
 [project.optional-dependencies]
